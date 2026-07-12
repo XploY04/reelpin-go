@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -38,11 +39,16 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
-		if in.Title == "" || in.URL == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title and url are empty."})
+		created, err := reels.Create(in)
+		if err != nil {
+			var ve *store.ValidationError
+			if errors.As(err, &ve) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": ve.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Internal Error"})
 			return
 		}
-		created := reels.Create(in)
 		writeJSON(w, http.StatusCreated, created)
 	})
 
@@ -53,12 +59,16 @@ func main() {
 
 	mux.HandleFunc("GET /api/v1/reels/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		reel, ok := reels.Get(id)
-		if ok {
-			writeJSON(w, http.StatusOK, reel)
+		reel, err := reels.Get(id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "Reel not found !"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Internal Error"})
 			return
 		}
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Reel not found !"})
+		writeJSON(w, http.StatusOK, reel)
 	})
 
 	log.Println("listening on port: 8000")
