@@ -4,3 +4,6 @@ reelpin-go
 
 # local env
 .env
+
+# personal planning docs (kept local, not published)
+docs/
