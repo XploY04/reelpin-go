@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"time"
 
+	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type reelStore interface {
@@ -17,12 +22,23 @@ type reelStore interface {
 
 type server struct {
 	reels reelStore
+	db    *pgxpool.Pool
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.db.Ping(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not ready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (s *server) createReel(w http.ResponseWriter, r *http.Request) {
@@ -69,9 +85,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health/live", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("GET /api/v1/health/ready", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
-	})
+	mux.HandleFunc("GET /api/v1/health/ready", s.ready)
 	mux.HandleFunc("POST /api/v1/reels", s.createReel)
 	mux.HandleFunc("GET /api/v1/reels", s.listReels)
 	mux.HandleFunc("GET /api/v1/reels/{id}", s.getReel)
@@ -79,7 +93,17 @@ func (s *server) routes() http.Handler {
 }
 
 func main() {
-	srv := &server{reels: store.New()}
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		url = "postgres://reelpin:reelpin@localhost:5432/reelpin"
+	}
+	pool, err := db.Connect(context.Background(), url)
+	if err != nil {
+		log.Fatalf("db connect: %v", err)
+	}
+	defer pool.Close()
+
+	srv := &server{reels: store.New(), db: pool}
 	log.Println("listening on port: 8000")
 	log.Fatal(http.ListenAndServe(":8000", srv.routes()))
 }

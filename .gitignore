@@ -1,3 +1,6 @@
 reelpin-go
 *.log
 .DS_Store
+
+# local env
+.env
