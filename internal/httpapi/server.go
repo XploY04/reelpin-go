@@ -1,9 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -31,13 +31,60 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health/ready", s.handleReady)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
+	// The mux answers a wrong method with a plain-text 405, so claim the paths again
+	// without a method and keep every body JSON.
+	for _, path := range []string{"/api/v1/health/live", "/api/v1/health/ready", "/api/v1/health"} {
+		mux.HandleFunc(path, methodNotAllowed)
+	}
+	mux.HandleFunc("/", notFound)
+
 	return s.requestID(s.logRequest(s.recoverPanic(jsonContentType(mux))))
 }
 
+type errorResponse struct {
+	Success   bool   `json:"success"`
+	ErrorCode string `json:"error_code"`
+	Message   string `json:"message"`
+	Detail    string `json:"detail"`
+	Retryable bool   `json:"retryable"`
+}
+
+var internalError = errorResponse{
+	ErrorCode: "internal_error",
+	Message:   "The server could not finish this request.",
+	Detail:    "Unhandled server error",
+	Retryable: true,
+}
+
+// writeJSON encodes before touching the status line, so a broken payload still
+// leaves room for the standard 500.
 func writeJSON(w http.ResponseWriter, status int, data any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
+		buf.Reset()
+		json.NewEncoder(&buf).Encode(internalError)
+		status = http.StatusInternalServerError
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	w.Write(buf.Bytes())
+}
+
+func notFound(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, errorResponse{
+		ErrorCode: "not_found",
+		Message:   "This endpoint does not exist.",
+		Detail:    "Unknown route",
+	})
+}
+
+func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Allow", http.MethodGet)
+	writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
+		ErrorCode: "method_not_allowed",
+		Message:   "This endpoint does not accept that method.",
+		Detail:    "Only GET is allowed",
+	})
 }
 
 type statusRecorder struct {
@@ -50,10 +97,9 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// rand.Text panics rather than handing back a predictable id if entropy fails.
 func newRequestID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return rand.Text()
 }
 
 func validRequestID(id string) bool {
@@ -106,13 +152,7 @@ func (s *Server) recoverPanic(next http.Handler) http.Handler {
 					"path", r.URL.Path,
 					"request_id", w.Header().Get("X-Request-ID"),
 				)
-				writeJSON(w, http.StatusInternalServerError, map[string]any{
-					"success":    false,
-					"error_code": "internal_error",
-					"message":    "The server could not finish this request.",
-					"detail":     "Unhandled server error",
-					"retryable":  true,
-				})
+				writeJSON(w, http.StatusInternalServerError, internalError)
 			}
 		}()
 		next.ServeHTTP(w, r)

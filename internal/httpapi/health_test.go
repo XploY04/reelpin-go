@@ -229,3 +229,77 @@ func TestRecoverPanic(t *testing.T) {
 		}
 	}
 }
+
+func TestFrameworkErrorsAreJSON(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "unknown route", method: "GET", path: "/missing", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "unknown api route", method: "GET", path: "/api/v1/reels", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "wrong method", method: "POST", path: "/api/v1/health/live", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			newTestServer(&fakePinger{}).Routes().ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+
+			var body errorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+			}
+			if body.ErrorCode != tt.wantCode {
+				t.Errorf("error_code = %q, want %q", body.ErrorCode, tt.wantCode)
+			}
+			if body.Success {
+				t.Error("success = true, want false")
+			}
+		})
+	}
+}
+
+func TestWriteJSONEncodingFailure(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]any{"bad": make(chan int)})
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	var body errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	if body.ErrorCode != "internal_error" {
+		t.Errorf("error_code = %q, want internal_error", body.ErrorCode)
+	}
+}
+
+func TestHealthUsesOneTimestamp(t *testing.T) {
+	_, body := do(t, newTestServer(&fakePinger{}), httptest.NewRequest("GET", "/api/v1/health/ready", nil))
+
+	for key, check := range body.Checks {
+		if check.CheckedAt != body.CheckedAt {
+			t.Errorf("checks[%q].checked_at = %q, want %q", key, check.CheckedAt, body.CheckedAt)
+		}
+	}
+}
+
+func TestDatabaseCheckStatusOnFailure(t *testing.T) {
+	_, body := do(t, newTestServer(&fakePinger{err: errors.New("down")}), httptest.NewRequest("GET", "/api/v1/health/ready", nil))
+
+	if got := body.Checks["supabase"].Status; got != "degraded" {
+		t.Errorf("supabase status = %q, want degraded", got)
+	}
+}

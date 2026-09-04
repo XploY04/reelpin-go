@@ -30,17 +30,17 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
-func apiCheck() ServiceHealthCheck {
+func apiCheck(checkedAt string) ServiceHealthCheck {
 	return ServiceHealthCheck{
 		Healthy:   true,
 		Status:    "ok",
 		Message:   "API process is reachable.",
-		CheckedAt: nowUTC(),
+		CheckedAt: checkedAt,
 		Details:   map[string]any{},
 	}
 }
 
-func (s *Server) databaseCheck(ctx context.Context) ServiceHealthCheck {
+func (s *Server) databaseCheck(ctx context.Context, checkedAt string) ServiceHealthCheck {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -50,13 +50,13 @@ func (s *Server) databaseCheck(ctx context.Context) ServiceHealthCheck {
 
 	check := ServiceHealthCheck{
 		Latency:   &latency,
-		CheckedAt: nowUTC(),
+		CheckedAt: checkedAt,
 		Details:   map[string]any{},
 	}
 	if err != nil {
 		// ponytail: the driver error can carry the DSN, so it never reaches the response.
 		check.Healthy = false
-		check.Status = "error"
+		check.Status = "degraded"
 		check.Message = "Database is not reachable."
 		return check
 	}
@@ -67,15 +67,16 @@ func (s *Server) databaseCheck(ctx context.Context) ServiceHealthCheck {
 }
 
 func (s *Server) readiness(ctx context.Context) HealthResponse {
-	db := s.databaseCheck(ctx)
+	checkedAt := nowUTC()
+	db := s.databaseCheck(ctx, checkedAt)
 	resp := HealthResponse{
 		Status:    "ok",
 		Ready:     db.Healthy,
 		Version:   s.version,
 		Service:   serviceName,
-		CheckedAt: nowUTC(),
+		CheckedAt: checkedAt,
 		Checks: map[string]ServiceHealthCheck{
-			"api": apiCheck(),
+			"api": apiCheck(checkedAt),
 			// legacy key: Python called Supabase, Go talks to the same Postgres directly.
 			"supabase": db,
 		},
@@ -87,13 +88,14 @@ func (s *Server) readiness(ctx context.Context) HealthResponse {
 }
 
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	checkedAt := nowUTC()
 	writeJSON(w, http.StatusOK, HealthResponse{
 		Status:    "ok",
 		Ready:     true,
 		Version:   s.version,
 		Service:   serviceName,
-		CheckedAt: nowUTC(),
-		Checks:    map[string]ServiceHealthCheck{"api": apiCheck()},
+		CheckedAt: checkedAt,
+		Checks:    map[string]ServiceHealthCheck{"api": apiCheck(checkedAt)},
 	})
 }
 
