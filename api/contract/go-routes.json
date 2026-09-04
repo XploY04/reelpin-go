@@ -1,6 +1,6 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 11,
+  "route_count": 12,
   "routes": [
     {
       "method": "GET",
@@ -63,6 +63,12 @@
       "method": "GET",
       "path": "/api/v1/reels/{reel_id}",
       "alias": "/reels/{reel_id}",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/share/resolve",
+      "alias": "/share/resolve",
       "authenticated": true
     }
   ]

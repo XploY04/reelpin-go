@@ -27,6 +27,7 @@ type Deps struct {
 	Auth    auth.Authenticator
 	Reels   reels.ReelReader
 	Jobs    jobs.JobReader
+	Share   ShareResolver
 	Logger  *slog.Logger
 	Version string
 	Now     func() time.Time
@@ -61,6 +62,16 @@ type Route struct {
 }
 
 func (s *Server) routeTable() []Route {
+	guarded := func(method, path string, handler http.HandlerFunc, claimMethods bool) Route {
+		return Route{
+			Method:        method,
+			Path:          "/api/v1" + path,
+			Alias:         path,
+			Authenticated: true,
+			handler:       s.authenticated(handler),
+			claimMethods:  claimMethods,
+		}
+	}
 	read := func(path string, handler http.HandlerFunc, claimMethods bool) Route {
 		return Route{
 			Method:        http.MethodGet,
@@ -85,6 +96,8 @@ func (s *Server) routeTable() []Route {
 		read("/processing-jobs/{job_id}", s.handleGetJob, true),
 		read("/account/library-stats", s.handleLibraryStats, true),
 		read("/account/entitlements", s.handleEntitlements, true),
+
+		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, true),
 	}
 }
 
@@ -122,7 +135,7 @@ func (s *Server) Routes() http.Handler {
 		for _, path := range paths {
 			mux.HandleFunc(route.Method+" "+path, route.handler)
 			if route.claimMethods {
-				mux.HandleFunc(path, methodNotAllowed)
+				mux.HandleFunc(path, methodNotAllowed(route.Method))
 			}
 		}
 	}
@@ -211,13 +224,15 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", http.MethodGet)
-	writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
-		ErrorCode: "method_not_allowed",
-		Message:   "This endpoint does not accept that method.",
-		Detail:    "Only GET is allowed",
-	})
+func methodNotAllowed(allowed string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", allowed)
+		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
+			ErrorCode: "method_not_allowed",
+			Message:   "This endpoint does not accept that method.",
+			Detail:    "Only " + allowed + " is allowed",
+		})
+	}
 }
 
 type statusRecorder struct {

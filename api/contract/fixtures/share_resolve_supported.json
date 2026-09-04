@@ -1,0 +1,17 @@
+{
+  "request": {
+    "body": {
+      "raw_payload_text": "look at this https://www.instagram.com/reel/C8abc123/?igsh=x"
+    },
+    "method": "POST",
+    "target": "/api/v1/share/resolve"
+  },
+  "response": {
+    "error_message": null,
+    "extracted_url": "https://www.instagram.com/reel/C8abc123/?igsh=x",
+    "normalized_url": "https://www.instagram.com/reel/C8abc123/",
+    "provider": "instagram",
+    "supported": true
+  },
+  "status": 200
+}

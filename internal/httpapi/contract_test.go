@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
@@ -59,6 +61,7 @@ func TestResponseContract(t *testing.T) {
 		target     string
 		method     string
 		token      string
+		body       string
 		wantStatus int
 		deps       func() Deps
 	}{
@@ -108,6 +111,17 @@ func TestResponseContract(t *testing.T) {
 			},
 		},
 
+		{
+			name: "share_resolve_supported", method: "POST", target: "/api/v1/share/resolve",
+			token: "Bearer good.token", wantStatus: 200,
+			body: `{"raw_payload_text":"look at this https://www.instagram.com/reel/C8abc123/?igsh=x"}`,
+		},
+		{
+			name: "share_resolve_unsupported", method: "POST", target: "/api/v1/share/resolve",
+			token: "Bearer good.token", wantStatus: 200,
+			body: `{"raw_payload_text":"no link at all"}`,
+		},
+
 		{name: "error_authentication_required", target: "/api/v1/reels", wantStatus: 401},
 		{
 			name: "error_invalid_auth_token", target: "/api/v1/reels", token: "Bearer bad.token", wantStatus: 401,
@@ -146,7 +160,11 @@ func TestResponseContract(t *testing.T) {
 			if method == "" {
 				method = http.MethodGet
 			}
-			req := httptest.NewRequest(method, tt.target, nil)
+			var requestBody io.Reader
+			if tt.body != "" {
+				requestBody = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(method, tt.target, requestBody)
 			if tt.token != "" {
 				req.Header.Set("Authorization", tt.token)
 			}
@@ -164,8 +182,12 @@ func TestResponseContract(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
 			}
+			request := map[string]any{"method": method, "target": tt.target}
+			if tt.body != "" {
+				request["body"] = json.RawMessage(tt.body)
+			}
 			assertGolden(t, filepath.Join(contractDir, "fixtures", tt.name+".json"), mustEncode(t, map[string]any{
-				"request":  map[string]any{"method": method, "target": tt.target},
+				"request":  request,
 				"status":   tt.wantStatus,
 				"response": blankVolatile(body),
 			}))

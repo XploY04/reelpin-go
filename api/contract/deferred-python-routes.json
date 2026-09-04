@@ -1,6 +1,6 @@
 {
   "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
-  "deferred_route_count": 54,
+  "deferred_route_count": 53,
   "routes": [
     {
       "method": "DELETE",
@@ -372,13 +372,6 @@
       "alias": "/share-tokens",
       "owner": "task-09",
       "reason": "Enqueue, share tokens, and global deduplication."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/share/resolve",
-      "alias": "/share/resolve",
-      "owner": "task-04",
-      "reason": "Source identity and safe share resolution."
     }
   ]
 }

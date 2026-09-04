@@ -1,0 +1,17 @@
+{
+  "request": {
+    "body": {
+      "raw_payload_text": "no link at all"
+    },
+    "method": "POST",
+    "target": "/api/v1/share/resolve"
+  },
+  "response": {
+    "error_message": "No link was found in the shared content.",
+    "extracted_url": null,
+    "normalized_url": null,
+    "provider": null,
+    "supported": false
+  },
+  "status": 200
+}

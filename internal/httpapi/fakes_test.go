@@ -9,6 +9,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/uuid"
 )
 
@@ -126,6 +127,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Auth:    fakeAuth{userID: testUserID},
 		Reels:   &fakeReels{},
 		Jobs:    &fakeJobs{},
+		Share:   &sourceidentity.Resolver{},
 		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version: "test",
 		Now:     func() time.Time { return testNow },

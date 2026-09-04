@@ -16,6 +16,8 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 )
 
 func main() {
@@ -60,6 +62,7 @@ func run(logger *slog.Logger) error {
 			Auth:    verifier,
 			Reels:   postgres.NewReels(pool),
 			Jobs:    postgres.NewJobs(pool),
+			Share:   &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})},
 			Logger:  logger,
 			Version: cfg.Version,
 		}).Routes(),
