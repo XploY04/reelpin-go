@@ -1,34 +1,39 @@
 package main
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/XploY04/reelpin-go/internal/store"
+	"github.com/XploY04/reelpin-go/internal/httpapi"
 )
 
-func TestGetReel_NotFound(t *testing.T) {
-	srv := &server{reels: store.New()} //empty store
-	req := httptest.NewRequest("GET", "/api/v1/reels/999", nil)
-	rec := httptest.NewRecorder()
+type okPinger struct{}
 
-	srv.routes().ServeHTTP(rec, req)
+func (okPinger) Ping(context.Context) error { return nil }
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("got status %d, want %d", rec.Code, http.StatusNotFound)
+func TestScaffoldReelRoutesAreGone(t *testing.T) {
+	handler := httpapi.New(okPinger{}, slog.New(slog.NewJSONHandler(io.Discard, nil)), "test").Routes()
+
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/api/v1/reels"},
+		{"GET", "/api/v1/reels"},
+		{"GET", "/api/v1/reels/123"},
 	}
-}
 
-func TestCreateReel_Succes(t *testing.T) {
-	srv := &server{reels: store.New()}
-	req := httptest.NewRequest("POST", "/api/v1/reels", strings.NewReader(`{"title": "Hello", "url": "https://ig.com/r/abc"}`))
-	rec := httptest.NewRecorder()
-
-	srv.routes().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("got status %d, want %d", rec.Code, http.StatusCreated)
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("got status %d, want %d", rec.Code, http.StatusNotFound)
+			}
+		})
 	}
 }
