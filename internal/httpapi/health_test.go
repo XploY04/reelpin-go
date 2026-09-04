@@ -1,11 +1,8 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,18 +10,8 @@ import (
 	"time"
 )
 
-type fakePinger struct {
-	err   error
-	calls int
-}
-
-func (f *fakePinger) Ping(context.Context) error {
-	f.calls++
-	return f.err
-}
-
 func newTestServer(p DatabasePinger) *Server {
-	return New(p, slog.New(slog.NewJSONHandler(io.Discard, nil)), "test")
+	return New(testDeps(p))
 }
 
 func do(t *testing.T, s *Server, req *http.Request) (*httptest.ResponseRecorder, HealthResponse) {
@@ -239,8 +226,9 @@ func TestFrameworkErrorsAreJSON(t *testing.T) {
 		wantCode   string
 	}{
 		{name: "unknown route", method: "GET", path: "/missing", wantStatus: http.StatusNotFound, wantCode: "not_found"},
-		{name: "unknown api route", method: "GET", path: "/api/v1/reels", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "unknown api route", method: "GET", path: "/api/v1/collections", wantStatus: http.StatusNotFound, wantCode: "not_found"},
 		{name: "wrong method", method: "POST", path: "/api/v1/health/live", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "wrong method on a reel route", method: "DELETE", path: "/api/v1/reels/abc", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
 	}
 
 	for _, tt := range tests {

@@ -45,7 +45,7 @@ func (s *Server) databaseCheck(ctx context.Context, checkedAt string) ServiceHea
 	defer cancel()
 
 	start := time.Now()
-	err := s.db.Ping(ctx)
+	err := s.deps.DB.Ping(ctx)
 	latency := float64(time.Since(start).Microseconds()) / 1000
 
 	check := ServiceHealthCheck{
@@ -72,7 +72,7 @@ func (s *Server) readiness(ctx context.Context) HealthResponse {
 	resp := HealthResponse{
 		Status:    "ok",
 		Ready:     db.Healthy,
-		Version:   s.version,
+		Version:   s.deps.Version,
 		Service:   serviceName,
 		CheckedAt: checkedAt,
 		Checks: map[string]ServiceHealthCheck{
@@ -92,7 +92,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{
 		Status:    "ok",
 		Ready:     true,
-		Version:   s.version,
+		Version:   s.deps.Version,
 		Service:   serviceName,
 		CheckedAt: checkedAt,
 		Checks:    map[string]ServiceHealthCheck{"api": apiCheck(checkedAt)},
