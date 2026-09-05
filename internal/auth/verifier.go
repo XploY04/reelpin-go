@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/XploY04/reelpin-go/internal/uuid"
+	"github.com/google/uuid"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"

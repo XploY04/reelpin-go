@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/XploY04/reelpin-go/internal/uuid"
+	"github.com/google/uuid"
 )
 
 // ErrNotFound covers a missing job and a job owned by another user.

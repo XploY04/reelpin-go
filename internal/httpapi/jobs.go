@@ -6,7 +6,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
-	"github.com/XploY04/reelpin-go/internal/uuid"
+	"github.com/google/uuid"
 )
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {

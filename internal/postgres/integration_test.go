@@ -10,7 +10,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
-	"github.com/XploY04/reelpin-go/internal/uuid"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

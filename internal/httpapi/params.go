@@ -10,7 +10,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/reels"
-	"github.com/XploY04/reelpin-go/internal/uuid"
+	"github.com/google/uuid"
 )
 
 func requestUserID(r *http.Request) string {
