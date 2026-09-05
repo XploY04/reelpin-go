@@ -22,9 +22,10 @@ track and changes two assumptions:
   tracked production-schema migrations are applied and its JWKS uses ES256.
 - The development project was left with zero test users, reels and jobs after
   the end-to-end test.
-- `ssh reelpin-ec2-dev` reaches Ubuntu 24.04.4. Docker Engine 29.8.0 and Compose
-  5.5.1 are installed. Python remains on localhost:8000 and Go PR #2 is running
-  privately on localhost:8080.
+- `ssh reelpin-ec2-dev` reaches Ubuntu 24.04.4 in `ap-south-1`. Docker Engine
+  29.8.0 and Compose 5.5.1 are installed. Python remains on localhost:8000 and
+  Go PR #2 is running privately on localhost:8080. A real readiness ping to the
+  Tokyo development database took about 265 ms.
 - `reelpin-web` `origin/main` is `1fb89dd`. It is a Next.js 16 marketing site on
   Vercel with feedback and deep-link routes, but no user session or library UI.
 
@@ -35,6 +36,7 @@ track and changes two assumptions:
 | Service shape | One Go module with API, worker and maintenance binaries | One deployable codebase keeps transactions, contracts and debugging together | Independent teams or scaling measurements require separate services |
 | Database | PostgreSQL in Supabase | Existing production data is there; relational ownership, JSONB, PostGIS, full-text search and pgvector fit the product | A measured workload cannot be handled by PostgreSQL |
 | Environments | Separate Supabase projects, Redis instances and RabbitMQ virtual hosts | Infrastructure isolation prevents a dev process from reading or claiming production work | Never replace this with row flags |
+| Compute region | Run production Go near the production Supabase region | The current cross-region development database ping is about 265 ms before query work starts | Change only after measuring database and user latency |
 | Authentication | Supabase Auth for Flutter and web; local JWKS verification in Go | One identity across clients, no per-request Auth network call | Immediate token revocation becomes a measured requirement |
 | Queue | RabbitMQ with durable queues, publisher confirms, manual acknowledgements and dead letters | Processing is long-running, retryable and observable | A managed workflow engine becomes cheaper than operating the queue |
 | Delivery | At-least-once messages with idempotent stages and a transactional outbox | Exactly-once delivery is not available across the database and broker | Do not claim exactly-once behavior |
@@ -240,7 +242,7 @@ It can proceed while the worker waves continue.
 | Component | Development | Production |
 |-----------|-------------|------------|
 | Supabase | `reelpin-go` project | Current ReelPin project |
-| Go API | `reelpin-ec2-dev`, localhost:8080 until routed | Production EC2 after cutover |
+| Go API | `reelpin-ec2-dev` in `ap-south-1`, localhost:8080 until routed | Compute near Supabase in `ap-northeast-1` |
 | Python API | Existing dev service on localhost:8000 | Remains until Go write cutover |
 | Redis | Dedicated Go development instance or namespace | Dedicated production instance |
 | RabbitMQ | Dedicated development virtual host | Dedicated production virtual host |
@@ -290,13 +292,14 @@ It can proceed while the worker waves continue.
 5. Launch web auth and the read-only library against development.
 6. Finish backend worker, platform and search waves.
 7. Rehearse production migrations against a disposable schema copy.
-8. Deploy the tested Go image beside Python in production.
-9. Shadow and compare safe reads.
-10. Launch the read-only production web library for selected users.
-11. Observe errors, latency and data mismatches.
-12. Switch processing writes and workers to Go.
-13. Keep Python available for rollback until the observation window ends.
-14. Retire Python and old search infrastructure only after usage is zero.
+8. Provision production Go compute near Supabase in `ap-northeast-1`.
+9. Deploy the tested Go image beside Python in production.
+10. Shadow and compare safe reads.
+11. Launch the read-only production web library for selected users.
+12. Observe errors, latency and data mismatches.
+13. Switch processing writes and workers to Go.
+14. Keep Python available for rollback until the observation window ends.
+15. Retire Python and old search infrastructure only after usage is zero.
 
 ## Rollback
 

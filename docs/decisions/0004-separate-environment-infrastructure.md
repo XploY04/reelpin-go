@@ -27,3 +27,8 @@ not repeat an environment predicate.
 The cost is another set of resources, migrations and secrets. Repository
 commands must be able to create an empty development environment, and production
 migrations must still preserve existing data.
+
+The current EC2 development host is in `ap-south-1`, while both Supabase
+projects are in `ap-northeast-1`. A real readiness ping took about 265 ms.
+Development can accept that cost; production Go compute should run near the
+production database and be selected from measured latency.
