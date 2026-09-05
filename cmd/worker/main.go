@@ -13,10 +13,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/outbox"
+	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -89,7 +93,33 @@ func run(logger *slog.Logger) error {
 	started++
 	go func() { done <- dispatcher.Run(ctx, time.Second) }()
 
-	handler := stubHandler(pool, logger, workerID)
+	// A crashed worker cannot clean up after itself, so leftovers are swept
+	// before this one starts making more.
+	if swept, err := pipeline.SweepTempDirectories(cfg.WorkerTempRoot, time.Hour, time.Now()); err != nil {
+		logger.Warn("sweeping old run directories failed", "error", err)
+	} else if swept > 0 {
+		logger.Info("swept abandoned run directories", "count", swept)
+	}
+	if err := os.MkdirAll(cfg.WorkerTempRoot, 0o700); err != nil {
+		return fmt.Errorf("creating the worker temp root: %w", err)
+	}
+
+	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey})
+	processor := pipeline.New(pipeline.Deps{
+		Pool: pool,
+		// Platform handlers arrive with their own tasks; until then a share of
+		// an unhandled source fails as unsupported rather than silently.
+		Handlers:    platform.NewRegistry(),
+		Transcriber: gemini,
+		ImageReader: gemini,
+		Extractor:   gemini,
+		Categorizer: gemini,
+		Geocoder:    geo.NewCached(pool, geo.NewGoogle(cfg.GoogleMapsAPIKey, 0)),
+		Logger:      logger,
+		TempRoot:    cfg.WorkerTempRoot,
+	})
+
+	handler := leasedHandler(pool, logger, workerID, processor)
 	for _, name := range queue.WorkQueues {
 		started++
 		go func(name string) {
@@ -131,35 +161,25 @@ func run(logger *slog.Logger) error {
 	return firstErr
 }
 
-// stubHandler proves the delivery, lease and shutdown paths end to end. The
-// real pipeline replaces it in Task 10, and this file is the only thing that
-// changes when it does.
-func stubHandler(pool *pgxpool.Pool, logger *slog.Logger, workerID string) queue.Handler {
+// leasedHandler is the delivery path: take the run's lease, keep it alive while
+// the pipeline works, and hand back what the consumer should do with the
+// message. A duplicate delivery finds the run taken and stops here.
+func leasedHandler(pool *pgxpool.Pool, logger *slog.Logger, workerID string, processor *pipeline.Pipeline) queue.Handler {
 	return func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
 		held, err := lease.Acquire(ctx, pool, message.RunID, workerID)
 		if errors.Is(err, lease.ErrNotAcquired) {
-			// Another worker owns this run, or it already finished. A duplicate
-			// delivery ends here.
-			logger.Info("run already taken", "run_id", message.RunID)
+			logger.Info("run already taken or finished", "run_id", message.RunID)
 			return queue.Done, nil
 		}
 		if err != nil {
 			return queue.Retry, err
 		}
 
+		// Losing the lease cancels the work, so two workers never write the
+		// same results.
 		work, cancel := lease.KeepAlive(ctx, pool, held.RunID, workerID)
 		defer cancel()
 
-		if _, err := pool.Exec(work, `
-			UPDATE reelpin.processing_runs
-			SET status = 'completed', stage = 'complete', progress_percent = 100,
-			    lease_owner = NULL, lease_expires_at = NULL,
-			    completed_at = now(), updated_at = now()
-			WHERE id = $1 AND lease_owner = $2`,
-			held.RunID, workerID,
-		); err != nil {
-			return queue.Retry, err
-		}
-		return queue.Done, nil
+		return processor.Handle(work, message)
 	}
 }

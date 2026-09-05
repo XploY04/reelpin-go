@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,10 @@ type Config struct {
 	WorkerQueueConcurrency  int
 	WorkerGlobalConcurrency int
 	OutboxBatchSize         int
+	GeminiAPIKey            string
+	GoogleMapsAPIKey        string
+	// WorkerTempRoot is where a run's media lives while it is being processed.
+	WorkerTempRoot string
 	// TrustedProxyCIDRs are the only sources whose forwarding headers are
 	// believed. Empty means every client is identified by its socket address.
 	TrustedProxyCIDRs []netip.Prefix
@@ -54,6 +59,9 @@ func Load() (Config, error) {
 		RedisKeyPrefix:      envOr("REDIS_KEY_PREFIX", "reelpin"),
 		RabbitMQURL:         strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
 		WorkerID:            envOr("WORKER_ID", defaultWorkerID()),
+		GeminiAPIKey:        strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+		GoogleMapsAPIKey:    strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY")),
+		WorkerTempRoot:      envOr("WORKER_TEMP_ROOT", filepath.Join(os.TempDir(), "reelpin-runs")),
 	}
 
 	for _, setting := range []struct {
