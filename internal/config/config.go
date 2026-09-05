@@ -44,7 +44,11 @@ type Config struct {
 	RedditUserAgent    string
 	// CollectionShareBaseURL is where a share or invite link points. It is the
 	// link-only host, not the API.
-	CollectionShareBaseURL string
+	CollectionShareBaseURL  string
+	FirebaseCredentialsJSON string
+	FirebaseProjectID       string
+	// AdminKey guards the operator routes. Empty leaves them unavailable.
+	AdminKey string
 	// TrustedProxyCIDRs are the only sources whose forwarding headers are
 	// believed. Empty means every client is identified by its socket address.
 	TrustedProxyCIDRs []netip.Prefix
@@ -69,22 +73,25 @@ func Load() (Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Version:     envOr("APP_VERSION", "dev"),
 
-		SupabaseURL:            strings.TrimSpace(os.Getenv("SUPABASE_URL")),
-		SupabaseJWTAudience:    envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
-		RedisURL:               strings.TrimSpace(os.Getenv("REDIS_URL")),
-		RedisKeyPrefix:         envOr("REDIS_KEY_PREFIX", "reelpin"),
-		RabbitMQURL:            strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
-		WorkerID:               envOr("WORKER_ID", defaultWorkerID()),
-		GeminiAPIKey:           strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
-		GoogleMapsAPIKey:       strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY")),
-		WorkerTempRoot:         envOr("WORKER_TEMP_ROOT", filepath.Join(os.TempDir(), "reelpin-runs")),
-		ApifyToken:             strings.TrimSpace(os.Getenv("APIFY_TOKEN")),
-		SupabaseServiceKey:     strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY")),
-		StorageBucket:          envOr("SUPABASE_STORAGE_BUCKET", "reel-thumbnails"),
-		RedditClientID:         strings.TrimSpace(os.Getenv("REDDIT_CLIENT_ID")),
-		RedditClientSecret:     strings.TrimSpace(os.Getenv("REDDIT_CLIENT_SECRET")),
-		RedditUserAgent:        envOr("REDDIT_USER_AGENT", "reelpin/1.0"),
-		CollectionShareBaseURL: envOr("COLLECTION_SHARE_BASE_URL", "https://link.reelpin.in"),
+		SupabaseURL:             strings.TrimSpace(os.Getenv("SUPABASE_URL")),
+		SupabaseJWTAudience:     envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
+		RedisURL:                strings.TrimSpace(os.Getenv("REDIS_URL")),
+		RedisKeyPrefix:          envOr("REDIS_KEY_PREFIX", "reelpin"),
+		RabbitMQURL:             strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+		WorkerID:                envOr("WORKER_ID", defaultWorkerID()),
+		GeminiAPIKey:            strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+		GoogleMapsAPIKey:        strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY")),
+		WorkerTempRoot:          envOr("WORKER_TEMP_ROOT", filepath.Join(os.TempDir(), "reelpin-runs")),
+		ApifyToken:              strings.TrimSpace(os.Getenv("APIFY_TOKEN")),
+		SupabaseServiceKey:      strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY")),
+		StorageBucket:           envOr("SUPABASE_STORAGE_BUCKET", "reel-thumbnails"),
+		RedditClientID:          strings.TrimSpace(os.Getenv("REDDIT_CLIENT_ID")),
+		RedditClientSecret:      strings.TrimSpace(os.Getenv("REDDIT_CLIENT_SECRET")),
+		RedditUserAgent:         envOr("REDDIT_USER_AGENT", "reelpin/1.0"),
+		CollectionShareBaseURL:  envOr("COLLECTION_SHARE_BASE_URL", "https://link.reelpin.in"),
+		FirebaseCredentialsJSON: strings.TrimSpace(os.Getenv("FIREBASE_CREDENTIALS_JSON")),
+		FirebaseProjectID:       strings.TrimSpace(os.Getenv("FIREBASE_PROJECT_ID")),
+		AdminKey:                strings.TrimSpace(os.Getenv("ADMIN_DASHBOARD_KEY")),
 		ApifyActors: map[string]string{
 			"instagram": strings.TrimSpace(os.Getenv("APIFY_INSTAGRAM_ACTOR")),
 			"youtube":   strings.TrimSpace(os.Getenv("APIFY_YOUTUBE_ACTOR")),

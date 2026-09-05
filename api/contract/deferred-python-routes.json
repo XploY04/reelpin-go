@@ -1,6 +1,6 @@
 {
   "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
-  "deferred_route_count": 29,
+  "deferred_route_count": 20,
   "routes": [
     {
       "method": "DELETE",
@@ -11,59 +11,10 @@
     },
     {
       "method": "GET",
-      "path": "/api/v1/admin/notification-campaigns",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/admin/notification-campaigns",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "GET",
-      "path": "/api/v1/admin/notification-campaigns/{campaign_id}",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/cancel",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/send",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "GET",
       "path": "/api/v1/dashboard/overview",
       "alias": "",
       "owner": "task-21",
       "reason": "Evidence gate: ported only if a real operational consumer exists."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/device-push-tokens",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/device-push-tokens",
-      "alias": "/device-push-tokens",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
     },
     {
       "method": "GET",
@@ -122,13 +73,6 @@
       "reason": "Evidence gate: ported only if a real operational consumer exists."
     },
     {
-      "method": "POST",
-      "path": "/api/v1/notifications/{notification_id}/opened",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
-    },
-    {
       "method": "GET",
       "path": "/api/v1/price-tracks",
       "alias": "",
@@ -148,13 +92,6 @@
       "alias": "",
       "owner": "task-21",
       "reason": "Retired: zero rows and no current Flutter client method."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/proactive-recall/push",
-      "alias": "",
-      "owner": "task-16",
-      "reason": "Push notifications and campaigns."
     },
     {
       "method": "POST",

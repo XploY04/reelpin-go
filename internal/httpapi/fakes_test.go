@@ -10,6 +10,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -134,17 +135,21 @@ func testDeps(pinger DatabasePinger) Deps {
 		Enqueue: &fakeEnqueuer{},
 		// Paid routes fail closed without a limiter, so tests that are not
 		// about limiting get a permissive one.
-		Limiter:     &fakeLimiter{allow: true},
-		ShareTokens: &fakeShareTokens{},
-		Collections: newFakeCollections(),
-		Map:         &fakeMap{},
-		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Version:     "test",
-		Now:         func() time.Time { return testNow },
+		Limiter:       &fakeLimiter{allow: true},
+		ShareTokens:   &fakeShareTokens{},
+		Collections:   newFakeCollections(),
+		Map:           &fakeMap{},
+		Notifications: &fakeNotifications{},
+		AdminKey:      testAdminKey,
+		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Version:       "test",
+		Now:           func() time.Time { return testNow },
 	}
 }
 
 const testUserID = "11111111-1111-4111-8111-111111111111"
+
+const testAdminKey = "test-admin-key"
 
 var errFake = errors.New("fake failure")
 
@@ -272,4 +277,68 @@ func (f *fakeMap) HideOrRemove(_ context.Context, userID, _ string) error {
 func (f *fakeMap) Discover(_ context.Context, userID string, _, _ int, _ string) (mapview.DiscoverResponse, error) {
 	f.lastUserID, f.lastAction = userID, "discover"
 	return f.discover, f.err
+}
+
+type fakeNotifications struct {
+	err        error
+	campaign   notify.Campaign
+	lastUserID string
+	lastAction string
+	lastToken  string
+	sent       []notify.Notification
+}
+
+func (f *fakeNotifications) RegisterToken(_ context.Context, userID, token, _, _ string, _ *int) error {
+	f.lastUserID, f.lastAction, f.lastToken = userID, "register", token
+	return f.err
+}
+
+func (f *fakeNotifications) DeleteToken(_ context.Context, userID, token string) error {
+	f.lastUserID, f.lastAction, f.lastToken = userID, "delete", token
+	return f.err
+}
+
+func (f *fakeNotifications) MarkOpened(_ context.Context, userID, _ string) error {
+	f.lastUserID, f.lastAction = userID, "opened"
+	return f.err
+}
+
+func (f *fakeNotifications) SendToUser(_ context.Context, notification notify.Notification) (string, error) {
+	f.lastAction = "send"
+	f.sent = append(f.sent, notification)
+	if f.err != nil {
+		return "", f.err
+	}
+	return "11111111-1111-4111-8111-111111111111", nil
+}
+
+func (f *fakeNotifications) CreateCampaign(_ context.Context, campaign notify.Campaign, _ bool) (notify.Campaign, error) {
+	f.lastAction = "create_campaign"
+	if f.err != nil {
+		return notify.Campaign{}, f.err
+	}
+	return campaign, nil
+}
+
+func (f *fakeNotifications) ListCampaigns(context.Context, int) ([]notify.Campaign, error) {
+	f.lastAction = "list_campaigns"
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []notify.Campaign{f.campaign}, nil
+}
+
+func (f *fakeNotifications) GetCampaign(context.Context, string) (notify.Campaign, error) {
+	f.lastAction = "campaign_detail"
+	return f.campaign, f.err
+}
+
+func (f *fakeNotifications) SendCampaign(context.Context, string) (notify.Campaign, error) {
+	f.lastAction = "send_campaign"
+	return f.campaign, f.err
+}
+
+func (f *fakeNotifications) CancelCampaign(context.Context, string) (notify.Campaign, error) {
+	f.lastAction = "cancel_campaign"
+	return f.campaign, f.err
 }

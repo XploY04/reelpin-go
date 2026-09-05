@@ -1,6 +1,6 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 36,
+  "route_count": 45,
   "routes": [
     {
       "method": "GET",
@@ -13,6 +13,31 @@
       "path": "/api/v1/account/library-stats",
       "alias": "/account/library-stats",
       "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/notification-campaigns",
+      "authenticated": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}",
+      "authenticated": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/cancel",
+      "authenticated": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/send",
+      "authenticated": false
     },
     {
       "method": "GET",
@@ -90,6 +115,18 @@
       "authenticated": true
     },
     {
+      "method": "DELETE",
+      "path": "/api/v1/device-push-tokens",
+      "alias": "/device-push-tokens",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/device-push-tokens",
+      "alias": "/device-push-tokens",
+      "authenticated": true
+    },
+    {
       "method": "GET",
       "path": "/api/v1/discover",
       "alias": "/discover",
@@ -133,6 +170,16 @@
       "path": "/api/v1/map/search",
       "alias": "/map/search",
       "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/notifications/{notification_id}/opened",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/proactive-recall/push",
+      "authenticated": false
     },
     {
       "method": "POST",

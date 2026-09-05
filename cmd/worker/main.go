@@ -23,6 +23,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/media"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/platform"
@@ -177,7 +178,9 @@ func run(logger *slog.Logger) error {
 	})
 
 	collectionService := collections.New(pool, cfg.CollectionShareBaseURL, time.Now)
-	handler := dispatch(pool, logger, workerID, processor, collectionService)
+	notifier := notify.NewService(pool,
+		notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now)
+	handler := dispatch(pool, logger, workerID, processor, collectionService, notifier)
 	for _, name := range queue.WorkQueues {
 		started++
 		go func(name string) {
@@ -229,18 +232,20 @@ func dispatch(
 	workerID string,
 	processor *pipeline.Pipeline,
 	collectionService *collections.Service,
+	notifier *notify.Service,
 ) queue.Handler {
 	processRun := leasedHandler(pool, logger, workerID, processor)
 
 	return func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
 		switch message.Type {
 		case "reel.saved":
-			return fileSavedReel(ctx, pool, logger, collectionService, message)
-		case "content.index", "content.notify", "collection.items_added":
-			// Task 16 and Task 18 give these real consumers. Until then they
-			// are acknowledged rather than retried forever.
-			logger.Info("event acknowledged without a consumer yet",
-				"type", message.Type, "event_id", message.EventID)
+			return fileAndNotify(ctx, pool, logger, collectionService, notifier, message)
+		case "collection.items_added":
+			return notifyCollection(ctx, pool, logger, notifier, message)
+		case "content.index":
+			// Task 18 gives indexing a real consumer. Until then it is
+			// acknowledged rather than retried forever.
+			logger.Info("indexing event acknowledged without a consumer yet", "event_id", message.EventID)
 			return queue.Done, nil
 		default:
 			return processRun(ctx, message)
@@ -248,35 +253,129 @@ func dispatch(
 	}
 }
 
-// fileSavedReel adds a finished reel to the collections its share named. It
-// runs after the save and can never undo one: a target that disappeared, or
-// that the user may no longer edit, is skipped.
-func fileSavedReel(
+// fileAndNotify finishes a save: file it into the collections the share named,
+// then tell the user it is ready. Filing runs first, because a notification
+// that arrives before the reel is filed would send them to a half-finished
+// state.
+func fileAndNotify(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	logger *slog.Logger,
 	collectionService *collections.Service,
+	notifier *notify.Service,
 	message queue.Message,
 ) (queue.Outcome, error) {
 	var payload struct {
 		UserID        string   `json:"user_id"`
 		ReelID        string   `json:"reel_id"`
+		JobID         string   `json:"job_id"`
 		CollectionIDs []string `json:"collection_ids"`
 	}
 	if err := readEventPayload(ctx, pool, message.EventID, &payload); err != nil {
 		logger.Error("reading a saved-reel event failed", "event_id", message.EventID, "error", err)
 		return queue.Retry, err
 	}
-	if payload.ReelID == "" || len(payload.CollectionIDs) == 0 {
+	if payload.ReelID == "" {
 		return queue.Done, nil
 	}
 
-	filed, err := collectionService.FileReel(ctx, payload.UserID, payload.ReelID, payload.CollectionIDs)
+	if len(payload.CollectionIDs) > 0 {
+		filed, err := collectionService.FileReel(ctx, payload.UserID, payload.ReelID, payload.CollectionIDs)
+		if err != nil {
+			return queue.Retry, err
+		}
+		logger.Info("filed a saved reel", "reel_id", payload.ReelID, "collections", len(filed))
+	}
+
+	title, platformName, contentType := reelDisplay(ctx, pool, payload.ReelID)
+	_, err := notifier.SendToUser(ctx, notify.ReelReady(
+		payload.UserID, payload.ReelID, payload.JobID, title, platformName, contentType))
+	switch {
+	case err == nil:
+		return queue.Done, nil
+	case errors.Is(err, notify.ErrNoDeviceTokens):
+		// The app usually registers its token seconds after the first share,
+		// so this comes back rather than being lost.
+		logger.Info("no device to notify yet, retrying", "reel_id", payload.ReelID)
+		return queue.Retry, err
+	default:
+		return queue.Retry, err
+	}
+}
+
+// notifyCollection tells the other members that something was added.
+func notifyCollection(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	logger *slog.Logger,
+	notifier *notify.Service,
+	message queue.Message,
+) (queue.Outcome, error) {
+	var payload struct {
+		CollectionID string `json:"collection_id"`
+		ActorUserID  string `json:"actor_user_id"`
+		Added        int    `json:"added"`
+	}
+	if err := readEventPayload(ctx, pool, message.EventID, &payload); err != nil {
+		logger.Error("reading a collection event failed", "event_id", message.EventID, "error", err)
+		return queue.Retry, err
+	}
+	if payload.CollectionID == "" {
+		return queue.Done, nil
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT c.owner_id FROM public.collections c WHERE c.id = $1 AND c.owner_id <> $2
+		UNION
+		SELECT m.user_id FROM public.collection_members m
+		WHERE m.collection_id = $1 AND m.user_id <> $2`,
+		payload.CollectionID, payload.ActorUserID)
 	if err != nil {
 		return queue.Retry, err
 	}
-	logger.Info("filed a saved reel", "reel_id", payload.ReelID, "collections", len(filed))
+	defer rows.Close()
+
+	recipients := []string{}
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return queue.Retry, err
+		}
+		recipients = append(recipients, userID)
+	}
+	if err := rows.Err(); err != nil {
+		return queue.Retry, err
+	}
+
+	for _, userID := range recipients {
+		notification := notify.CollectionUpdated(userID, payload.CollectionID, "", payload.Added)
+		// One notification per member per event, so a redelivery is silent.
+		notification.EventKey = "collection_updated:" + userID + ":" + message.EventID
+		if _, err := notifier.SendToUser(ctx, notification); err != nil &&
+			!errors.Is(err, notify.ErrNoDeviceTokens) {
+			return queue.Retry, err
+		}
+	}
 	return queue.Done, nil
+}
+
+// reelDisplay reads just enough to write a notification a person understands.
+func reelDisplay(ctx context.Context, pool *pgxpool.Pool, reelID string) (string, string, string) {
+	var title string
+	var platformName, contentType *string
+	if err := pool.QueryRow(ctx,
+		`SELECT title, source_platform, source_content_type FROM public.reels WHERE id = $1`, reelID,
+	).Scan(&title, &platformName, &contentType); err != nil {
+		return "", "", ""
+	}
+	return title, text(platformName), text(contentType)
+}
+
+func text(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // readEventPayload loads what the publisher wrote. The message on the broker

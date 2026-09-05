@@ -19,6 +19,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/platform/social"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
@@ -118,6 +119,9 @@ func run(logger *slog.Logger) error {
 			Enqueue:     enqueue.New(pool, shareResolver, enqueue.DefaultLimits),
 			ShareTokens: sharetoken.NewStore(pool),
 			Collections: collections.New(pool, cfg.CollectionShareBaseURL, time.Now),
+			Notifications: notify.NewService(pool,
+				notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
+			AdminKey: cfg.AdminKey,
 			Map: mapview.NewService(pool,
 				mapview.NewGooglePlaces(cfg.GooglePlacesAPIKey, 0), time.Now),
 			Limiter:        limiterOrNil(limiter),

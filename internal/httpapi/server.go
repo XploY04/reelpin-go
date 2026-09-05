@@ -31,17 +31,21 @@ type DatabasePinger interface {
 
 // Deps is everything the API needs from the outside world.
 type Deps struct {
-	DB          DatabasePinger
-	Auth        auth.Authenticator
-	Reels       reels.ReelReader
-	Jobs        jobs.JobReader
-	Share       ShareResolver
-	Enqueue     Enqueuer
-	ShareTokens ShareTokens
-	Collections Collections
-	Map         MapService
-	Limiter     RateLimiter
-	Cache       *cache.Cache
+	DB            DatabasePinger
+	Auth          auth.Authenticator
+	Reels         reels.ReelReader
+	Jobs          jobs.JobReader
+	Share         ShareResolver
+	Enqueue       Enqueuer
+	ShareTokens   ShareTokens
+	Collections   Collections
+	Map           MapService
+	Notifications Notifications
+	// AdminKey guards the operator routes. Empty means they are unavailable
+	// rather than open.
+	AdminKey string
+	Limiter  RateLimiter
+	Cache    *cache.Cache
 	// TrustedProxies are the only sources whose forwarding headers are believed.
 	TrustedProxies []netip.Prefix
 	Logger         *slog.Logger
@@ -210,6 +214,56 @@ func (s *Server) routeTable() []Route {
 		}, false),
 		guarded(http.MethodDelete, "/map/items/{map_item_id}", s.handleDeleteMapItem, routeLimit{}, false),
 		guarded(http.MethodGet, "/discover", s.handleDiscover, routeLimit{}, true),
+
+		// Device tokens. Registration is metered and fails closed: it writes,
+		// and the native path calls it on every launch.
+		guarded(http.MethodPost, "/device-push-tokens", s.handleRegisterPushToken, routeLimit{
+			User: &ratelimit.TokenRegistration,
+			IP:   &ratelimit.TokenRegistrationIP,
+		}, false),
+		guarded(http.MethodDelete, "/device-push-tokens", s.handleDeletePushToken, routeLimit{
+			User: &ratelimit.TokenRegistration,
+			IP:   &ratelimit.TokenRegistrationIP,
+		}, false),
+		apiOnly(http.MethodPost, "/notifications/{notification_id}/opened", s.handleNotificationOpened),
+
+		// Operator routes: the admin key, not a user session.
+		{
+			Method:  http.MethodPost,
+			Path:    "/api/v1/proactive-recall/push",
+			handler: s.rateLimited(adminLimit, s.handleProactiveRecall),
+			limit:   adminLimit,
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/api/v1/admin/notification-campaigns",
+			handler: s.rateLimited(adminLimit, s.handleCreateCampaign),
+			limit:   adminLimit,
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/v1/admin/notification-campaigns",
+			handler: s.rateLimited(adminLimit, s.handleListCampaigns),
+			limit:   adminLimit,
+		},
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/v1/admin/notification-campaigns/{campaign_id}",
+			handler: s.rateLimited(adminLimit, s.handleCampaignDetail),
+			limit:   adminLimit,
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/api/v1/admin/notification-campaigns/{campaign_id}/send",
+			handler: s.rateLimited(adminLimit, s.handleSendCampaign),
+			limit:   adminLimit,
+		},
+		{
+			Method:  http.MethodPost,
+			Path:    "/api/v1/admin/notification-campaigns/{campaign_id}/cancel",
+			handler: s.rateLimited(adminLimit, s.handleCancelCampaign),
+			limit:   adminLimit,
+		},
 
 		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, routeLimit{
 			User:     &ratelimit.ShareResolve,
