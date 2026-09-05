@@ -5,6 +5,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -36,7 +37,9 @@ func testCache(t *testing.T) *Cache {
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Skipf("redis is not reachable: %v", err)
 	}
-	return New(client, "reelpin:test:"+t.Name())
+	// A fresh key space per test and per run: a leftover value would silently
+	// change what these tests measure.
+	return New(client, fmt.Sprintf("reelpin:test:%s:%d", t.Name(), time.Now().UnixNano()))
 }
 
 func TestValueIsCachedAndScopedToOneUser(t *testing.T) {

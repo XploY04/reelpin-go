@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -29,8 +30,9 @@ func testLimiter(t *testing.T) *Limiter {
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Skipf("redis is not reachable: %v", err)
 	}
-	// Each test gets its own key space, so a shared Redis is safe.
-	return New(client, "reelpin:test:"+t.Name())
+	// A fresh key space per test and per run: a leftover bucket or value would
+	// silently change what these tests measure.
+	return New(client, fmt.Sprintf("reelpin:test:%s:%d", t.Name(), time.Now().UnixNano()))
 }
 
 func TestBucketAllowsTheBurstThenRefuses(t *testing.T) {
