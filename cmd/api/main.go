@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/auth"
+	"github.com/XploY04/reelpin-go/internal/cache"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -27,6 +30,15 @@ func main() {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// limiterOrNil keeps a nil *ratelimit.Limiter from becoming a non-nil
+// interface holding nil, which would look configured and then panic.
+func limiterOrNil(limiter *ratelimit.Limiter) httpapi.RateLimiter {
+	if limiter == nil {
+		return nil
+	}
+	return limiter
 }
 
 func run(logger *slog.Logger) error {
@@ -55,16 +67,43 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	// Redis is optional outside production: without it there are no limits and
+	// no caches, and every read still works.
+	var (
+		limiter       *ratelimit.Limiter
+		responseCache *cache.Cache
+	)
+	if cfg.RedisURL != "" {
+		options, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			return fmt.Errorf("redis url: %w", err)
+		}
+		client := redis.NewClient(options)
+		defer client.Close()
+
+		if err := client.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("redis connect: %w", err)
+		}
+		limiter = ratelimit.New(client, cfg.RateLimitPrefix())
+		responseCache = cache.New(client, cfg.CachePrefix())
+	} else {
+		logger.Warn("no REDIS_URL configured: rate limits and caches are disabled",
+			"environment", cfg.Environment)
+	}
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
-			DB:      pool,
-			Auth:    verifier,
-			Reels:   postgres.NewReels(pool),
-			Jobs:    postgres.NewJobs(pool),
-			Share:   &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})},
-			Logger:  logger,
-			Version: cfg.Version,
+			DB:             pool,
+			Auth:           verifier,
+			Reels:          postgres.NewReels(pool),
+			Jobs:           postgres.NewJobs(pool),
+			Share:          &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})},
+			Limiter:        limiterOrNil(limiter),
+			Cache:          responseCache,
+			TrustedProxies: cfg.TrustedProxyCIDRs,
+			Logger:         logger,
+			Version:        cfg.Version,
 		}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

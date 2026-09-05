@@ -1,14 +1,20 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/cache"
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
+
+// filterCacheTTL matches the Python category-filter cache. Reel and job detail
+// are deliberately never cached: they must reflect a write immediately.
+const filterCacheTTL = 5 * time.Minute
 
 // ReelResponse is the full single-reel body, transcript included.
 type ReelResponse struct {
@@ -119,16 +125,26 @@ func (s *Server) handlePlatformFilters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.deps.Reels.Facets(r.Context(), requestUserID(r))
+	userID := requestUserID(r)
+	// The tree is rebuilt from one grouped query, so it is cheap to lose and
+	// safe to cache: a Redis failure just means loading it again.
+	response, err := cache.GetOrLoad(r.Context(), s.deps.Cache, userID, "reel_platform_filters",
+		query.Get("platform")+"|"+query.Get("category")+"|"+query.Get("subcategory"),
+		filterCacheTTL,
+		func(ctx context.Context) (reels.PlatformFiltersResponse, error) {
+			rows, err := s.deps.Reels.Facets(ctx, userID)
+			if err != nil {
+				return reels.PlatformFiltersResponse{}, err
+			}
+			return reels.BuildPlatformFilters(rows, platforms, query.Get("category"), query.Get("subcategory")), nil
+		})
 	if err != nil {
 		s.deps.Logger.Error("list reel platform filters failed", "error", err)
 		internalError(w, "reel_platform_filters_failed", "Could not load filters right now.")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, reels.BuildPlatformFilters(
-		rows, platforms, query.Get("category"), query.Get("subcategory"),
-	))
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleCategoryFilters(w http.ResponseWriter, r *http.Request) {
@@ -139,16 +155,23 @@ func (s *Server) handleCategoryFilters(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	rows, err := s.deps.Reels.Facets(r.Context(), userID)
+	response, err := cache.GetOrLoad(r.Context(), s.deps.Cache, userID, "reel_category_filters",
+		query.Get("platform")+"|"+query.Get("category")+"|"+query.Get("subcategory"),
+		filterCacheTTL,
+		func(ctx context.Context) (reels.CategoryFiltersResponse, error) {
+			rows, err := s.deps.Reels.Facets(ctx, userID)
+			if err != nil {
+				return reels.CategoryFiltersResponse{}, err
+			}
+			return reels.BuildCategoryFilters(userID, rows, platforms, query.Get("category"), query.Get("subcategory")), nil
+		})
 	if err != nil {
 		s.deps.Logger.Error("list reel category filters failed", "error", err)
 		internalError(w, "reel_category_filters_failed", "Could not load category filters right now.")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, reels.BuildCategoryFilters(
-		userID, rows, platforms, query.Get("category"), query.Get("subcategory"),
-	))
+	writeJSON(w, http.StatusOK, response)
 }
 
 func buildReelResponse(record reels.ReelRecord) ReelResponse {

@@ -7,14 +7,22 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/auth"
+	"github.com/XploY04/reelpin-go/internal/cache"
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
+
+// RateLimiter is the slice of the limiter the API needs.
+type RateLimiter interface {
+	Allow(ctx context.Context, policy ratelimit.Policy, subject string) (ratelimit.Decision, error)
+}
 
 // DatabasePinger is the only thing the health endpoints need from the pool.
 type DatabasePinger interface {
@@ -28,9 +36,13 @@ type Deps struct {
 	Reels   reels.ReelReader
 	Jobs    jobs.JobReader
 	Share   ShareResolver
-	Logger  *slog.Logger
-	Version string
-	Now     func() time.Time
+	Limiter RateLimiter
+	Cache   *cache.Cache
+	// TrustedProxies are the only sources whose forwarding headers are believed.
+	TrustedProxies []netip.Prefix
+	Logger         *slog.Logger
+	Version        string
+	Now            func() time.Time
 }
 
 type Server struct {
@@ -55,6 +67,7 @@ type Route struct {
 	Authenticated bool   `json:"authenticated"`
 
 	handler http.HandlerFunc
+	limit   routeLimit
 	// claimMethods registers the path again without a method, so a wrong method
 	// gets a JSON 405 instead of the mux's plain text. It is off for a literal
 	// path already covered by a sibling wildcard, which would conflict.
@@ -62,14 +75,15 @@ type Route struct {
 }
 
 func (s *Server) routeTable() []Route {
-	guarded := func(method, path string, handler http.HandlerFunc, claimMethods bool) Route {
+	guarded := func(method, path string, handler http.HandlerFunc, limit routeLimit, claimMethods bool) Route {
 		return Route{
 			Method:        method,
 			Path:          "/api/v1" + path,
 			Alias:         path,
 			Authenticated: true,
-			handler:       s.authenticated(handler),
+			handler:       s.authenticated(s.rateLimited(limit, handler)),
 			claimMethods:  claimMethods,
+			limit:         limit,
 		}
 	}
 	read := func(path string, handler http.HandlerFunc, claimMethods bool) Route {
@@ -97,7 +111,13 @@ func (s *Server) routeTable() []Route {
 		read("/account/library-stats", s.handleLibraryStats, true),
 		read("/account/entitlements", s.handleEntitlements, true),
 
-		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, true),
+		// Share resolution is a read that calls no provider, so its limit
+		// fails open: a Redis outage must not stop people sharing.
+		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, routeLimit{
+			User:     &ratelimit.ShareResolve,
+			IP:       &ratelimit.ShareResolveIP,
+			FailOpen: true,
+		}, true),
 	}
 }
 

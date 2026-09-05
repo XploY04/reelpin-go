@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -16,7 +17,18 @@ type Config struct {
 	Version             string
 	SupabaseURL         string
 	SupabaseJWTAudience string
+	RedisURL            string
+	RedisKeyPrefix      string
+	// TrustedProxyCIDRs are the only sources whose forwarding headers are
+	// believed. Empty means every client is identified by its socket address.
+	TrustedProxyCIDRs []netip.Prefix
 }
+
+// RateLimitPrefix, CachePrefix and WorkerPrefix keep the three uses of Redis in
+// separate key spaces, so one can be flushed without touching the others.
+func (c Config) RateLimitPrefix() string { return c.RedisKeyPrefix + ":ratelimit" }
+func (c Config) CachePrefix() string     { return c.RedisKeyPrefix + ":cache" }
+func (c Config) WorkerPrefix() string    { return c.RedisKeyPrefix + ":worker" }
 
 var validEnvironments = map[string]bool{
 	"development": true,
@@ -33,6 +45,8 @@ func Load() (Config, error) {
 
 		SupabaseURL:         strings.TrimSpace(os.Getenv("SUPABASE_URL")),
 		SupabaseJWTAudience: envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
+		RedisURL:            strings.TrimSpace(os.Getenv("REDIS_URL")),
+		RedisKeyPrefix:      envOr("REDIS_KEY_PREFIX", "reelpin"),
 	}
 
 	if !validEnvironments[cfg.Environment] {
@@ -57,12 +71,42 @@ func Load() (Config, error) {
 		cfg.DatabaseURL = localDatabaseURL
 	}
 
+	proxies, err := parseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.TrustedProxyCIDRs = proxies
+
+	// Rate limits and caches need Redis, and production must not run without
+	// the limits.
+	if cfg.RedisURL == "" && cfg.Environment == "production" {
+		return Config{}, fmt.Errorf("REDIS_URL is required in production")
+	}
+
 	// Tests inject a fake authenticator, so only a running service needs Supabase.
 	if cfg.SupabaseURL == "" && cfg.Environment != "test" {
 		return Config{}, fmt.Errorf("SUPABASE_URL is required in %s", cfg.Environment)
 	}
 
 	return cfg, nil
+}
+
+// parseCIDRs reads the proxy allowlist. A malformed entry stops startup rather
+// than silently trusting nothing, because that would misattribute every client.
+func parseCIDRs(raw string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		cleaned := strings.TrimSpace(entry)
+		if cleaned == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(cleaned)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS entry %q is not a CIDR: %w", cleaned, err)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, nil
 }
 
 func envOr(key, fallback string) string {

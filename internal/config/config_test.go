@@ -27,11 +27,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SupabaseJWTAudience != "authenticated" {
 		t.Errorf("SupabaseJWTAudience = %q, want authenticated", cfg.SupabaseJWTAudience)
 	}
+	if cfg.RedisKeyPrefix != "reelpin" {
+		t.Errorf("RedisKeyPrefix = %q, want reelpin", cfg.RedisKeyPrefix)
+	}
+	if len(cfg.TrustedProxyCIDRs) != 0 {
+		t.Errorf("TrustedProxyCIDRs = %v, want none by default", cfg.TrustedProxyCIDRs)
+	}
 }
 
 var configKeys = []string{
 	"ENVIRONMENT", "PORT", "DATABASE_URL", "APP_VERSION",
 	"SUPABASE_URL", "SUPABASE_JWT_AUDIENCE",
+	"REDIS_URL", "REDIS_KEY_PREFIX", "TRUSTED_PROXY_CIDRS",
 }
 
 func TestLoad(t *testing.T) {
@@ -56,6 +63,7 @@ func TestLoad(t *testing.T) {
 				"ENVIRONMENT":  "production",
 				"DATABASE_URL": "postgres://user:pass@db:5432/reelpin",
 				"SUPABASE_URL": "https://project.supabase.co",
+				"REDIS_URL":    "redis://cache:6379/0",
 			},
 			check: func(t *testing.T, c Config) {
 				if c.DatabaseURL != "postgres://user:pass@db:5432/reelpin" {
@@ -86,6 +94,35 @@ func TestLoad(t *testing.T) {
 		{
 			name:    "port too high",
 			env:     map[string]string{"SUPABASE_URL": "https://project.supabase.co", "PORT": "70000"},
+			wantErr: true,
+		},
+		{
+			name: "production without redis",
+			env: map[string]string{
+				"ENVIRONMENT":  "production",
+				"DATABASE_URL": "postgres://user:pass@db:5432/reelpin",
+				"SUPABASE_URL": "https://project.supabase.co",
+			},
+			wantErr: true,
+		},
+		{
+			name: "trusted proxies are parsed",
+			env: map[string]string{
+				"SUPABASE_URL":        "https://project.supabase.co",
+				"TRUSTED_PROXY_CIDRS": "10.0.0.0/8, 2001:db8::/32",
+			},
+			check: func(t *testing.T, c Config) {
+				if len(c.TrustedProxyCIDRs) != 2 {
+					t.Fatalf("proxies = %v, want two prefixes", c.TrustedProxyCIDRs)
+				}
+				if c.RateLimitPrefix() != "reelpin:ratelimit" || c.CachePrefix() != "reelpin:cache" {
+					t.Errorf("key prefixes = %q / %q", c.RateLimitPrefix(), c.CachePrefix())
+				}
+			},
+		},
+		{
+			name:    "malformed trusted proxy",
+			env:     map[string]string{"SUPABASE_URL": "https://project.supabase.co", "TRUSTED_PROXY_CIDRS": "10.0.0.1"},
 			wantErr: true,
 		},
 		{

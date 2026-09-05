@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
+	"github.com/XploY04/reelpin-go/internal/cache"
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
 
@@ -95,7 +97,11 @@ func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEntitlements(w http.ResponseWriter, r *http.Request) {
 	userID := requestUserID(r)
 
-	stats, err := s.deps.Reels.Stats(r.Context(), userID)
+	stats, err := cache.GetOrLoad(r.Context(), s.deps.Cache, userID, "library_stats", "",
+		filterCacheTTL,
+		func(ctx context.Context) (reels.LibraryStats, error) {
+			return s.deps.Reels.Stats(ctx, userID)
+		})
 	if err != nil {
 		// The app must still render a plan screen, so a lookup failure answers
 		// 200 with everything switched off, exactly as the Python API does.
