@@ -179,14 +179,14 @@ jobs:
           }
 
       - name: sbom
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@v0.24.2
         with:
           image: reelpin-api:ci
           format: spdx-json
           artifact-name: reelpin-sbom.spdx.json
 
       - name: vulnerability scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: reelpin-api:ci
           format: table
