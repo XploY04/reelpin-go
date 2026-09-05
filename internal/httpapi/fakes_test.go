@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
 	"time"
@@ -168,3 +169,7 @@ func sampleReel(id, userID string) reels.ReelRecord {
 		CreatedAt: timePtr(testNow.AddDate(0, 0, -2)),
 	}
 }
+
+// update rewrites generated artifacts instead of comparing against them:
+// `go test ./internal/httpapi -update`.
+var update = flag.Bool("update", false, "rewrite generated contract artifacts")

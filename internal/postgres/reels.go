@@ -55,21 +55,20 @@ func (r *Reels) List(ctx context.Context, userID string, options reels.ListOptio
 		where = append(where, fmt.Sprintf("created_at >= $%d AND created_at < $%d", len(args)-1, len(args)))
 	}
 
-	args = append(args, options.Limit)
-	limitClause := fmt.Sprintf("LIMIT $%d", len(args))
-	offsetClause := ""
-	if options.Offset > 0 {
-		args = append(args, options.Offset)
-		offsetClause = fmt.Sprintf(" OFFSET $%d", len(args))
+	// Keyset, not offset: a page resumes from the last row it returned, so a
+	// save added or removed between two pages cannot shift or repeat rows.
+	if options.After != nil {
+		args = append(args, options.After.SavedAt, options.After.ID)
+		where = append(where, fmt.Sprintf(
+			"(created_at, id) < ($%d, $%d)", len(args)-1, len(args)))
 	}
 
+	args = append(args, options.Limit)
 	query := fmt.Sprintf(
-		"SELECT %s FROM reels WHERE %s ORDER BY %s %s%s",
+		"SELECT %s FROM reels WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d",
 		reelListColumns,
 		strings.Join(where, " AND "),
-		orderBy(options.Sort),
-		limitClause,
-		offsetClause,
+		len(args),
 	)
 
 	rows, err := r.db.Query(ctx, query, args...)
@@ -203,17 +202,6 @@ func (r *Reels) Stats(ctx context.Context, userID string) (reels.LibraryStats, e
 	stats.TotalSubcategories = len(subcategories)
 	stats.TotalTags = len(tags)
 	return stats, nil
-}
-
-func orderBy(sort string) string {
-	switch sort {
-	case "oldest":
-		return "created_at ASC"
-	case "title":
-		return "title ASC"
-	default:
-		return "created_at DESC"
-	}
 }
 
 // platformCondition restricts a query to canonical platforms. `other` covers

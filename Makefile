@@ -14,7 +14,7 @@ help:
 	@echo "up / down          the local docker compose stack"
 
 .PHONY: check
-check: fmt-check vet test test-race docs boundaries
+check: fmt-check vet test test-race docs boundaries contract
 	@echo "\nall checks passed"
 
 .PHONY: fmt
@@ -56,6 +56,10 @@ docs:
 .PHONY: boundaries
 boundaries:
 	@python3 scripts/check_boundaries.py
+
+.PHONY: contract
+contract:
+	@python3 scripts/check_contract.py
 
 .PHONY: run
 run:

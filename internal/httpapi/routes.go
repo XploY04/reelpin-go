@@ -1,0 +1,99 @@
+package httpapi
+
+import "net/http"
+
+// AuthMode is how a route decides who is calling. Every route names one; there
+// is no boolean shortcut, because "authenticated: false" cannot express the
+// difference between a health check, a share token and a public share view.
+type AuthMode string
+
+const (
+	// AuthPublic is open to anyone. Health only.
+	AuthPublic AuthMode = "public"
+	// AuthBearer is a verified Supabase access token.
+	AuthBearer AuthMode = "bearer"
+	// AuthShareToken is a long-lived native share token in X-Share-Token. The
+	// native extensions hold one; a browser never does.
+	AuthShareToken AuthMode = "share-token"
+	// AuthPublicShare is an unguessable share link. The token in the path is
+	// the authorization, and it grants read-only access to one resource.
+	AuthPublicShare AuthMode = "public-share"
+)
+
+// Route is one operation. OperationID matches the OpenAPI operation exactly:
+// the contract test walks both directions, so a route without an operation and
+// an operation without a route are both failures.
+type Route struct {
+	Method      string   `json:"method"`
+	Path        string   `json:"path"`
+	OperationID string   `json:"operation_id"`
+	Auth        AuthMode `json:"auth"`
+
+	handler http.HandlerFunc
+	// claimMethods registers the path again with no method so a wrong method
+	// gets a JSON 405 instead of the mux's plain text. It is off for a literal
+	// path already covered by a sibling wildcard, which the mux rejects as a
+	// conflict.
+	claimMethods bool
+}
+
+// routeTable is the single source for registration and for the contract test.
+// Adding an operation in one place and not the other is not possible.
+func (s *Server) routeTable() []Route {
+	public := func(method, path, operation string, handler http.HandlerFunc, claim bool) Route {
+		return Route{
+			Method: method, Path: path, OperationID: operation,
+			Auth: AuthPublic, handler: handler, claimMethods: claim,
+		}
+	}
+	bearer := func(method, path, operation string, handler http.HandlerFunc, claim bool) Route {
+		return Route{
+			Method: method, Path: path, OperationID: operation,
+			Auth: AuthBearer, handler: s.authenticated(handler), claimMethods: claim,
+		}
+	}
+
+	return []Route{
+		public(http.MethodGet, "/api/v2/health/live", "getHealthLive", s.handleLive, true),
+		public(http.MethodGet, "/api/v2/health/ready", "getHealthReady", s.handleReady, true),
+
+		bearer(http.MethodGet, "/api/v2/reels", "listReels", s.handleListReels, true),
+		bearer(http.MethodGet, "/api/v2/reels/filters", "getReelFilters", s.handlePlatformFilters, false),
+		bearer(http.MethodGet, "/api/v2/reels/category-filters", "getReelCategoryFilters", s.handleCategoryFilters, false),
+		bearer(http.MethodGet, "/api/v2/reels/{reel_id}", "getReel", s.handleGetReel, true),
+
+		bearer(http.MethodGet, "/api/v2/processing-jobs", "listProcessingJobs", s.handleListJobs, true),
+		bearer(http.MethodGet, "/api/v2/processing-jobs/{job_id}", "getProcessingJob", s.handleGetJob, true),
+
+		bearer(http.MethodGet, "/api/v2/account/library-stats", "getLibraryStats", s.handleLibraryStats, true),
+
+		// Declared now so a client can be generated against the whole surface.
+		// Each returns a stable 503 until its own task lands; see
+		// docs/decisions/0015-declare-the-whole-v2-surface.md.
+		bearer(http.MethodPost, "/api/v2/processing-jobs/reels", "submitReel", s.handleSubmitReel, false),
+		bearer(http.MethodPost, "/api/v2/share/resolve", "resolveShare", s.handleResolveShare, true),
+		bearer(http.MethodPost, "/api/v2/share-tokens", "mintShareToken", s.handleMintShareToken, false),
+		bearer(http.MethodDelete, "/api/v2/share-tokens", "revokeShareTokens", s.handleRevokeShareTokens, false),
+		{
+			Method: http.MethodPost, Path: "/api/v2/native-shares/reels",
+			OperationID: "submitNativeShare", Auth: AuthShareToken,
+			handler: s.shareTokenAuthenticated(s.handleNativeShare), claimMethods: true,
+		},
+	}
+}
+
+// RouteManifest is the table without its handlers, for the contract test and
+// for anything that needs to reason about the surface.
+func (s *Server) RouteManifest() []Route {
+	table := s.routeTable()
+	manifest := make([]Route, 0, len(table))
+	for _, route := range table {
+		manifest = append(manifest, Route{
+			Method:      route.Method,
+			Path:        route.Path,
+			OperationID: route.OperationID,
+			Auth:        route.Auth,
+		})
+	}
+	return manifest
+}

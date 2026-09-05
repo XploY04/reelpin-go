@@ -63,9 +63,11 @@ type ListOptions struct {
 	Category    string
 	Subcategory string
 	SavedDate   string
-	Sort        string
-	Offset      int
-	Limit       int
+	// After resumes the keyset scan. Nil starts at the newest save. There is
+	// one list order in v2, so there is no sort option: a client that could
+	// change the order could also invalidate every cursor it holds.
+	After *Cursor
+	Limit int
 }
 
 type FacetRow struct {
