@@ -49,7 +49,7 @@ func TestAuthorizationHeader(t *testing.T) {
 			deps := testDeps(&fakePinger{})
 			deps.Auth = fakeAuth{userID: testUserID, err: tt.authErr}
 
-			rec := serve(deps, "GET", "/api/v1/reels", tt.authorization)
+			rec := serve(deps, "GET", "/api/v2/reels", tt.authorization)
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.wantStatus, rec.Body.String())
 			}
@@ -58,11 +58,11 @@ func TestAuthorizationHeader(t *testing.T) {
 			}
 
 			body := decodeError(t, rec)
-			if body.ErrorCode != tt.wantCode {
-				t.Errorf("error_code = %q, want %q", body.ErrorCode, tt.wantCode)
+			if body.Error.Code != tt.wantCode {
+				t.Errorf("error_code = %q, want %q", body.Error.Code, tt.wantCode)
 			}
-			if body.Success {
-				t.Error("success = true, want false")
+			if body.Error.RequestID == "" {
+				t.Error("no request id to quote")
 			}
 		})
 	}
@@ -72,7 +72,7 @@ func TestRejectedTokenNeverLeaksTheReason(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Auth = fakeAuth{err: errFake}
 
-	rec := serve(deps, "GET", "/api/v1/reels", "Bearer bad.token")
+	rec := serve(deps, "GET", "/api/v2/reels", "Bearer bad.token")
 	if got := rec.Body.String(); strings.Contains(got, errFake.Error()) {
 		t.Fatalf("response leaks the verification error: %s", got)
 	}
@@ -83,7 +83,7 @@ func TestUserIDComesFromTheTokenOnly(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Reels = reader
 
-	rec := serve(deps, "GET", "/api/v1/reels?user_id=someone-else", "Bearer good.token")
+	rec := serve(deps, "GET", "/api/v2/reels?user_id=someone-else", "Bearer good.token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -112,7 +112,7 @@ func TestBareRoutesAreNotRegistered(t *testing.T) {
 }
 
 func TestEntitlementsRouteIsNotRegistered(t *testing.T) {
-	for _, path := range []string{"/api/v1/account/entitlements", "/account/entitlements"} {
+	for _, path := range []string{"/api/v2/account/entitlements", "/account/entitlements"} {
 		rec := serve(testDeps(&fakePinger{}), "GET", path, "Bearer good.token")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s status = %d, want 404", path, rec.Code)

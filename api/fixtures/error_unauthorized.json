@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/reels"
+  },
+  "response": {
+    "error": {
+      "code": "authentication_required",
+      "message": "Sign in is required.",
+      "request_id": "fixture-request-id",
+      "retryable": false
+    }
+  },
+  "status": 401
+}

@@ -18,27 +18,35 @@ func requestUserID(r *http.Request) string {
 	return userID
 }
 
-func validationError(w http.ResponseWriter, detail string) {
-	writeError(w, http.StatusUnprocessableEntity, errorResponse{
-		ErrorCode: "validation_error",
-		Message:   "The request is missing required fields or contains invalid values.",
-		Detail:    detail,
+// validationError carries the offending field in details when the caller can
+// act on it. The message is what a person reads; details is what a client can
+// point at.
+func validationError(w http.ResponseWriter, field, detail string) {
+	details := map[string]any{}
+	if field != "" {
+		details["field"] = field
+	}
+	if detail != "" {
+		details["reason"] = detail
+	}
+	writeError(w, http.StatusUnprocessableEntity, errorBody{
+		Code:    "validation_error",
+		Message: "The request is missing required fields or contains invalid values.",
+		Details: details,
 	})
 }
 
 func notFoundError(w http.ResponseWriter, code string) {
-	writeError(w, http.StatusNotFound, errorResponse{
-		ErrorCode: code,
-		Message:   "The requested record was not found.",
-		Detail:    "Record not found",
+	writeError(w, http.StatusNotFound, errorBody{
+		Code:    code,
+		Message: "The requested record was not found.",
 	})
 }
 
 func internalError(w http.ResponseWriter, code, message string) {
-	writeError(w, http.StatusInternalServerError, errorResponse{
-		ErrorCode: code,
+	writeError(w, http.StatusInternalServerError, errorBody{
+		Code:      code,
 		Message:   message,
-		Detail:    message,
 		Retryable: true,
 	})
 }
@@ -55,11 +63,10 @@ func parsePlatforms(w http.ResponseWriter, query url.Values) ([]string, bool) {
 		internalError(w, "reel_list_failed", "Could not load reels right now.")
 		return nil, false
 	}
-	writeError(w, http.StatusBadRequest, errorResponse{
-		ErrorCode: "invalid_platform",
-		Message:   "'" + invalid.Value + "' is not a supported platform filter.",
-		Detail:    "Supported platform values: " + strings.Join(invalid.Allowed, ", ") + ".",
-		Allowed:   invalid.Allowed,
+	writeError(w, http.StatusBadRequest, errorBody{
+		Code:    "invalid_platform",
+		Message: "'" + invalid.Value + "' is not a supported platform filter.",
+		Details: map[string]any{"field": "platform", "allowed": invalid.Allowed},
 	})
 	return nil, false
 }
@@ -71,11 +78,11 @@ func intParam(w http.ResponseWriter, query url.Values, name string, fallback, mi
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
-		validationError(w, name+" must be an integer")
+		validationError(w, name, "must be an integer")
 		return 0, false
 	}
 	if value < minimum || value > maximum {
-		validationError(w, name+" must be between "+strconv.Itoa(minimum)+" and "+strconv.Itoa(maximum))
+		validationError(w, name, "must be between "+strconv.Itoa(minimum)+" and "+strconv.Itoa(maximum))
 		return 0, false
 	}
 	return value, true
@@ -92,7 +99,7 @@ func boolParam(w http.ResponseWriter, query url.Values, name string, fallback bo
 	case "false", "0", "no", "off":
 		return false, true
 	}
-	validationError(w, name+" must be a boolean")
+	validationError(w, name, "must be a boolean")
 	return false, false
 }
 
@@ -104,7 +111,7 @@ func savedDateParam(w http.ResponseWriter, query url.Values) (string, bool) {
 		return "", true
 	}
 	if _, err := time.Parse("2006-01-02", raw); err != nil {
-		validationError(w, "saved_date must be YYYY-MM-DD")
+		validationError(w, "saved_date", "must be YYYY-MM-DD")
 		return "", false
 	}
 	return raw, true

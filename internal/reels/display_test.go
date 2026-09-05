@@ -113,16 +113,51 @@ func TestBuildListResponseDedupes(t *testing.T) {
 		{ID: "b", Title: "second"},
 	}
 
-	response := BuildListResponse(records, 5, 10, 0, now)
+	response := BuildListResponse(records, 10, now)
 	if len(response.Reels) != 2 {
 		t.Fatalf("reels = %d, want 2", len(response.Reels))
 	}
 	if response.Reels[0].Title != "first" {
 		t.Errorf("kept the wrong duplicate: %q", response.Reels[0].Title)
 	}
-	// next_offset counts the rows the reader returned, not the deduped ones.
-	if response.NextOffset == nil || *response.NextOffset != 4 {
-		t.Errorf("next_offset = %v, want 4", response.NextOffset)
+	if response.HasMore || response.NextCursor != nil {
+		t.Error("four rows under a limit of ten is the last page")
+	}
+}
+
+func TestBuildListResponsePages(t *testing.T) {
+	saved := now
+	records := make([]ReelRecord, 0, 4)
+	for _, id := range []string{"d", "c", "b", "a"} {
+		record := ReelRecord{ID: id, Title: id, CreatedAt: &saved}
+		records = append(records, record)
+	}
+
+	// The caller over-fetched: limit 3, got 4, so there is another page and the
+	// cursor resumes after the third row.
+	response := BuildListResponse(records, 3, now)
+	if len(response.Reels) != 3 {
+		t.Fatalf("reels = %d, want the limit", len(response.Reels))
+	}
+	if !response.HasMore || response.NextCursor == nil {
+		t.Fatal("the over-fetched row did not become has_more and a cursor")
+	}
+	cursor, err := DecodeCursor(*response.NextCursor)
+	if err != nil {
+		t.Fatalf("the cursor does not decode: %v", err)
+	}
+	if cursor.ID != "b" {
+		t.Errorf("cursor resumes after %q, want the last shown row b", cursor.ID)
+	}
+}
+
+func TestBuildListResponseWithoutASavedTimeEndsThePage(t *testing.T) {
+	// A row with no saved time has no resumable position. The honest answer is
+	// the last page, never a cursor that restarts from the top.
+	records := []ReelRecord{{ID: "a"}, {ID: "b"}}
+	response := BuildListResponse(records, 1, now)
+	if response.HasMore || response.NextCursor != nil {
+		t.Errorf("response = %+v, want a final page", response)
 	}
 }
 

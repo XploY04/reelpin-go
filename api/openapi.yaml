@@ -1,0 +1,728 @@
+openapi: 3.1.0
+
+info:
+  title: ReelPin API
+  version: "2.0.0"
+  description: |
+    The Go-owned ReelPin contract. Every client the ReelPin team ships — the web
+    product, updated Flutter releases and both native share extensions — talks to
+    this surface.
+
+    `/api/v1` belongs to the Python service and is not described here. It stays
+    available for installed Flutter versions during coexistence and is retired
+    separately.
+
+    Operations that answer `503 processing_unavailable` are declared but not yet
+    built on every deployment. They are in the contract from the start so a
+    client can be generated once, rather than regenerated each time a capability
+    lands.
+
+servers:
+  - url: https://api.reelpin.in
+    description: Production
+  - url: https://api-dev.reelpin.in
+    description: Development
+
+tags:
+  - name: health
+    description: Liveness and readiness. No authentication.
+  - name: reels
+    description: A user's saved reels.
+  - name: processing
+    description: Submitting links and following the work.
+  - name: account
+    description: Account-scoped reads.
+  - name: sharing
+    description: Native share tokens and share-text resolution.
+
+security:
+  - supabaseBearer: []
+
+paths:
+  /api/v2/health/live:
+    get:
+      operationId: getHealthLive
+      tags: [health]
+      summary: Liveness
+      description: |
+        Never touches a dependency and always answers 200. A failure here means
+        the process is gone. Use this for a container health check.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/health/ready:
+    get:
+      operationId: getHealthReady
+      tags: [health]
+      summary: Readiness
+      description: |
+        Reports whether this instance can serve the core read path. Degraded
+        capabilities are named in `checks` without failing readiness; only the
+        core read path failing answers 503. Use this for a load balancer.
+      security: []
+      responses:
+        "200":
+          description: The core read path is available.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: The core read path is unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/reels:
+    get:
+      operationId: listReels
+      tags: [reels]
+      summary: List saved reels
+      description: |
+        One page of the authenticated user's saved reels, newest first.
+
+        Pagination is by opaque cursor. Pass `next_cursor` from the previous
+        page as `cursor`; do not construct, decode or store the value. The order
+        is saved time descending, then reel id descending, so a save added or
+        removed between two pages cannot shift or repeat a row.
+
+        Transcripts are never included here. Request one reel to get its
+        transcript.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/Subcategory"
+        - $ref: "#/components/parameters/SavedDate"
+      responses:
+        "200":
+          description: One page of saved reels.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReelPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/reels/filters:
+    get:
+      operationId: getReelFilters
+      tags: [reels]
+      summary: Platform filter facets
+      description: The platforms present in this user's library, with counts.
+      responses:
+        "200":
+          description: Platform facets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlatformFilters" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v2/reels/category-filters:
+    get:
+      operationId: getReelCategoryFilters
+      tags: [reels]
+      summary: Category filter facets
+      description: The categories and subcategories present in this user's library.
+      responses:
+        "200":
+          description: Category facets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryFilters" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v2/reels/{reel_id}:
+    get:
+      operationId: getReel
+      tags: [reels]
+      summary: Get one saved reel
+      description: |
+        The full reel, including its transcript when one exists.
+
+        A reel that belongs to another user answers 404, the same as one that
+        does not exist. A different answer would tell a stranger which ids are
+        real.
+      parameters:
+        - $ref: "#/components/parameters/ReelID"
+      responses:
+        "200":
+          description: The reel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/processing-jobs:
+    get:
+      operationId: listProcessingJobs
+      tags: [processing]
+      summary: List processing jobs
+      description: |
+        This user's recent processing jobs. The list is bounded rather than
+        paged: a user has a small number of jobs in flight and a short tail of
+        finished ones.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: active_only
+          in: query
+          required: false
+          description: Return only jobs that are still queued or processing.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Recent jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJobList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/processing-jobs/{job_id}:
+    get:
+      operationId: getProcessingJob
+      tags: [processing]
+      summary: Get one processing job
+      description: |
+        Poll this after a submission. A terminal job carries either
+        `result_reel_id` or a stable failure code.
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/processing-jobs/reels:
+    post:
+      operationId: submitReel
+      tags: [processing]
+      summary: Submit a link
+      description: |
+        Submits one URL for processing.
+
+        `200` means this user already has the content saved and the reel is
+        returned with no new work. `202` means work is queued or already in
+        flight, and the response carries the job to poll.
+
+        `Idempotency-Key` is required. Retrying a failed network call with the
+        same key returns the same outcome; reusing a key with a different body
+        is a `409`. A deliberate second submission uses a new key.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitReelRequest" }
+      responses:
+        "200":
+          description: Already saved. No new work was started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reel" }
+        "202":
+          description: Work is queued or already in flight.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJob" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+
+  /api/v2/native-shares/reels:
+    post:
+      operationId: submitNativeShare
+      tags: [processing]
+      summary: Submit raw shared text from a native share extension
+      description: |
+        Resolves shared text to a URL and enqueues it in one request.
+
+        A share extension runs outside the app process, cannot refresh a
+        Supabase session and may be killed at any moment, so it authenticates
+        with a long-lived share token and cannot be asked to make two calls that
+        must both succeed.
+      security:
+        - nativeShareToken: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NativeShareRequest" }
+      responses:
+        "200":
+          description: Already saved. No new work was started.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reel" }
+        "202":
+          description: Work is queued or already in flight.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJob" }
+        "401": { $ref: "#/components/responses/ShareTokenRequired" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/share/resolve:
+    post:
+      operationId: resolveShare
+      tags: [sharing]
+      summary: Resolve shared text without processing it
+      description: |
+        Turns shared text into a recognised URL so an interactive client can
+        preview what it is about to submit. It starts no work and costs no
+        provider call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveShareRequest" }
+      responses:
+        "200":
+          description: What the text resolved to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResolvedShare" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/share-tokens:
+    post:
+      operationId: mintShareToken
+      tags: [sharing]
+      summary: Mint a native share token
+      description: |
+        Issues the long-lived token a native share extension presents. The value
+        is returned once and is not retrievable afterwards.
+      responses:
+        "200":
+          description: The new token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MintedShareToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+    delete:
+      operationId: revokeShareTokens
+      tags: [sharing]
+      summary: Revoke every native share token
+      description: |
+        Revokes all of this user's share tokens. Used on sign-out and when a
+        device is lost.
+      responses:
+        "200":
+          description: How many tokens were revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevokedShareTokens" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+
+  /api/v2/account/library-stats:
+    get:
+      operationId: getLibraryStats
+      tags: [account]
+      summary: Library totals
+      responses:
+        "200":
+          description: Totals for this user's library.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStats" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+components:
+  securitySchemes:
+    supabaseBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Supabase access token. It is verified locally against the project's
+        JWKS; the `sub` claim is the user, and no request body or query
+        parameter can name a different one.
+    nativeShareToken:
+      type: apiKey
+      in: header
+      name: X-Share-Token
+      description: |
+        A long-lived token held by a native share extension. It authenticates
+        exactly one endpoint and resolves to exactly one user. It is never
+        accepted in place of a session anywhere else.
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        An opaque cursor from a previous page's `next_cursor`. Do not construct
+        or decode it. A value this API did not issue is a validation error.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Platform:
+      name: platform
+      in: query
+      required: false
+      description: |
+        A platform filter. `other` means every source that is not one of the
+        named platforms.
+      schema:
+        type: string
+        enum: [instagram, youtube, tiktok, x, linkedin, reddit, pinterest, other]
+    Category:
+      name: category
+      in: query
+      required: false
+      schema: { type: string }
+    Subcategory:
+      name: subcategory
+      in: query
+      required: false
+      schema: { type: string }
+    SavedDate:
+      name: saved_date
+      in: query
+      required: false
+      description: A single day, in UTC.
+      schema: { type: string, format: date }
+    ReelID:
+      name: reel_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    JobID:
+      name: job_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        A client-generated UUID identifying one submission attempt. Reuse it for
+        network retries of that attempt; generate a new one for a deliberate new
+        submission.
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: The request could not be understood.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: No valid session.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ShareTokenRequired:
+      description: No valid share token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: |
+        No such record for this user. Returned both when a record does not exist
+        and when it belongs to somebody else.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    IdempotencyConflict:
+      description: This idempotency key was already used with a different body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationFailed:
+      description: A field is missing or invalid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MethodNotAllowed:
+      description: This path exists but does not accept that method.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ProcessingUnavailable:
+      description: |
+        A capability this endpoint needs is unavailable. Reads stay healthy;
+        retry later.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id, retryable]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: |
+                A stable identifier to match on. The message is for people and
+                may change; the code may not.
+            message: { type: string }
+            request_id:
+              type: string
+              description: Quote this when reporting a problem.
+            retryable:
+              type: boolean
+              description: Whether the same request may succeed if repeated.
+            details:
+              type: object
+              description: |
+                Optional, and only ever values the caller supplied or may
+                choose from. Never internal or driver text.
+              additionalProperties: true
+
+    Health:
+      type: object
+      required: [status, ready, version, service, checked_at, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        ready: { type: boolean }
+        version: { type: string }
+        service: { type: string }
+        checked_at: { type: string, format: date-time }
+        checks:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/HealthCheck" }
+
+    HealthCheck:
+      type: object
+      required: [healthy, status]
+      properties:
+        healthy: { type: boolean }
+        status: { type: string }
+        latency_ms: { type: number }
+        message: { type: string }
+        checked_at: { type: string, format: date-time }
+        details: { type: object, additionalProperties: true }
+
+    ReelPage:
+      type: object
+      required: [reels, has_more, limit, next_cursor]
+      properties:
+        reels:
+          type: array
+          items: { $ref: "#/components/schemas/Reel" }
+        has_more: { type: boolean }
+        limit: { type: integer }
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page. Null on the last page.
+
+    Reel:
+      type: object
+      required: [id, url, title, summary, category, subcategory]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        thumbnail_url: { type: [string, "null"] }
+        source_platform: { type: [string, "null"] }
+        source_content_type: { type: [string, "null"] }
+        title: { type: string }
+        summary: { type: string }
+        transcript:
+          type: string
+          description: Present only on a single-reel request, never in a list.
+        category: { type: string }
+        subcategory: { type: string }
+        secondary_categories: { type: array, items: { type: string } }
+        key_facts: { type: array, items: { type: string } }
+        people_mentioned: { type: array, items: { type: string } }
+        actionable_items: { type: array, items: { type: string } }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/Location" }
+        saved_at: { type: [string, "null"], format: date-time }
+
+    Location:
+      type: object
+      required: [name, latitude, longitude]
+      properties:
+        name: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        address: { type: [string, "null"] }
+        location_display_label: { type: string }
+
+    PlatformFilters:
+      type: object
+      required: [filters]
+      properties:
+        filters:
+          type: array
+          items:
+            type: object
+            required: [platform, count]
+            properties:
+              platform: { type: string }
+              count: { type: integer }
+
+    CategoryFilters:
+      type: object
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items:
+            type: object
+            required: [category, subcategories]
+            properties:
+              category: { type: string }
+              count: { type: integer }
+              subcategories:
+                type: array
+                items:
+                  type: object
+                  required: [subcategory, count]
+                  properties:
+                    subcategory: { type: string }
+                    count: { type: integer }
+
+    ProcessingJobList:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/ProcessingJob" }
+
+    ProcessingJob:
+      type: object
+      required: [id, status, url, collection_ids]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [queued, processing, completed, failed, dead_lettered]
+        url: { type: string }
+        source_platform: { type: [string, "null"] }
+        current_step: { type: [string, "null"] }
+        progress_percent: { type: integer, minimum: 0, maximum: 100 }
+        status_message: { type: string }
+        failure_code:
+          type: [string, "null"]
+          description: A stable code on a terminal failure. Match on this.
+        result_reel_id: { type: [string, "null"], format: uuid }
+        collection_ids:
+          type: array
+          items: { type: string, format: uuid }
+        created_at: { type: [string, "null"], format: date-time }
+        updated_at: { type: [string, "null"], format: date-time }
+
+    SubmitReelRequest:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          description: An http or https URL.
+        collection_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: File the resulting save into these collections.
+
+    NativeShareRequest:
+      type: object
+      required: [raw_payload_text]
+      additionalProperties: false
+      properties:
+        raw_payload_text:
+          type: string
+          maxLength: 8192
+          description: Exactly what the operating system handed the extension.
+        collection_ids:
+          type: array
+          items: { type: string, format: uuid }
+
+    ResolveShareRequest:
+      type: object
+      required: [raw_payload_text]
+      additionalProperties: false
+      properties:
+        raw_payload_text: { type: string, maxLength: 8192 }
+
+    ResolvedShare:
+      type: object
+      required: [supported]
+      properties:
+        supported: { type: boolean }
+        url: { type: [string, "null"] }
+        source_platform: { type: [string, "null"] }
+        source_content_type: { type: [string, "null"] }
+
+    MintedShareToken:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: Returned once. It cannot be read back.
+        expires_at: { type: string, format: date-time }
+
+    RevokedShareTokens:
+      type: object
+      required: [revoked]
+      properties:
+        revoked: { type: integer }
+
+    LibraryStats:
+      type: object
+      required: [total_reels]
+      properties:
+        total_reels: { type: integer }
+        total_pinned_locations: { type: integer }
+        total_tags: { type: integer }
+        total_categories: { type: integer }
+        total_subcategories: { type: integer }

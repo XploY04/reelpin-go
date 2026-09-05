@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,42 +45,23 @@ func New(deps Deps) *Server {
 
 func (s *Server) now() time.Time { return s.deps.Now().UTC() }
 
+// Routes registers the table and nothing else. A path that exists with other
+// methods answers a JSON 405 naming them; anything unknown answers a JSON 404.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	for path, handler := range map[string]http.HandlerFunc{
-		"/api/v1/health/live":  s.handleLive,
-		"/api/v1/health/ready": s.handleReady,
-	} {
-		mux.HandleFunc("GET "+path, handler)
-		mux.HandleFunc(path, methodNotAllowed)
+	methodsByPath := map[string][]string{}
+	for _, route := range s.routeTable() {
+		methodsByPath[route.Path] = append(methodsByPath[route.Path], route.Method)
 	}
 
-	for path, handler := range map[string]http.HandlerFunc{
-		"/api/v1/reels":                    s.handleListReels,
-		"/api/v1/reels/filters":            s.handlePlatformFilters,
-		"/api/v1/reels/category-filters":   s.handleCategoryFilters,
-		"/api/v1/reels/{reel_id}":          s.handleGetReel,
-		"/api/v1/processing-jobs":          s.handleListJobs,
-		"/api/v1/processing-jobs/{job_id}": s.handleGetJob,
-		"/api/v1/account/library-stats":    s.handleLibraryStats,
-	} {
-		guarded := s.authenticated(handler)
-		mux.HandleFunc("GET "+path, guarded)
-	}
-
-	// The mux answers a wrong method with a plain-text 405, so the paths are
-	// claimed again without a method to keep every body JSON. The two literal
-	// children of /reels/{reel_id} are left out: that wildcard already covers
-	// them, and claiming them again conflicts with it.
-	for _, path := range []string{
-		"/api/v1/reels",
-		"/api/v1/reels/{reel_id}",
-		"/api/v1/processing-jobs",
-		"/api/v1/processing-jobs/{job_id}",
-		"/api/v1/account/library-stats",
-	} {
-		mux.HandleFunc(path, methodNotAllowed)
+	claimed := map[string]bool{}
+	for _, route := range s.routeTable() {
+		mux.HandleFunc(route.Method+" "+route.Path, route.handler)
+		if route.claimMethods && !claimed[route.Path] {
+			claimed[route.Path] = true
+			mux.HandleFunc(route.Path, s.methodNotAllowed(methodsByPath[route.Path]))
+		}
 	}
 
 	mux.HandleFunc("/", notFound)
@@ -91,10 +73,9 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r.Header.Get("Authorization"))
 		if token == "" {
-			writeError(w, http.StatusUnauthorized, errorResponse{
-				ErrorCode: "authentication_required",
-				Message:   "Sign in is required.",
-				Detail:    "Missing Authorization bearer token.",
+			writeError(w, http.StatusUnauthorized, errorBody{
+				Code:    "authentication_required",
+				Message: "Sign in is required.",
 			})
 			return
 		}
@@ -103,10 +84,9 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		if err != nil {
 			// The verification error stays in the log; the client learns nothing.
 			s.deps.Logger.Info("token rejected", "path", r.URL.Path, "error", err)
-			writeError(w, http.StatusUnauthorized, errorResponse{
-				ErrorCode: "invalid_auth_token",
-				Message:   "Your sign-in session is invalid or expired.",
-				Detail:    "The access token could not be verified.",
+			writeError(w, http.StatusUnauthorized, errorBody{
+				Code:    "invalid_auth_token",
+				Message: "Your sign-in session is invalid or expired.",
 			})
 			return
 		}
@@ -124,25 +104,33 @@ func bearerToken(header string) string {
 	return strings.TrimSpace(value[len(prefix):])
 }
 
+// errorBody is the one error envelope every v2 response uses. Details are
+// optional and carry only values the caller supplied or may choose from; a
+// driver message never reaches it.
+type errorBody struct {
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"request_id"`
+	Retryable bool           `json:"retryable"`
+	Details   map[string]any `json:"details,omitempty"`
+}
+
 type errorResponse struct {
-	Success   bool     `json:"success"`
-	ErrorCode string   `json:"error_code"`
-	Message   string   `json:"message"`
-	Detail    string   `json:"detail"`
-	Retryable bool     `json:"retryable"`
-	Allowed   []string `json:"allowed,omitempty"`
+	Error errorBody `json:"error"`
 }
 
-func writeError(w http.ResponseWriter, status int, body errorResponse) {
-	writeJSON(w, status, body)
+// writeError fills in the request id from the response headers, so no handler
+// has to remember to correlate its own errors.
+func writeError(w http.ResponseWriter, status int, body errorBody) {
+	body.RequestID = w.Header().Get("X-Request-ID")
+	writeJSON(w, status, errorResponse{Error: body})
 }
 
-var internalErrorBody = errorResponse{
-	ErrorCode: "internal_error",
+var internalErrorBody = errorResponse{Error: errorBody{
+	Code:      "internal_error",
 	Message:   "The server could not finish this request.",
-	Detail:    "Unhandled server error",
 	Retryable: true,
-}
+}}
 
 // writeJSON encodes before touching the status line, so a broken payload still
 // leaves room for the standard 500.
@@ -159,20 +147,25 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotFound, errorResponse{
-		ErrorCode: "not_found",
-		Message:   "This endpoint does not exist.",
-		Detail:    "Unknown route",
+	writeError(w, http.StatusNotFound, errorBody{
+		Code:    "not_found",
+		Message: "This endpoint does not exist.",
 	})
 }
 
-func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", http.MethodGet)
-	writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
-		ErrorCode: "method_not_allowed",
-		Message:   "This endpoint does not accept that method.",
-		Detail:    "Only GET is allowed",
-	})
+// methodNotAllowed answers for a path that exists with methods that do not.
+// The allowed set comes from the route table, so it cannot drift.
+func (s *Server) methodNotAllowed(allowed []string) http.HandlerFunc {
+	sort.Strings(allowed)
+	header := strings.Join(allowed, ", ")
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", header)
+		writeError(w, http.StatusMethodNotAllowed, errorBody{
+			Code:    "method_not_allowed",
+			Message: "This endpoint does not accept that method.",
+			Details: map[string]any{"allowed": allowed},
+		})
+	}
 }
 
 type statusRecorder struct {

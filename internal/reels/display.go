@@ -3,7 +3,6 @@ package reels
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -54,13 +53,20 @@ type DisplayReel struct {
 	Events               []Event            `json:"events"`
 }
 
+// Page size bounds are part of the contract, so they live with the type the
+// contract describes rather than in a handler.
+const (
+	DefaultPageSize = 25
+	MaxPageSize     = 100
+)
+
+// ListResponse is one page. There is no total count: counting the whole set on
+// every page is a second query whose answer is stale before it is read, and no
+// client needs it to render a list that pages forward.
 type ListResponse struct {
 	NextCursor *string       `json:"next_cursor"`
-	NextOffset *int          `json:"next_offset"`
 	HasMore    bool          `json:"has_more"`
-	TotalCount int           `json:"total_count"`
 	Limit      int           `json:"limit"`
-	Offset     int           `json:"offset"`
 	Reels      []DisplayReel `json:"reels"`
 }
 
@@ -116,27 +122,35 @@ func BuildDisplayReel(record ReelRecord, now time.Time) DisplayReel {
 
 // BuildListResponse mirrors the Python pagination contract: the caller fetches
 // one extra row, trims it, and passes the estimated total.
-func BuildListResponse(records []ReelRecord, totalCount, limit, offset int, now time.Time) ListResponse {
+// BuildListResponse turns one over-fetched page into the wire shape. The caller
+// asks for limit+1 records; the extra one answers has_more and is then dropped,
+// which is one query rather than a page query plus a count query.
+func BuildListResponse(records []ReelRecord, limit int, now time.Time) ListResponse {
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
+
 	deduped := DedupeRecords(records)
 	display := make([]DisplayReel, 0, len(deduped))
 	for _, record := range deduped {
 		display = append(display, BuildDisplayReel(record, now))
 	}
 
-	nextOffset := offset + len(records)
-	hasMore := nextOffset < totalCount
-
 	response := ListResponse{
-		HasMore:    hasMore,
-		TotalCount: totalCount,
-		Limit:      limit,
-		Offset:     offset,
-		Reels:      display,
+		HasMore: hasMore,
+		Limit:   limit,
+		Reels:   display,
 	}
-	if hasMore {
-		cursor := strconv.Itoa(nextOffset)
-		response.NextCursor = &cursor
-		response.NextOffset = &nextOffset
+	if hasMore && len(records) > 0 {
+		if cursor, ok := CursorFor(records[len(records)-1]); ok {
+			encoded := cursor.Encode()
+			response.NextCursor = &encoded
+		} else {
+			// Without a resumable position the honest answer is that this is
+			// the last page, not a cursor that would restart from the top.
+			response.HasMore = false
+		}
 	}
 	return response
 }

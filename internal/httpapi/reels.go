@@ -3,7 +3,6 @@ package httpapi
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,11 +43,7 @@ func (s *Server) handleListReels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	limit, ok := intParam(w, query, "limit", 50, 1, 100)
-	if !ok {
-		return
-	}
-	offset, ok := intParam(w, query, "offset", 0, 0, 1<<31-1)
+	limit, ok := intParam(w, query, "limit", reels.DefaultPageSize, 1, reels.MaxPageSize)
 	if !ok {
 		return
 	}
@@ -57,11 +52,16 @@ func (s *Server) handleListReels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An integer cursor wins over offset; anything else falls back to it.
-	if cursor := strings.TrimSpace(query.Get("cursor")); cursor != "" {
-		if parsed, err := strconv.Atoi(cursor); err == nil {
-			offset = max(0, parsed)
+	var after *reels.Cursor
+	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
+		cursor, err := reels.DecodeCursor(raw)
+		if err != nil {
+			// A cursor this service did not issue cannot be honoured, and
+			// guessing a position would silently skip or repeat saves.
+			validationError(w, "cursor", "is not a cursor this API issued")
+			return
 		}
+		after = &cursor
 	}
 
 	// One extra row answers has_more without a second count query.
@@ -70,8 +70,7 @@ func (s *Server) handleListReels(w http.ResponseWriter, r *http.Request) {
 		Category:    query.Get("category"),
 		Subcategory: query.Get("subcategory"),
 		SavedDate:   savedDate,
-		Sort:        query.Get("sort"),
-		Offset:      offset,
+		After:       after,
 		Limit:       limit + 1,
 	})
 	if err != nil {
@@ -80,16 +79,7 @@ func (s *Server) handleListReels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hasMore := len(records) > limit
-	if hasMore {
-		records = records[:limit]
-	}
-	totalCount := offset + len(records)
-	if hasMore {
-		totalCount++
-	}
-
-	writeJSON(w, http.StatusOK, reels.BuildListResponse(records, totalCount, limit, offset, s.now()))
+	writeJSON(w, http.StatusOK, reels.BuildListResponse(records, limit, s.now()))
 }
 
 func (s *Server) handleGetReel(w http.ResponseWriter, r *http.Request) {

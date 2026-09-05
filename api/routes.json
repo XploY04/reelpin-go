@@ -1,0 +1,90 @@
+{
+  "note": "Generated from Server.routeTable(). A change here is an API change.",
+  "route_count": 14,
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v2/account/library-stats",
+      "operation_id": "getLibraryStats",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/health/live",
+      "operation_id": "getHealthLive",
+      "auth": "public"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/health/ready",
+      "operation_id": "getHealthReady",
+      "auth": "public"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/native-shares/reels",
+      "operation_id": "submitNativeShare",
+      "auth": "share-token"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/processing-jobs",
+      "operation_id": "listProcessingJobs",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/processing-jobs/reels",
+      "operation_id": "submitReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/processing-jobs/{job_id}",
+      "operation_id": "getProcessingJob",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels",
+      "operation_id": "listReels",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels/category-filters",
+      "operation_id": "getReelCategoryFilters",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels/filters",
+      "operation_id": "getReelFilters",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels/{reel_id}",
+      "operation_id": "getReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/share-tokens",
+      "operation_id": "revokeShareTokens",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/share-tokens",
+      "operation_id": "mintShareToken",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/share/resolve",
+      "operation_id": "resolveShare",
+      "auth": "bearer"
+    }
+  ]
+}

@@ -233,30 +233,43 @@ func TestReelsListIsolationAndFilters(t *testing.T) {
 		}
 	})
 
-	t.Run("sorting", func(t *testing.T) {
-		for sort, wantFirst := range map[string]string{
-			"newest": "Zeta link",
-			"oldest": "Beta cafes",
-			"title":  "Alpha thread",
-			"junk":   "Zeta link",
-		} {
-			records, err := reader.List(ctx, userA, reels.ListOptions{Limit: 50, Sort: sort})
-			if err != nil {
-				t.Fatalf("List(%s): %v", sort, err)
-			}
-			if records[0].Title != wantFirst {
-				t.Errorf("sort %q first = %q, want %q", sort, records[0].Title, wantFirst)
+	t.Run("one order, newest saved first", func(t *testing.T) {
+		records, err := reader.List(ctx, userA, reels.ListOptions{Limit: 50})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if records[0].Title != "Zeta link" {
+			t.Errorf("first = %q, want the newest save", records[0].Title)
+		}
+		for index := 1; index < len(records); index++ {
+			previous, current := records[index-1].CreatedAt, records[index].CreatedAt
+			if previous != nil && current != nil && current.After(*previous) {
+				t.Fatalf("rows are not newest-first at index %d", index)
 			}
 		}
 	})
 
-	t.Run("offset and limit", func(t *testing.T) {
-		page, err := reader.List(ctx, userA, reels.ListOptions{Limit: 1, Offset: 1, Sort: "oldest"})
+	t.Run("a cursor resumes exactly where the page ended", func(t *testing.T) {
+		first, err := reader.List(ctx, userA, reels.ListOptions{Limit: 1})
 		if err != nil {
-			t.Fatalf("List: %v", err)
+			t.Fatalf("first page: %v", err)
 		}
-		if len(page) != 1 || page[0].Title != "Alpha thread" {
-			t.Fatalf("page = %+v", page)
+		cursor, ok := reels.CursorFor(first[0])
+		if !ok {
+			t.Fatal("the first row has no resumable position")
+		}
+
+		rest, err := reader.List(ctx, userA, reels.ListOptions{Limit: 50, After: &cursor})
+		if err != nil {
+			t.Fatalf("second page: %v", err)
+		}
+		for _, record := range rest {
+			if record.ID == first[0].ID {
+				t.Fatal("the cursor repeated the row it resumes after")
+			}
+		}
+		if len(rest) == 0 {
+			t.Fatal("the cursor skipped every remaining row")
 		}
 	})
 

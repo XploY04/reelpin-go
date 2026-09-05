@@ -37,43 +37,21 @@ func manyReels(count int) []reels.ReelRecord {
 
 func TestListReelsPagination(t *testing.T) {
 	tests := []struct {
-		name           string
-		query          string
-		stored         int
-		wantCount      int
-		wantHasMore    bool
-		wantOffset     int
-		wantTotal      int
-		wantNextCursor string
+		name        string
+		query       string
+		stored      int
+		wantCount   int
+		wantHasMore bool
 	}{
-		{name: "defaults", query: "", stored: 3, wantCount: 3, wantTotal: 3},
-		{
-			name: "more rows than the limit", query: "?limit=2", stored: 5,
-			wantCount: 2, wantHasMore: true, wantTotal: 3, wantNextCursor: "2",
-		},
-		{
-			name: "offset carries into the next cursor", query: "?limit=2&offset=4", stored: 5,
-			wantCount: 2, wantHasMore: true, wantOffset: 4, wantTotal: 7, wantNextCursor: "6",
-		},
-		{
-			name: "cursor overrides offset", query: "?limit=2&offset=4&cursor=10", stored: 5,
-			wantCount: 2, wantHasMore: true, wantOffset: 10, wantTotal: 13, wantNextCursor: "12",
-		},
-		{
-			name: "invalid cursor falls back to offset", query: "?limit=2&offset=4&cursor=abc", stored: 5,
-			wantCount: 2, wantHasMore: true, wantOffset: 4, wantTotal: 7, wantNextCursor: "6",
-		},
-		{
-			name: "negative cursor clamps to zero", query: "?limit=2&offset=4&cursor=-3", stored: 5,
-			wantCount: 2, wantHasMore: true, wantOffset: 0, wantTotal: 3, wantNextCursor: "2",
-		},
-		{name: "empty library", query: "", stored: 0, wantCount: 0, wantTotal: 0},
+		{name: "defaults", query: "", stored: 3, wantCount: 3},
+		{name: "more rows than the limit", query: "?limit=2", stored: 5, wantCount: 2, wantHasMore: true},
+		{name: "empty library", query: "", stored: 0, wantCount: 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reader := &fakeReels{records: manyReels(tt.stored)}
-			rec := serve(listServer(reader), "GET", "/api/v1/reels"+tt.query, "Bearer good.token")
+			rec := serve(listServer(reader), "GET", "/api/v2/reels"+tt.query, "Bearer good.token")
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
 			}
@@ -85,35 +63,67 @@ func TestListReelsPagination(t *testing.T) {
 			if body.HasMore != tt.wantHasMore {
 				t.Errorf("has_more = %v, want %v", body.HasMore, tt.wantHasMore)
 			}
-			if body.Offset != tt.wantOffset {
-				t.Errorf("offset = %d, want %d", body.Offset, tt.wantOffset)
-			}
-			if body.TotalCount != tt.wantTotal {
-				t.Errorf("total_count = %d, want %d", body.TotalCount, tt.wantTotal)
-			}
-			if tt.wantNextCursor == "" {
-				if body.NextCursor != nil {
-					t.Errorf("next_cursor = %q, want null", *body.NextCursor)
+			if tt.wantHasMore {
+				if body.NextCursor == nil {
+					t.Fatal("has_more with no next_cursor strands the client on page one")
 				}
-			} else if body.NextCursor == nil || *body.NextCursor != tt.wantNextCursor {
-				t.Errorf("next_cursor = %v, want %q", body.NextCursor, tt.wantNextCursor)
+				// The cursor resumes after the last row of this page, and it
+				// is ours to decode even though the client never may.
+				cursor, err := reels.DecodeCursor(*body.NextCursor)
+				if err != nil {
+					t.Fatalf("next_cursor does not decode: %v", err)
+				}
+				lastShown := body.Reels[len(body.Reels)-1]
+				if cursor.ID != lastShown.ID {
+					t.Errorf("cursor resumes after %q, want the last shown reel %q", cursor.ID, lastShown.ID)
+				}
+			} else if body.NextCursor != nil {
+				t.Errorf("next_cursor = %q on the last page, want null", *body.NextCursor)
 			}
 			// The reader is always asked for one row beyond the page.
 			if reader.lastOptions.Limit != body.Limit+1 {
 				t.Errorf("reader limit = %d, want %d", reader.lastOptions.Limit, body.Limit+1)
 			}
-			if reader.lastOptions.Offset != tt.wantOffset {
-				t.Errorf("reader offset = %d, want %d", reader.lastOptions.Offset, tt.wantOffset)
-			}
 		})
 	}
 }
 
+func TestListReelsCursorRoundTrip(t *testing.T) {
+	reader := &fakeReels{records: manyReels(5)}
+	first := decodeList(t, serve(listServer(reader), "GET", "/api/v2/reels?limit=2", "Bearer good.token"))
+	if first.NextCursor == nil {
+		t.Fatal("no cursor to continue with")
+	}
+
+	rec := serve(listServer(reader), "GET", "/api/v2/reels?limit=2&cursor="+*first.NextCursor, "Bearer good.token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if reader.lastOptions.After == nil {
+		t.Fatal("the cursor did not reach the reader as a keyset position")
+	}
+	lastShown := first.Reels[len(first.Reels)-1]
+	if reader.lastOptions.After.ID != lastShown.ID {
+		t.Errorf("resumes after %q, want %q", reader.lastOptions.After.ID, lastShown.ID)
+	}
+}
+
+func TestListReelsRejectsAForeignCursor(t *testing.T) {
+	// Clients of the old API sent integers; anything not issued by this API is
+	// a validation error, never a guessed position.
+	for _, cursor := range []string{"25", "abc", "-3", "10"} {
+		rec := serve(listServer(&fakeReels{records: manyReels(3)}),
+			"GET", "/api/v2/reels?cursor="+cursor, "Bearer good.token")
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("cursor=%q status = %d, want 422", cursor, rec.Code)
+		}
+	}
+}
 func TestListReelsFiltersReachTheReader(t *testing.T) {
 	reader := &fakeReels{records: manyReels(1)}
 	rec := serve(listServer(reader),
 		"GET",
-		"/api/v1/reels?platform=twitter,instagram&category=Food&subcategory=Cafes&saved_date=2026-09-01&sort=title",
+		"/api/v2/reels?platform=twitter,instagram&category=Food&subcategory=Cafes&saved_date=2026-09-01",
 		"Bearer good.token",
 	)
 	if rec.Code != http.StatusOK {
@@ -130,9 +140,6 @@ func TestListReelsFiltersReachTheReader(t *testing.T) {
 	if options.SavedDate != "2026-09-01" {
 		t.Errorf("saved_date = %q", options.SavedDate)
 	}
-	if options.Sort != "title" {
-		t.Errorf("sort = %q", options.Sort)
-	}
 }
 
 func TestListReelsRejectsBadParameters(t *testing.T) {
@@ -146,22 +153,24 @@ func TestListReelsRejectsBadParameters(t *testing.T) {
 		{name: "limit too high", query: "?limit=101", wantStatus: http.StatusUnprocessableEntity, wantCode: "validation_error"},
 		{name: "limit too low", query: "?limit=0", wantStatus: http.StatusUnprocessableEntity, wantCode: "validation_error"},
 		{name: "limit not a number", query: "?limit=many", wantStatus: http.StatusUnprocessableEntity, wantCode: "validation_error"},
-		{name: "negative offset", query: "?offset=-1", wantStatus: http.StatusUnprocessableEntity, wantCode: "validation_error"},
+		{name: "foreign cursor", query: "?cursor=25", wantStatus: http.StatusUnprocessableEntity, wantCode: "validation_error"},
 		{name: "malformed saved_date", query: "?saved_date=01-09-2026", wantStatus: http.StatusUnprocessableEntity, wantCode: "validation_error"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rec := serve(testDeps(&fakePinger{}), "GET", "/api/v1/reels"+tt.query, "Bearer good.token")
+			rec := serve(testDeps(&fakePinger{}), "GET", "/api/v2/reels"+tt.query, "Bearer good.token")
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.wantStatus, rec.Body.String())
 			}
 			body := decodeError(t, rec)
-			if body.ErrorCode != tt.wantCode {
-				t.Errorf("error_code = %q, want %q", body.ErrorCode, tt.wantCode)
+			if body.Error.Code != tt.wantCode {
+				t.Errorf("error_code = %q, want %q", body.Error.Code, tt.wantCode)
 			}
-			if tt.wantCode == "invalid_platform" && len(body.Allowed) == 0 {
-				t.Error("allowed values missing from the invalid_platform body")
+			if tt.wantCode == "invalid_platform" {
+				if allowed, ok := body.Error.Details["allowed"].([]any); !ok || len(allowed) == 0 {
+					t.Error("allowed values missing from the invalid_platform details")
+				}
 			}
 		})
 	}
@@ -169,23 +178,23 @@ func TestListReelsRejectsBadParameters(t *testing.T) {
 
 func TestListReelsFailureIsOpaque(t *testing.T) {
 	deps := listServer(&fakeReels{err: errFake})
-	rec := serve(deps, "GET", "/api/v1/reels", "Bearer good.token")
+	rec := serve(deps, "GET", "/api/v2/reels", "Bearer good.token")
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 	body := decodeError(t, rec)
-	if body.ErrorCode != "reel_list_failed" {
-		t.Errorf("error_code = %q, want reel_list_failed", body.ErrorCode)
+	if body.Error.Code != "reel_list_failed" {
+		t.Errorf("error_code = %q, want reel_list_failed", body.Error.Code)
 	}
-	if body.Detail == errFake.Error() {
-		t.Error("detail leaks the reader error")
+	if strings.Contains(rec.Body.String(), errFake.Error()) {
+		t.Error("the reader error leaked into the response body")
 	}
 }
 
 func TestListReelsDisplayFormatting(t *testing.T) {
 	reader := &fakeReels{records: []reels.ReelRecord{sampleReel(testReelID, testUserID)}}
-	rec := serve(listServer(reader), "GET", "/api/v1/reels", "Bearer good.token")
+	rec := serve(listServer(reader), "GET", "/api/v2/reels", "Bearer good.token")
 
 	body := decodeList(t, rec)
 	if len(body.Reels) != 1 {
@@ -232,9 +241,9 @@ func TestGetReel(t *testing.T) {
 		path       string
 		wantStatus int
 	}{
-		{name: "own reel", path: "/api/v1/reels/" + testReelID, wantStatus: http.StatusOK},
-		{name: "malformed id", path: "/api/v1/reels/not-a-uuid", wantStatus: http.StatusNotFound},
-		{name: "missing id", path: "/api/v1/reels/55555555-5555-4555-8555-555555555555", wantStatus: http.StatusNotFound},
+		{name: "own reel", path: "/api/v2/reels/" + testReelID, wantStatus: http.StatusOK},
+		{name: "malformed id", path: "/api/v2/reels/not-a-uuid", wantStatus: http.StatusNotFound},
+		{name: "missing id", path: "/api/v2/reels/55555555-5555-4555-8555-555555555555", wantStatus: http.StatusNotFound},
 	}
 
 	for _, tt := range tests {
@@ -244,7 +253,7 @@ func TestGetReel(t *testing.T) {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.wantStatus, rec.Body.String())
 			}
 			if tt.wantStatus == http.StatusNotFound {
-				if code := decodeError(t, rec).ErrorCode; code != "reel_not_found" {
+				if code := decodeError(t, rec).Error.Code; code != "reel_not_found" {
 					t.Errorf("error_code = %q, want reel_not_found", code)
 				}
 				return
@@ -269,18 +278,18 @@ func TestGetReelOwnedByAnotherUserIs404(t *testing.T) {
 		testReelID: sampleReel(testReelID, otherUserID),
 	}}
 
-	rec := serve(listServer(reader), "GET", "/api/v1/reels/"+testReelID, "Bearer good.token")
+	rec := serve(listServer(reader), "GET", "/api/v2/reels/"+testReelID, "Bearer good.token")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
-	if code := decodeError(t, rec).ErrorCode; code != "reel_not_found" {
+	if code := decodeError(t, rec).Error.Code; code != "reel_not_found" {
 		t.Errorf("error_code = %q, want reel_not_found", code)
 	}
 }
 
 func TestListReelsDoesNotReturnTranscripts(t *testing.T) {
 	reader := &fakeReels{records: []reels.ReelRecord{sampleReel(testReelID, testUserID)}}
-	rec := serve(listServer(reader), "GET", "/api/v1/reels", "Bearer good.token")
+	rec := serve(listServer(reader), "GET", "/api/v2/reels", "Bearer good.token")
 
 	if body := rec.Body.String(); strings.Contains(body, "spoken words") {
 		t.Fatalf("list response carries a transcript: %s", body)

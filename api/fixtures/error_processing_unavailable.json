@@ -1,0 +1,18 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/processing-jobs/reels"
+  },
+  "response": {
+    "error": {
+      "code": "processing_unavailable",
+      "details": {
+        "capability": "submit_reel"
+      },
+      "message": "This capability is not available on this deployment yet.",
+      "request_id": "fixture-request-id",
+      "retryable": true
+    }
+  },
+  "status": 503
+}

@@ -1,0 +1,55 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/reels/22222222-2222-4222-8222-222222222222"
+  },
+  "response": {
+    "actionable_items": [],
+    "category": "food_and_drink",
+    "content_type": "reel",
+    "created_at": "2026-09-02T12:00:00Z",
+    "id": "22222222-2222-4222-8222-222222222222",
+    "ingestion_method": null,
+    "key_facts": [
+      "Opens at 8am"
+    ],
+    "locations": [
+      {
+        "address": null,
+        "city": "Anjuna",
+        "country": null,
+        "latitude": 15.5834,
+        "longitude": 73.7407,
+        "name": "Artjuna Cafe",
+        "neighborhood": null,
+        "state": null
+      },
+      {
+        "address": null,
+        "city": null,
+        "country": null,
+        "latitude": null,
+        "longitude": null,
+        "name": "No coordinates",
+        "neighborhood": null,
+        "state": null
+      }
+    ],
+    "normalized_url": null,
+    "people_mentioned": [],
+    "processing_version": null,
+    "secondary_categories": [],
+    "source_content_id": null,
+    "source_content_type": "reels",
+    "source_platform": "instagram",
+    "subcategory": "cafes",
+    "summary": "Three cafes worth the ride.",
+    "thumbnail_url": null,
+    "title": "Best cafes in Goa",
+    "transcript": "spoken words",
+    "transcript_source": null,
+    "url": "https://www.instagram.com/reel/abc/",
+    "user_id": "11111111-1111-4111-8111-111111111111"
+  },
+  "status": 200
+}

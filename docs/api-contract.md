@@ -1,69 +1,100 @@
 # API contract
 
-The Go backend defines the contract. Flutter dev is adjusted after an endpoint
-is correct and tested. Python responses are useful evidence, not a compatibility
-requirement.
+The contract is Go-owned and machine-readable: **`api/openapi.yaml`** is the
+source of truth, `api/spec.go` embeds it, and every merged commit publishes it
+as a content-addressed artifact with its SHA-256 digest. Clients vendor a
+released artifact and pin the digest; nothing generates a client from a sibling
+checkout.
+
+This page is the narrative around it: the rules that hold across every
+operation, and why. For endpoint-by-endpoint detail, read the spec.
 
 ## Versioning
 
-Public routes live under `/api/v1`. There are no bare aliases. Additive changes
-stay in v1; a breaking change after the client is released requires v2 or a
-coordinated client release.
+- This service owns `/api/v2`. `/api/v1` belongs to the Python service and is
+  not described here; it keeps serving installed Flutter versions during
+  coexistence and is retired separately.
+- Additive v2 changes are fine. A breaking change to a released v2 operation
+  requires `/api/v3`; CI runs a pinned `oasdiff` breaking-change check against
+  the target branch's spec and fails on one.
+- There are **no bare aliases** in v2. Every path is `/api/v2/<path>`.
+- Operations that answer `503 processing_unavailable` are declared but not yet
+  built. They are in the contract from the start so a client is generated once;
+  each is replaced by its owning task.
 
-## What is served today
+## How the contract stays true
 
-Public, no token:
+One route table, `Server.routeTable()` in `internal/httpapi/routes.go`, carries
+method, path, `operationId` and an `AuthMode` per route. The contract tests walk
+both directions: every registered route must appear in the spec once, every spec
+operation must be registered once, ids must match, and each route's `AuthMode`
+must match the operation's security scheme. `api/routes.json` is the generated
+manifest (`go test ./internal/httpapi -update`), and `scripts/check_contract.py`
+re-checks coverage without needing a Go toolchain.
 
-| Method | Path | Behaviour |
-|--------|------|-----------|
-| GET | `/api/v1/health/live` | Never touches the database. Always 200. |
-| GET | `/api/v1/health/ready` | 2s database ping. Returns 503 when it fails. |
+Response fixtures in `api/fixtures/` are captured from the real handlers, not
+written by hand, and compared on every run.
 
-Authenticated with `Authorization: Bearer <Supabase JWT>`:
+## Authentication modes
 
-| Method | Path |
-|--------|------|
-| GET | `/api/v1/reels` |
-| GET | `/api/v1/reels/{reel_id}` |
-| GET | `/api/v1/reels/filters` |
-| GET | `/api/v1/reels/category-filters` |
-| GET | `/api/v1/processing-jobs` |
-| GET | `/api/v1/processing-jobs/{job_id}` |
-| GET | `/api/v1/account/library-stats` |
+Every route declares one of four modes; there is no boolean:
 
-There is no subscription or entitlement endpoint. Nothing writes yet. See
-[`decisions/0002-reads-never-write.md`](decisions/0002-reads-never-write.md).
+| Mode | Credential | Used by |
+|------|-----------|---------|
+| `public` | none | health only |
+| `bearer` | Supabase access token | the app and the web server |
+| `share-token` | `X-Share-Token` | native share extensions, one endpoint |
+| `public-share` | unguessable link token | read-only shared views (later task) |
 
-## Rules
+The user is always the verified token's `sub`. A `user_id` in a query or body is
+ignored. A share token authenticates exactly one endpoint and is never accepted
+in place of a session.
 
-**The user comes from the token, never from the request.** A `user_id` in a
-query string or body is never used for authorization.
+## The error envelope
 
-**Error codes are contracts.** Current shared codes are
-`authentication_required`, `invalid_auth_token`, `validation_error`,
-`invalid_platform`, `not_found`, `method_not_allowed`, and `internal_error`.
-Resource failures use specific codes such as `reel_list_failed` and
-`processing_job_lookup_failed`.
+Every error, including 404 and 405, is:
 
-**Every response is JSON, including errors, 404 and 405.** A driver error is
-logged and never returned in a response body.
+```json
+{"error": {"code": "...", "message": "...", "request_id": "...",
+           "retryable": false, "details": {}}}
+```
 
-**Missing, forbidden and malformed identifiers all answer 404.** Different
-answers would reveal which identifiers exist.
+- `code` is stable and is what clients match on; `message` is for people and may
+  change. Changing a code is a contract change with tests.
+- `request_id` always matches the `X-Request-ID` response header.
+- `details` carries only values the caller supplied or may choose from
+  (`field`, `reason`, `allowed`). Driver and internal text never appears.
+- Missing, forbidden and malformed ids all answer the same 404: a different
+  answer tells a stranger which ids exist.
 
-**A list field is `[]`, never `null`.** This keeps decoding predictable in Go
-and Flutter.
+## Pagination
 
-## Pagination and filters
+Opaque cursors only. The list order is saved time descending, then id
+descending; the default page size is 25 and the maximum is 100. `next_cursor`
+is null on the last page. A cursor is base64 of a private shape: a client that
+sends anything this API did not issue gets `422 validation_error`, never a
+guessed position. There is no `total_count`: it is a second query whose answer
+is stale before it is read.
 
-`limit` defaults to 50 and must be between 1 and 100. `offset` defaults to 0.
-Invalid values return `validation_error`.
+## Writes
 
-`platform` accepts the named platforms plus `other`. An unknown value returns
-`invalid_platform`. `other` means every stored platform outside the named set.
+`POST /api/v2/processing-jobs/reels` and `POST /api/v2/native-shares/reels`
+require an `Idempotency-Key` header (a client-generated UUID per attempt).
+Retrying with the same key returns the same outcome; the same key with a
+different body is a `409`. `200` means already saved and carries the reel;
+`202` means work is queued or in flight and carries the job to poll.
+
+The native-share endpoint resolves and enqueues in one request, because a share
+extension can be killed between two calls.
+
+## Transcripts
+
+A transcript appears only in `GET /api/v2/reels/{reel_id}`, never in a list.
+Adding it to the list is a silent payload and cost regression.
 
 ## Changing this
 
-An API change updates this page, handler tests, contract fixtures when present,
-and the Flutter dev client when it consumes the route. The pull request explains
-what changed and why.
+Edit `api/openapi.yaml` and the route table together, regenerate
+(`go test ./internal/httpapi -update`), and record what a client sees in the
+pull request and in `docs/plans/active/flutter-changes.md`. `make check` fails
+on any drift between the three.

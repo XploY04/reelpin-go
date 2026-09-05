@@ -24,7 +24,7 @@ func TestPlatformFiltersTree(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Reels = &fakeReels{facets: facetFixture()}
 
-	rec := serve(deps, "GET", "/api/v1/reels/filters?platform=x&category=tech", "Bearer good.token")
+	rec := serve(deps, "GET", "/api/v2/reels/filters?platform=x&category=tech", "Bearer good.token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
@@ -81,7 +81,7 @@ func TestCategoryFiltersPrunedByPlatform(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Reels = &fakeReels{facets: facetFixture()}
 
-	rec := serve(deps, "GET", "/api/v1/reels/category-filters?platform=instagram&category=food", "Bearer good.token")
+	rec := serve(deps, "GET", "/api/v2/reels/category-filters?platform=instagram&category=food", "Bearer good.token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
@@ -115,7 +115,7 @@ func TestCategoryFiltersWithoutSelection(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Reels = &fakeReels{facets: facetFixture()}
 
-	rec := serve(deps, "GET", "/api/v1/reels/category-filters", "Bearer good.token")
+	rec := serve(deps, "GET", "/api/v2/reels/category-filters", "Bearer good.token")
 	var body reels.CategoryFiltersResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body is not a category tree: %v", err)
@@ -132,7 +132,7 @@ func TestEmptyLibraryFilters(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Reels = &fakeReels{}
 
-	for _, path := range []string{"/api/v1/reels/filters", "/api/v1/reels/category-filters"} {
+	for _, path := range []string{"/api/v2/reels/filters", "/api/v2/reels/category-filters"} {
 		rec := serve(deps, "GET", path, "Bearer good.token")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d, want 200", path, rec.Code)
@@ -148,14 +148,14 @@ func TestFilterFailuresAreOpaque(t *testing.T) {
 	deps.Reels = &fakeReels{err: errFake}
 
 	for path, wantCode := range map[string]string{
-		"/api/v1/reels/filters":          "reel_platform_filters_failed",
-		"/api/v1/reels/category-filters": "reel_category_filters_failed",
+		"/api/v2/reels/filters":          "reel_platform_filters_failed",
+		"/api/v2/reels/category-filters": "reel_category_filters_failed",
 	} {
 		rec := serve(deps, "GET", path, "Bearer good.token")
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("%s status = %d, want 500", path, rec.Code)
 		}
-		if code := decodeError(t, rec).ErrorCode; code != wantCode {
+		if code := decodeError(t, rec).Error.Code; code != wantCode {
 			t.Errorf("%s error_code = %q, want %q", path, code, wantCode)
 		}
 	}

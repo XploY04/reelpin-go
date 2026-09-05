@@ -30,6 +30,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/jobs/` | Job domain types, the `JobReader` port, status presentation. |
 | `internal/postgres/` | pgx implementations of both reader ports. Reads only. |
 | `internal/db/` | `Connect(ctx, url)`: a pgx pool and a 5s ping. Nothing else. |
+| `api/` | The OpenAPI contract, its embedded bytes, the generated route manifest and fixtures. |
 | `docs/` | Committed knowledge. See `docs/index.md`. |
 | `drills/` | Standalone Go/DSA practice programs. Unrelated to the service. |
 
