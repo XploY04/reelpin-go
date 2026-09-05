@@ -135,6 +135,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		// about limiting get a permissive one.
 		Limiter:     &fakeLimiter{allow: true},
 		ShareTokens: &fakeShareTokens{},
+		Collections: newFakeCollections(),
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:     "test",
 		Now:         func() time.Time { return testNow },

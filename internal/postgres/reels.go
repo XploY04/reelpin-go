@@ -15,10 +15,13 @@ import (
 // per user before aggregating.
 const statsRowLimit = 5000
 
-const reelListColumns = `id, user_id, url, normalized_url, source_platform, source_content_type,
-	source_content_id, processing_version, ingestion_method, transcript_source, thumbnail_url,
-	title, summary, category, subcategory, secondary_categories, key_facts, locations,
-	people_mentioned, actionable_items, events, parse_status, created_at`
+// ReelListColumns is the shared list projection, so anything that renders a
+// display reel reads the same columns. It is qualified for joins.
+const ReelListColumns = `r.id, r.user_id, r.url, r.normalized_url, r.source_platform,
+	r.source_content_type, r.source_content_id, r.processing_version, r.ingestion_method,
+	r.transcript_source, r.thumbnail_url, r.title, r.summary, r.category, r.subcategory,
+	r.secondary_categories, r.key_facts, r.locations, r.people_mentioned, r.actionable_items,
+	r.events, r.parse_status, r.created_at`
 
 type Reels struct {
 	db Querier
@@ -64,8 +67,8 @@ func (r *Reels) List(ctx context.Context, userID string, options reels.ListOptio
 	}
 
 	query := fmt.Sprintf(
-		"SELECT %s FROM reels WHERE %s ORDER BY %s %s%s",
-		reelListColumns,
+		"SELECT %s FROM reels r WHERE %s ORDER BY %s %s%s",
+		ReelListColumns,
 		strings.Join(where, " AND "),
 		orderBy(options.Sort),
 		limitClause,
@@ -94,8 +97,8 @@ func (r *Reels) Get(ctx context.Context, userID string, id uuid.UUID) (reels.Ree
 	defer cancel()
 
 	query := fmt.Sprintf(
-		"SELECT %s, transcript FROM reels WHERE id = $1 AND user_id = $2",
-		reelListColumns,
+		"SELECT %s, r.transcript FROM reels r WHERE r.id = $1 AND r.user_id = $2",
+		ReelListColumns,
 	)
 	rows, err := r.db.Query(ctx, query, id.String(), userID)
 	if err != nil {
@@ -247,6 +250,11 @@ func platformCondition(platforms []string, args *[]any) string {
 		))
 	}
 	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// ScanReelList reads one row selected with ReelListColumns.
+func ScanReelList(rows pgx.Rows) (reels.ReelRecord, error) {
+	return scanReel(rows, false)
 }
 
 func scanReel(rows pgx.Rows, includeTranscript bool) (reels.ReelRecord, error) {

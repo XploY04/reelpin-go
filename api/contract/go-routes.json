@@ -1,6 +1,6 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 16,
+  "route_count": 31,
   "routes": [
     {
       "method": "GET",
@@ -12,6 +12,81 @@
       "method": "GET",
       "path": "/api/v1/account/library-stats",
       "alias": "/account/library-stats",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/invites/{token}/accept",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/shared/{token}",
+      "authenticated": false
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/{collection_id}",
+      "authenticated": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/collections/{collection_id}",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/invites",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/items",
+      "authenticated": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/items/{reel_id}",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/leave",
+      "authenticated": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/link",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/link",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/{collection_id}/members",
+      "authenticated": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/members/{member_user_id}",
       "authenticated": true
     },
     {

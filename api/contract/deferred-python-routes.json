@@ -1,6 +1,6 @@
 {
   "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
-  "deferred_route_count": 49,
+  "deferred_route_count": 34,
   "routes": [
     {
       "method": "DELETE",
@@ -43,111 +43,6 @@
       "alias": "",
       "owner": "task-16",
       "reason": "Push notifications and campaigns."
-    },
-    {
-      "method": "GET",
-      "path": "/api/v1/collections",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/collections",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/collections/invites/{token}/accept",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "GET",
-      "path": "/api/v1/collections/shared/{token}",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/collections/{collection_id}",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "GET",
-      "path": "/api/v1/collections/{collection_id}",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "PATCH",
-      "path": "/api/v1/collections/{collection_id}",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/collections/{collection_id}/invites",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/collections/{collection_id}/items",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/collections/{collection_id}/items/{reel_id}",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/collections/{collection_id}/leave",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/collections/{collection_id}/link",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/collections/{collection_id}/link",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "GET",
-      "path": "/api/v1/collections/{collection_id}/members",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/collections/{collection_id}/members/{member_user_id}",
-      "alias": "",
-      "owner": "task-14",
-      "reason": "Collections and share-time filing."
     },
     {
       "method": "GET",

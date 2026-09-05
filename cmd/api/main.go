@@ -13,6 +13,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/cache"
+	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
@@ -115,6 +116,7 @@ func run(logger *slog.Logger) error {
 			Share:          shareResolver,
 			Enqueue:        enqueue.New(pool, shareResolver, enqueue.DefaultLimits),
 			ShareTokens:    sharetoken.NewStore(pool),
+			Collections:    collections.New(pool, cfg.CollectionShareBaseURL, time.Now),
 			Limiter:        limiterOrNil(limiter),
 			Cache:          responseCache,
 			TrustedProxies: cfg.TrustedProxyCIDRs,

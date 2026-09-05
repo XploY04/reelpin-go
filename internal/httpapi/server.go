@@ -38,6 +38,7 @@ type Deps struct {
 	Share       ShareResolver
 	Enqueue     Enqueuer
 	ShareTokens ShareTokens
+	Collections Collections
 	Limiter     RateLimiter
 	Cache       *cache.Cache
 	// TrustedProxies are the only sources whose forwarding headers are believed.
@@ -70,6 +71,10 @@ type Route struct {
 
 	handler http.HandlerFunc
 	limit   routeLimit
+	// pattern overrides what the mux is given. It exists for one case: two
+	// routes the mux calls ambiguous, where a wildcard dispatcher serves both
+	// while the contract still names the canonical path.
+	pattern string
 	// claimMethods registers the path again without a method, so a wrong method
 	// gets a JSON 405 instead of the mux's plain text. It is off for a literal
 	// path already covered by a sibling wildcard, which would conflict.
@@ -77,6 +82,16 @@ type Route struct {
 }
 
 func (s *Server) routeTable() []Route {
+	// apiOnly is for routes the app calls only under /api/v1. Collections never
+	// had a bare alias, so inventing one would be a new surface to support.
+	apiOnly := func(method, path string, handler http.HandlerFunc) Route {
+		return Route{
+			Method:        method,
+			Path:          "/api/v1" + path,
+			Authenticated: true,
+			handler:       s.authenticated(handler),
+		}
+	}
 	guarded := func(method, path string, handler http.HandlerFunc, limit routeLimit, claimMethods bool) Route {
 		return Route{
 			Method:        method,
@@ -150,6 +165,37 @@ func (s *Server) routeTable() []Route {
 			IP:   &ratelimit.ShareTokenMintIP,
 		}, false),
 
+		// Collections. The shared read is the only unauthenticated one: its
+		// token is the capability.
+		apiOnly(http.MethodGet, "/collections", s.handleListCollections),
+		apiOnly(http.MethodPost, "/collections", s.handleCreateCollection),
+		apiOnly(http.MethodGet, "/collections/{collection_id}", s.handleCollectionDetail),
+		apiOnly(http.MethodPatch, "/collections/{collection_id}", s.handleUpdateCollection),
+		apiOnly(http.MethodDelete, "/collections/{collection_id}", s.handleDeleteCollection),
+		apiOnly(http.MethodPost, "/collections/{collection_id}/items", s.handleAddCollectionItems),
+		apiOnly(http.MethodDelete, "/collections/{collection_id}/items/{reel_id}", s.handleRemoveCollectionItem),
+		apiOnly(http.MethodPost, "/collections/{collection_id}/link", s.handleEnableCollectionLink),
+		apiOnly(http.MethodDelete, "/collections/{collection_id}/link", s.handleDisableCollectionLink),
+		apiOnly(http.MethodDelete, "/collections/{collection_id}/members/{member_user_id}", s.handleRemoveCollectionMember),
+		apiOnly(http.MethodPost, "/collections/{collection_id}/leave", s.handleLeaveCollection),
+		apiOnly(http.MethodPost, "/collections/{collection_id}/invites", s.handleCreateCollectionInvite),
+		apiOnly(http.MethodPost, "/collections/invites/{token}/accept", s.handleAcceptCollectionInvite),
+		{
+			Method:  http.MethodGet,
+			Path:    "/api/v1/collections/shared/{token}",
+			handler: s.handleSharedCollection,
+		},
+		// The members route is served by a wildcard dispatcher, because the mux
+		// calls "shared/{token}" and "{collection_id}/members" ambiguous. The
+		// contract still names the canonical path the app calls.
+		{
+			Method:        http.MethodGet,
+			Path:          "/api/v1/collections/{collection_id}/members",
+			pattern:       "/api/v1/collections/{collection_id}/{subresource}",
+			Authenticated: true,
+			handler:       s.authenticated(s.handleCollectionSubresource),
+		},
+
 		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, routeLimit{
 			User:     &ratelimit.ShareResolve,
 			IP:       &ratelimit.ShareResolveIP,
@@ -185,7 +231,11 @@ func (s *Server) Routes() http.Handler {
 	// Every endpoint is served twice: the canonical path and the bare alias the
 	// shipped app still calls.
 	for _, route := range s.routeTable() {
-		paths := []string{route.Path}
+		registered := route.Path
+		if route.pattern != "" {
+			registered = route.pattern
+		}
+		paths := []string{registered}
 		if route.Alias != "" {
 			paths = append(paths, route.Alias)
 		}

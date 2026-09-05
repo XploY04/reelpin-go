@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/apify"
+	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/cookies"
 	"github.com/XploY04/reelpin-go/internal/db"
@@ -174,7 +176,8 @@ func run(logger *slog.Logger) error {
 		TempRoot:    cfg.WorkerTempRoot,
 	})
 
-	handler := leasedHandler(pool, logger, workerID, processor)
+	collectionService := collections.New(pool, cfg.CollectionShareBaseURL, time.Now)
+	handler := dispatch(pool, logger, workerID, processor, collectionService)
 	for _, name := range queue.WorkQueues {
 		started++
 		go func(name string) {
@@ -215,6 +218,77 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	return firstErr
+}
+
+// dispatch routes a message by what it describes. Processing a run, filing a
+// finished reel and indexing it are separate work with separate failure modes,
+// and only the first one takes a run lease.
+func dispatch(
+	pool *pgxpool.Pool,
+	logger *slog.Logger,
+	workerID string,
+	processor *pipeline.Pipeline,
+	collectionService *collections.Service,
+) queue.Handler {
+	processRun := leasedHandler(pool, logger, workerID, processor)
+
+	return func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
+		switch message.Type {
+		case "reel.saved":
+			return fileSavedReel(ctx, pool, logger, collectionService, message)
+		case "content.index", "content.notify", "collection.items_added":
+			// Task 16 and Task 18 give these real consumers. Until then they
+			// are acknowledged rather than retried forever.
+			logger.Info("event acknowledged without a consumer yet",
+				"type", message.Type, "event_id", message.EventID)
+			return queue.Done, nil
+		default:
+			return processRun(ctx, message)
+		}
+	}
+}
+
+// fileSavedReel adds a finished reel to the collections its share named. It
+// runs after the save and can never undo one: a target that disappeared, or
+// that the user may no longer edit, is skipped.
+func fileSavedReel(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	logger *slog.Logger,
+	collectionService *collections.Service,
+	message queue.Message,
+) (queue.Outcome, error) {
+	var payload struct {
+		UserID        string   `json:"user_id"`
+		ReelID        string   `json:"reel_id"`
+		CollectionIDs []string `json:"collection_ids"`
+	}
+	if err := readEventPayload(ctx, pool, message.EventID, &payload); err != nil {
+		logger.Error("reading a saved-reel event failed", "event_id", message.EventID, "error", err)
+		return queue.Retry, err
+	}
+	if payload.ReelID == "" || len(payload.CollectionIDs) == 0 {
+		return queue.Done, nil
+	}
+
+	filed, err := collectionService.FileReel(ctx, payload.UserID, payload.ReelID, payload.CollectionIDs)
+	if err != nil {
+		return queue.Retry, err
+	}
+	logger.Info("filed a saved reel", "reel_id", payload.ReelID, "collections", len(filed))
+	return queue.Done, nil
+}
+
+// readEventPayload loads what the publisher wrote. The message on the broker
+// carries identifiers only, so the payload is read back from the outbox row.
+func readEventPayload(ctx context.Context, pool *pgxpool.Pool, eventID string, target any) error {
+	var payload []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT payload FROM reelpin.outbox_events WHERE event_id = $1`, eventID,
+	).Scan(&payload); err != nil {
+		return fmt.Errorf("reading the event payload: %w", err)
+	}
+	return json.Unmarshal(payload, target)
 }
 
 // leasedHandler is the delivery path: take the run's lease, keep it alive while
