@@ -32,6 +32,9 @@ type Event struct {
 	RoutingKey  string
 	Payload     any
 	AvailableAt time.Time
+	// Environment scopes the row. Dev and production share one database, so an
+	// event without it can be claimed and published by the other deployment.
+	Environment string
 }
 
 // Insert writes an event inside the caller's transaction. It must never be
@@ -49,12 +52,17 @@ func Insert(ctx context.Context, tx pgx.Tx, event Event) error {
 		availableAt = event.AvailableAt
 	}
 
+	environment := event.Environment
+	if environment == "" {
+		return fmt.Errorf("the outbox event has no environment: it could be claimed by another deployment")
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO reelpin.outbox_events
-			(event_id, event_type, routing_key, schema_version, payload, available_at)
-		VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, now()))
+			(event_id, event_type, routing_key, schema_version, payload, available_at, environment)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, now()), $7)
 		ON CONFLICT (event_id) DO NOTHING`,
-		event.EventID, event.EventType, event.RoutingKey, queue.SchemaVersion, payload, availableAt,
+		event.EventID, event.EventType, event.RoutingKey, queue.SchemaVersion, payload, availableAt, environment,
 	)
 	if err != nil {
 		return fmt.Errorf("writing the outbox event: %w", err)
@@ -67,13 +75,24 @@ type Dispatcher struct {
 	publisher Publisher
 	logger    *slog.Logger
 	batchSize int
+	// environment is the only rows this dispatcher will ever claim.
+	environment string
 }
 
-func NewDispatcher(pool *pgxpool.Pool, publisher Publisher, logger *slog.Logger, batchSize int) *Dispatcher {
+func NewDispatcher(pool *pgxpool.Pool, publisher Publisher, logger *slog.Logger, batchSize int, environment string) *Dispatcher {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
-	return &Dispatcher{pool: pool, publisher: publisher, logger: logger, batchSize: batchSize}
+	if environment == "" {
+		environment = DefaultEnvironment
+	}
+	return &Dispatcher{
+		pool:        pool,
+		publisher:   publisher,
+		logger:      logger,
+		batchSize:   batchSize,
+		environment: environment,
+	}
 }
 
 // Run dispatches until the context is cancelled.
@@ -117,11 +136,12 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 	rows, err := transaction.Query(ctx, `
 		SELECT event_id, event_type, routing_key, payload, attempts
 		FROM reelpin.outbox_events
-		WHERE published_at IS NULL AND available_at <= now() AND attempts < $1
+		WHERE environment = $1
+		  AND published_at IS NULL AND available_at <= now() AND attempts < $2
 		ORDER BY available_at, event_id
-		LIMIT $2
+		LIMIT $3
 		FOR UPDATE SKIP LOCKED`,
-		maxAttempts, d.batchSize,
+		d.environment, maxAttempts, d.batchSize,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("claiming outbox rows: %w", err)

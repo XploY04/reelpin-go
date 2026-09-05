@@ -66,14 +66,15 @@ func (p *Pipeline) applyFailure(ctx context.Context, message queue.Message, fail
 		// The whole platform waits, not just this run: hammering a provider
 		// that is refusing makes the refusal last longer.
 		if _, err := p.deps.Pool.Exec(ctx, `
-			INSERT INTO reelpin.provider_cooldowns (platform, cooldown_until, reason, source_run_id)
-			VALUES ($1, now() + $2::interval, $3, $4)
-			ON CONFLICT (platform)
+			INSERT INTO reelpin.provider_cooldowns
+				(platform, cooldown_until, reason, source_run_id, environment)
+			VALUES ($1, now() + $2::interval, $3, $4, $5)
+			ON CONFLICT (platform, environment)
 			DO UPDATE SET cooldown_until = GREATEST(reelpin.provider_cooldowns.cooldown_until, EXCLUDED.cooldown_until),
 			              reason = EXCLUDED.reason,
 			              source_run_id = EXCLUDED.source_run_id,
 			              updated_at = now()`,
-			message.Platform, backoff(attempt).String(), failure.Code, message.RunID,
+			message.Platform, backoff(attempt).String(), failure.Code, message.RunID, p.deps.Environment,
 		); err != nil {
 			return queue.Retry, fmt.Errorf("recording a provider cooldown: %w", err)
 		}

@@ -127,9 +127,9 @@ func run(logger *slog.Logger) error {
 	// Housekeeping the queue cannot do for itself: runs whose worker vanished
 	// come back, and published events stop accumulating.
 	started++
-	go func() { done <- runMaintenance(ctx, pool, logger) }()
+	go func() { done <- runMaintenance(ctx, pool, logger, cfg.Environment) }()
 
-	dispatcher := outbox.NewDispatcher(pool, publisher, logger, cfg.OutboxBatchSize)
+	dispatcher := outbox.NewDispatcher(pool, publisher, logger, cfg.OutboxBatchSize, cfg.Environment)
 	started++
 	go func() { done <- dispatcher.Run(ctx, time.Second) }()
 
@@ -205,9 +205,10 @@ func run(logger *slog.Logger) error {
 		Logger:      logger,
 		TempRoot:    cfg.WorkerTempRoot,
 		Metrics:     registry,
+		Environment: cfg.Environment,
 	})
 
-	collectionService := collections.New(pool, cfg.CollectionShareBaseURL, time.Now)
+	collectionService := collections.New(pool, cfg.CollectionShareBaseURL, time.Now, cfg.Environment)
 	notifier := notify.NewService(pool,
 		notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now)
 	notifier.Metrics = registry
@@ -286,7 +287,7 @@ const maintenanceInterval = 5 * time.Minute
 
 // runMaintenance reclaims abandoned runs and trims published events. Retention
 // of user-facing data stays a deliberate command, not a background job.
-func runMaintenance(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
+func runMaintenance(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger, environment string) error {
 	ticker := time.NewTicker(maintenanceInterval)
 	defer ticker.Stop()
 
@@ -295,7 +296,7 @@ func runMaintenance(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			reclaimed, err := lease.ReclaimExpired(ctx, pool, 200)
+			reclaimed, err := lease.ReclaimExpired(ctx, pool, 200, environment)
 			if err != nil {
 				logger.Warn("reclaiming expired leases failed", "error", err)
 			} else if reclaimed > 0 {

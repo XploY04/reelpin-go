@@ -142,17 +142,20 @@ func ExpiredRuns(ctx context.Context, pool *pgxpool.Pool, limit int) ([]string, 
 }
 
 // ReclaimExpired puts runs whose lease lapsed back on the queue.
-func ReclaimExpired(ctx context.Context, pool *pgxpool.Pool, limit int) (int, error) {
+// ReclaimExpired only ever touches its own environment's runs. Dev and
+// production share this table, and requeuing the other deployment's run would
+// hand its work to a worker that cannot see the same providers or storage.
+func ReclaimExpired(ctx context.Context, pool *pgxpool.Pool, limit int, environment string) (int, error) {
 	tag, err := pool.Exec(ctx, `
 		UPDATE reelpin.processing_runs
 		SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
 		WHERE id IN (
 			SELECT id FROM reelpin.processing_runs
-			WHERE status = 'processing' AND lease_expires_at < now()
+			WHERE environment = $1 AND status = 'processing' AND lease_expires_at < now()
 			ORDER BY lease_expires_at
-			LIMIT $1
+			LIMIT $2
 			FOR UPDATE SKIP LOCKED
-		)`, limit)
+		)`, environment, limit)
 	if err != nil {
 		return 0, fmt.Errorf("reclaiming expired leases: %w", err)
 	}

@@ -22,13 +22,23 @@ type Service struct {
 	pool      *pgxpool.Pool
 	shareBase string
 	now       func() time.Time
+	// environment scopes the outbox events this service writes.
+	environment string
 }
 
-func New(pool *pgxpool.Pool, shareBaseURL string, now func() time.Time) *Service {
+func New(pool *pgxpool.Pool, shareBaseURL string, now func() time.Time, environment string) *Service {
+	if environment == "" {
+		environment = outbox.DefaultEnvironment
+	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{pool: pool, shareBase: strings.TrimSuffix(shareBaseURL, "/"), now: now}
+	return &Service{
+		pool:        pool,
+		shareBase:   strings.TrimSuffix(shareBaseURL, "/"),
+		now:         now,
+		environment: environment,
+	}
 }
 
 // Role answers what a user may do. A user with no relationship gets an empty
@@ -203,7 +213,7 @@ func (s *Service) AddItems(ctx context.Context, collectionID, userID string, ree
 		return 0, err
 	}
 	if added > 0 {
-		if err := emitCollectionEvent(ctx, transaction, collectionID, userID, added); err != nil {
+		if err := emitCollectionEvent(ctx, transaction, collectionID, userID, added, s.environment); err != nil {
 			return 0, err
 		}
 	}
@@ -274,7 +284,7 @@ func addItems(ctx context.Context, tx pgx.Tx, collectionID, userID string, reelI
 
 // emitCollectionEvent records one notification per actual change, in the same
 // transaction as the change itself.
-func emitCollectionEvent(ctx context.Context, tx pgx.Tx, collectionID, actorID string, added int) error {
+func emitCollectionEvent(ctx context.Context, tx pgx.Tx, collectionID, actorID string, added int, environment string) error {
 	payload := map[string]any{
 		"run_id":        collectionID,
 		"platform":      "collection",
@@ -294,10 +304,11 @@ func emitCollectionEvent(ctx context.Context, tx pgx.Tx, collectionID, actorID s
 	_ = encoded
 
 	return outbox.Insert(ctx, tx, outbox.Event{
-		EventID:    eventID,
-		EventType:  "collection.items_added",
-		RoutingKey: "reelpin.notifications",
-		Payload:    payload,
+		Environment: environment,
+		EventID:     eventID,
+		EventType:   "collection.items_added",
+		RoutingKey:  "reelpin.notifications",
+		Payload:     payload,
 	})
 }
 

@@ -65,19 +65,19 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func seedRun(t *testing.T, pool *pgxpool.Pool) string {
+func seedRun(t *testing.T, pool *pgxpool.Pool, environment string) string {
 	t.Helper()
 	var runID string
 	err := pool.QueryRow(context.Background(), `
 		WITH content AS (
 			INSERT INTO reelpin.contents
 				(source_platform, source_content_type, source_content_id, normalized_url, normalized_url_hash)
-			VALUES ('instagram','reel','SEED','https://www.instagram.com/reel/SEED/','seed-hash')
+			VALUES ('instagram','reel',$1,'https://www.instagram.com/reel/'||$1||'/',$1)
 			RETURNING id
 		)
-		INSERT INTO reelpin.processing_runs (content_id, processor_version, platform, status)
-		SELECT id, 'v1', 'instagram', 'queued' FROM content
-		RETURNING id::text`).Scan(&runID)
+		INSERT INTO reelpin.processing_runs (content_id, processor_version, platform, status, environment)
+		SELECT id, 'v1', 'instagram', 'queued', $2 FROM content
+		RETURNING id::text`, "SEED-"+environment, environment).Scan(&runID)
 	if err != nil {
 		t.Fatalf("seeding a run: %v", err)
 	}
@@ -86,7 +86,7 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) string {
 
 func TestOnlyOneOwnerHoldsARun(t *testing.T) {
 	pool := testPool(t)
-	runID := seedRun(t, pool)
+	runID := seedRun(t, pool, testEnvironment)
 	ctx := context.Background()
 
 	first, err := Acquire(ctx, pool, runID, "worker-a")
@@ -120,7 +120,7 @@ func TestOnlyOneOwnerHoldsARun(t *testing.T) {
 
 func TestConcurrentAcquireHasOneWinner(t *testing.T) {
 	pool := testPool(t)
-	runID := seedRun(t, pool)
+	runID := seedRun(t, pool, testEnvironment)
 	ctx := context.Background()
 
 	const workers = 12
@@ -156,7 +156,7 @@ func TestConcurrentAcquireHasOneWinner(t *testing.T) {
 
 func TestExpiredLeaseIsReclaimed(t *testing.T) {
 	pool := testPool(t)
-	runID := seedRun(t, pool)
+	runID := seedRun(t, pool, testEnvironment)
 	ctx := context.Background()
 
 	if _, err := Acquire(ctx, pool, runID, "worker-a"); err != nil {
@@ -188,7 +188,7 @@ func TestExpiredLeaseIsReclaimed(t *testing.T) {
 	); err != nil {
 		t.Fatalf("expiring again: %v", err)
 	}
-	reclaimed, err := ReclaimExpired(ctx, pool, 10)
+	reclaimed, err := ReclaimExpired(ctx, pool, 10, testEnvironment)
 	if err != nil {
 		t.Fatalf("reclaiming: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestExpiredLeaseIsReclaimed(t *testing.T) {
 
 func TestRenewAndRelease(t *testing.T) {
 	pool := testPool(t)
-	runID := seedRun(t, pool)
+	runID := seedRun(t, pool, testEnvironment)
 	ctx := context.Background()
 
 	if _, err := Acquire(ctx, pool, runID, "worker-a"); err != nil {
@@ -234,7 +234,7 @@ func TestRenewAndRelease(t *testing.T) {
 
 func TestKeepAliveStopsWorkWhenTheLeaseIsLost(t *testing.T) {
 	pool := testPool(t)
-	runID := seedRun(t, pool)
+	runID := seedRun(t, pool, testEnvironment)
 	ctx := context.Background()
 
 	if _, err := Acquire(ctx, pool, runID, "worker-a"); err != nil {
@@ -261,7 +261,7 @@ func TestKeepAliveStopsWorkWhenTheLeaseIsLost(t *testing.T) {
 
 func TestFinishedRunCannotBeAcquired(t *testing.T) {
 	pool := testPool(t)
-	runID := seedRun(t, pool)
+	runID := seedRun(t, pool, testEnvironment)
 	ctx := context.Background()
 
 	if _, err := pool.Exec(ctx,
@@ -274,5 +274,41 @@ func TestFinishedRunCannotBeAcquired(t *testing.T) {
 	// and a redelivered message must not start it again.
 	if _, err := Acquire(ctx, pool, runID, "worker-a"); !errors.Is(err, ErrNotAcquired) {
 		t.Fatalf("acquiring a completed run = %v, want ErrNotAcquired", err)
+	}
+}
+
+func TestReclaimLeavesTheOtherEnvironmentAlone(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	// Two abandoned runs, one per deployment. Requeuing the other one would
+	// hand its work to a worker with different credentials and storage.
+	mine := seedRun(t, pool, testEnvironment)
+	theirs := seedRun(t, pool, "production")
+
+	for _, id := range []string{mine, theirs} {
+		if _, err := pool.Exec(ctx, `
+			UPDATE reelpin.processing_runs
+			SET status = 'processing', lease_owner = 'gone', lease_expires_at = now() - interval '1 hour'
+			WHERE id = $1`, id); err != nil {
+			t.Fatalf("expiring a lease: %v", err)
+		}
+	}
+
+	reclaimed, err := ReclaimExpired(ctx, pool, 10, testEnvironment)
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if reclaimed != 1 {
+		t.Fatalf("reclaimed %d runs, want only this environment's", reclaimed)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM reelpin.processing_runs WHERE id = $1`, theirs).Scan(&status); err != nil {
+		t.Fatalf("reading the other run: %v", err)
+	}
+	if status != "processing" {
+		t.Errorf("the other environment's run became %q: it was requeued here", status)
 	}
 }

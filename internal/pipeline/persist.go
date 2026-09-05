@@ -244,9 +244,10 @@ func (p *Pipeline) saveOne(ctx context.Context, state *run, subscriber jobSubscr
 	// The reel is saved; filing it and telling the user are separate work that
 	// must not be able to undo it.
 	if err := outbox.Insert(ctx, transaction, outbox.Event{
-		EventID:    deterministicEventID(state.ID, subscriber.JobID, "save"),
-		EventType:  "reel.saved",
-		RoutingKey: "reelpin.notifications",
+		Environment: p.deps.Environment,
+		EventID:     deterministicEventID(state.ID, subscriber.JobID, "save"),
+		EventType:   "reel.saved",
+		RoutingKey:  "reelpin.notifications",
 		Payload: map[string]any{
 			"run_id":         state.ID,
 			"platform":       state.Identity.Platform,
@@ -280,9 +281,10 @@ func (p *Pipeline) emit(ctx context.Context, state *run, eventType, routingKey s
 	defer transaction.Rollback(ctx)
 
 	if err := outbox.Insert(ctx, transaction, outbox.Event{
-		EventID:    deterministicEventID(state.ID, state.VersionID, eventType),
-		EventType:  eventType,
-		RoutingKey: routingKey,
+		Environment: p.deps.Environment,
+		EventID:     deterministicEventID(state.ID, state.VersionID, eventType),
+		EventType:   eventType,
+		RoutingKey:  routingKey,
 		Payload: map[string]any{
 			"run_id":             state.ID,
 			"platform":           state.Identity.Platform,

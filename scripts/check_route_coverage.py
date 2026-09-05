@@ -62,9 +62,13 @@ def main():
                 "add it to go-only-routes.json with a reason"
             )
 
+    # go_routes includes the Go-only routes, so reporting it as "implemented"
+    # counted /metrics as a ported Python route. The two are separate numbers.
+    ported = len([key for key in go_routes if key in python_routes])
     print(
         f"python canonical routes: {len(python_routes)}  "
-        f"implemented in go: {len(go_routes)}  deferred: {len(deferred)}  go-only: {len(go_only)}"
+        f"ported to go: {ported}  deferred: {len(deferred)}  "
+        f"go-only: {len(go_only)}  (go routes total: {len(go_routes)})"
     )
     if problems:
         print("\nroute coverage problems:")

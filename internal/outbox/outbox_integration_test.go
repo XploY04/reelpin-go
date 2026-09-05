@@ -105,10 +105,11 @@ func insertEvent(t *testing.T, pool *pgxpool.Pool, eventID, runID string) {
 	defer tx.Rollback(ctx)
 
 	if err := Insert(ctx, tx, Event{
-		EventID:    eventID,
-		EventType:  "content.process",
-		RoutingKey: queue.QueueInstagram,
-		Payload:    map[string]any{"run_id": runID, "platform": "instagram"},
+		EventID:     eventID,
+		EventType:   "content.process",
+		RoutingKey:  queue.QueueInstagram,
+		Environment: testEnvironment,
+		Payload:     map[string]any{"run_id": runID, "platform": "instagram"},
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -120,7 +121,7 @@ func insertEvent(t *testing.T, pool *pgxpool.Pool, eventID, runID string) {
 func TestEventIsPublishedOnceAndMarked(t *testing.T) {
 	pool := testPool(t)
 	publisher := &recordingPublisher{}
-	dispatcher := NewDispatcher(pool, publisher, quiet(), 10)
+	dispatcher := NewDispatcher(pool, publisher, quiet(), 10, testEnvironment)
 	ctx := context.Background()
 
 	insertEvent(t, pool, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
@@ -152,7 +153,7 @@ func TestEventIsPublishedOnceAndMarked(t *testing.T) {
 func TestAnEventRolledBackIsNeverPublished(t *testing.T) {
 	pool := testPool(t)
 	publisher := &recordingPublisher{}
-	dispatcher := NewDispatcher(pool, publisher, quiet(), 10)
+	dispatcher := NewDispatcher(pool, publisher, quiet(), 10, testEnvironment)
 	ctx := context.Background()
 
 	tx, err := pool.Begin(ctx)
@@ -160,10 +161,11 @@ func TestAnEventRolledBackIsNeverPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := Insert(ctx, tx, Event{
-		EventID:    "33333333-3333-4333-8333-333333333333",
-		EventType:  "content.process",
-		RoutingKey: queue.QueueInstagram,
-		Payload:    map[string]any{"run_id": "44444444-4444-4444-8444-444444444444", "platform": "instagram"},
+		EventID:     "33333333-3333-4333-8333-333333333333",
+		EventType:   "content.process",
+		RoutingKey:  queue.QueueInstagram,
+		Environment: testEnvironment,
+		Payload:     map[string]any{"run_id": "44444444-4444-4444-8444-444444444444", "platform": "instagram"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +182,7 @@ func TestAnEventRolledBackIsNeverPublished(t *testing.T) {
 func TestPublishFailureLeavesTheRowForRetry(t *testing.T) {
 	pool := testPool(t)
 	publisher := &recordingPublisher{err: errors.New("broker is unreachable")}
-	dispatcher := NewDispatcher(pool, publisher, quiet(), 10)
+	dispatcher := NewDispatcher(pool, publisher, quiet(), 10, testEnvironment)
 	ctx := context.Background()
 
 	insertEvent(t, pool, "55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666")
@@ -222,7 +224,7 @@ func TestPublishFailureLeavesTheRowForRetry(t *testing.T) {
 func TestPoisonedRowIsParkedAfterMaxAttempts(t *testing.T) {
 	pool := testPool(t)
 	publisher := &recordingPublisher{err: errors.New("nope")}
-	dispatcher := NewDispatcher(pool, publisher, quiet(), 10)
+	dispatcher := NewDispatcher(pool, publisher, quiet(), 10, testEnvironment)
 	ctx := context.Background()
 
 	insertEvent(t, pool, "77777777-7777-4777-8777-777777777777", "88888888-8888-4888-8888-888888888888")
@@ -260,7 +262,7 @@ func TestConcurrentDispatchersDoNotDoubleSend(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			dispatcher := NewDispatcher(pool, publisher, quiet(), 5)
+			dispatcher := NewDispatcher(pool, publisher, quiet(), 5, testEnvironment)
 			for pass := 0; pass < 5; pass++ {
 				if _, err := dispatcher.DispatchOnce(ctx); err != nil {
 					t.Errorf("dispatch: %v", err)
@@ -313,5 +315,85 @@ func TestAvailabilityUsesTheDatabaseClock(t *testing.T) {
 	}
 	if !due {
 		t.Fatal("a freshly written event is not due yet by the database's clock")
+	}
+}
+
+func TestADispatcherNeverClaimsAnotherEnvironmentsEvent(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	// Dev and production share this table. The event below belongs to the
+	// other deployment, and publishing it here would run production work on a
+	// dev broker.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := Insert(ctx, tx, Event{
+		EventID:     "99999999-9999-4999-8999-999999999999",
+		EventType:   "content.process",
+		RoutingKey:  queue.QueueInstagram,
+		Environment: "production",
+		Payload:     map[string]any{"run_id": "88888888-8888-4888-8888-888888888888"},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	publisher := &recordingPublisher{}
+	published, err := NewDispatcher(pool, publisher, quiet(), 10, testEnvironment).DispatchOnce(ctx)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if published != 0 {
+		t.Fatalf("published %d of another environment's events", published)
+	}
+
+	// It is still there, waiting for the deployment it belongs to.
+	var pending int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM reelpin.outbox_events WHERE published_at IS NULL AND environment = 'production'`,
+	).Scan(&pending); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if pending != 1 {
+		t.Fatalf("pending production events = %d, want the row left untouched", pending)
+	}
+
+	// And the matching dispatcher does claim it.
+	claimed, err := NewDispatcher(pool, publisher, quiet(), 10, "production").DispatchOnce(ctx)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if claimed != 1 {
+		t.Fatalf("the production dispatcher published %d, want its own event", claimed)
+	}
+}
+
+func TestAnEventWithoutAnEnvironmentIsRefused(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// An unscoped row is claimable by either deployment, so it never gets
+	// written in the first place.
+	err = Insert(ctx, tx, Event{
+		EventID:    "77777777-7777-4777-8777-777777777777",
+		EventType:  "content.process",
+		RoutingKey: queue.QueueInstagram,
+		Payload:    map[string]any{},
+	})
+	if err == nil {
+		t.Fatal("an event with no environment was accepted")
+	}
+	if !strings.Contains(err.Error(), "environment") {
+		t.Errorf("err = %v, want it to name the missing environment", err)
 	}
 }

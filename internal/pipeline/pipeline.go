@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/platform"
@@ -36,6 +37,9 @@ type Deps struct {
 	// it on every exit, and sweeps leftovers on startup.
 	TempRoot string
 	Now      func() time.Time
+	// Environment scopes the rows this pipeline claims and the events it
+	// writes. Dev and production share one database.
+	Environment string
 	// Metrics is optional. Nil means the pipeline measures nothing.
 	Metrics *metrics.Metrics
 }
@@ -48,6 +52,9 @@ type Pipeline struct {
 func New(deps Deps) *Pipeline {
 	if deps.Now == nil {
 		deps.Now = time.Now
+	}
+	if deps.Environment == "" {
+		deps.Environment = enqueue.DefaultEnvironment
 	}
 	if deps.TempRoot == "" {
 		deps.TempRoot = filepath.Join(os.TempDir(), "reelpin-runs")
@@ -158,19 +165,29 @@ func (p *Pipeline) load(ctx context.Context, runID string) (*run, error) {
 		contentID   *string
 		normalized  string
 	)
+	var environment string
 	err := p.deps.Pool.QueryRow(ctx, `
 		SELECT r.id::text, c.id::text, c.source_platform, c.source_content_type,
-		       c.source_content_id, c.normalized_url
+		       c.source_content_id, c.normalized_url, r.environment
 		FROM reelpin.processing_runs r
 		JOIN reelpin.contents c ON c.id = r.content_id
 		WHERE r.id = $1`, runID,
-	).Scan(&state.ID, &state.ContentID, &platformID, &contentType, &contentID, &normalized)
+	).Scan(&state.ID, &state.ContentID, &platformID, &contentType, &contentID, &normalized, &environment)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The run is gone: the message describes work that no longer exists.
 		return nil, EmptyPostContent(fmt.Errorf("run %s not found", runID))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("loading the run: %w", err)
+	}
+
+	// The last line of defence against a shared broker. Dev and production
+	// share this database; if they also share a RabbitMQ vhost, one
+	// deployment's message can reach the other's worker. Running it would
+	// process the wrong environment's content with the wrong credentials, so
+	// it is refused here, where the damage would happen.
+	if environment != p.deps.Environment {
+		return nil, ErrForeignEnvironment(environment, p.deps.Environment)
 	}
 
 	state.Identity = sourceidentity.SourceIdentity{

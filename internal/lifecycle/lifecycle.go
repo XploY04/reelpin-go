@@ -37,10 +37,15 @@ type Service struct {
 	auth   AuthDeleter
 	cache  CacheInvalidator
 	logger *slog.Logger
+	// environment scopes the outbox events this service writes.
+	environment string
 }
 
-func New(pool *pgxpool.Pool, auth AuthDeleter, cache CacheInvalidator, logger *slog.Logger) *Service {
-	return &Service{pool: pool, auth: auth, cache: cache, logger: logger}
+func New(pool *pgxpool.Pool, auth AuthDeleter, cache CacheInvalidator, logger *slog.Logger, environment string) *Service {
+	if environment == "" {
+		environment = outbox.DefaultEnvironment
+	}
+	return &Service{pool: pool, auth: auth, cache: cache, logger: logger, environment: environment}
 }
 
 // DeleteReel removes one user's save and everything that pointed at it. The
@@ -90,9 +95,10 @@ func (s *Service) DeleteReel(ctx context.Context, userID, reelID string) error {
 	// Search indexes and stored thumbnails live outside this database, so they
 	// are cleaned by an event rather than in this transaction.
 	if err := outbox.Insert(ctx, transaction, outbox.Event{
-		EventID:    newEventID(),
-		EventType:  "reel.deleted",
-		RoutingKey: "reelpin.notifications",
+		Environment: s.environment,
+		EventID:     newEventID(),
+		EventType:   "reel.deleted",
+		RoutingKey:  "reelpin.notifications",
 		Payload: map[string]any{
 			"run_id":             reelID,
 			"platform":           "lifecycle",
@@ -183,10 +189,11 @@ func (s *Service) DeleteAccount(ctx context.Context, userID string) (DeleteAccou
 	// Storage objects and search vectors live elsewhere; the event is committed
 	// with the deletions so the cleanup cannot be lost.
 	if err := outbox.Insert(ctx, transaction, outbox.Event{
-		EventID:    newEventID(),
-		EventType:  "account.deleted",
-		RoutingKey: "reelpin.notifications",
-		Payload:    map[string]any{"run_id": userID, "platform": "lifecycle", "user_id": userID},
+		Environment: s.environment,
+		EventID:     newEventID(),
+		EventType:   "account.deleted",
+		RoutingKey:  "reelpin.notifications",
+		Payload:     map[string]any{"run_id": userID, "platform": "lifecycle", "user_id": userID},
 	}); err != nil {
 		return report, err
 	}

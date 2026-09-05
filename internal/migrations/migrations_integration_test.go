@@ -356,9 +356,12 @@ func TestHotPathsUseIndexes(t *testing.T) {
 			want: "contents_public_identity_key",
 		},
 		{
+			// This mirrors the dispatcher's claim, which filters by
+			// environment first: dev and production share this table.
 			name: "available outbox rows",
 			query: `EXPLAIN SELECT event_id FROM reelpin.outbox_events
-			        WHERE published_at IS NULL AND available_at <= now()
+			        WHERE environment = 'production'
+			          AND published_at IS NULL AND available_at <= now()
 			        ORDER BY available_at, event_id LIMIT 100`,
 			want: "outbox_events_pending_idx",
 		},
@@ -366,6 +369,7 @@ func TestHotPathsUseIndexes(t *testing.T) {
 			name: "active run for a content",
 			query: `EXPLAIN SELECT id FROM reelpin.processing_runs
 			        WHERE content_id='11111111-1111-4111-8111-111111111111' AND processor_version='v1'
+			          AND environment='production'
 			          AND status IN ('queued','processing','retry_scheduled')`,
 			want: "processing_runs_active_key",
 		},

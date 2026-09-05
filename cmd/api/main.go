@@ -163,16 +163,16 @@ func run(logger *slog.Logger) error {
 			Reels:       postgres.NewReels(pool),
 			Jobs:        postgres.NewJobs(pool),
 			Share:       shareResolver,
-			Enqueue:     enqueue.New(pool, shareResolver, enqueue.DefaultLimits),
+			Enqueue:     enqueue.New(pool, shareResolver, enqueue.DefaultLimits, cfg.Environment),
 			ShareTokens: sharetoken.NewStore(pool),
-			Collections: collections.New(pool, cfg.CollectionShareBaseURL, time.Now),
+			Collections: collections.New(pool, cfg.CollectionShareBaseURL, time.Now, cfg.Environment),
 			Notifications: notify.NewService(pool,
 				notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 			AdminKey: cfg.AdminKey,
 			// The identity itself is deleted through Supabase, which this
 			// service does not own; until that adapter exists the account
 			// delete removes everything else and reports honestly.
-			Lifecycle: lifecycle.New(pool, nil, responseCache, logger),
+			Lifecycle: lifecycle.New(pool, nil, responseCache, logger, cfg.Environment),
 			Map: mapview.NewService(pool,
 				mapview.NewGooglePlaces(cfg.GooglePlacesAPIKey, 0), time.Now),
 			Search:         searchService,

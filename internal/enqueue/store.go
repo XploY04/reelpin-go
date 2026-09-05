@@ -27,6 +27,8 @@ func (s *Service) reuseJob(
 	identity sourceidentity.SourceIdentity,
 	collectionIDs []string,
 ) (jobs.JobRecord, bool, error) {
+	// Scoped like everything else: a job the same user created in the other
+	// deployment is not an answer to a share made in this one.
 	var (
 		id           string
 		status       string
@@ -36,13 +38,14 @@ func (s *Service) reuseJob(
 	err := s.pool.QueryRow(ctx, `
 		SELECT id::text, status, result_reel_id::text, collection_ids
 		FROM public.processing_jobs
-		WHERE user_id = $1
+		WHERE user_id = $1 AND environment = $5
 		  AND (normalized_url = $2 OR url = $2
 		       OR ($3::text IS NOT NULL AND source_platform = $4 AND source_content_id = $3))
 		  AND status IN ('queued', 'processing', 'completed')
 		ORDER BY created_at DESC
 		LIMIT 1`,
 		userID, identity.NormalizedURL, nullableText(identity.ContentID), identity.Platform,
+		s.environment,
 	).Scan(&id, &status, &resultReelID, &existingIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobs.JobRecord{}, false, nil
@@ -202,12 +205,16 @@ func currentContentVersion(ctx context.Context, tx pgx.Tx, contentID string) (*s
 // when there is none. Two users sharing at the same moment both land on one
 // run: the partial unique index makes the second insert lose, and the loser
 // reads the winner's row.
+// findOrCreateRun scopes both halves by environment. Without it a dev run
+// makes production believe the work is already in flight, and a production
+// share silently attaches to a dev run.
 func findOrCreateRun(
 	ctx context.Context,
 	tx pgx.Tx,
 	contentID string,
 	identity sourceidentity.SourceIdentity,
 	hasVersion bool,
+	environment string,
 ) (string, string, error) {
 	routing := routingQueue(identity.Platform)
 	if hasVersion {
@@ -217,11 +224,12 @@ func findOrCreateRun(
 
 	var runID string
 	err := tx.QueryRow(ctx, `
-		INSERT INTO reelpin.processing_runs (content_id, processor_version, platform, status, stage, max_attempts)
-		VALUES ($1, $2, $3, 'queued', 'prepare', $4)
+		INSERT INTO reelpin.processing_runs
+			(content_id, processor_version, platform, status, stage, max_attempts, environment)
+		VALUES ($1, $2, $3, 'queued', 'prepare', $4, $5)
 		ON CONFLICT DO NOTHING
 		RETURNING id::text`,
-		contentID, ProcessorVersion, identity.Platform, defaultMaxAttempts,
+		contentID, ProcessorVersion, identity.Platform, defaultMaxAttempts, environment,
 	).Scan(&runID)
 	if err == nil {
 		return runID, routing, nil
@@ -232,11 +240,11 @@ func findOrCreateRun(
 
 	if err := tx.QueryRow(ctx, `
 		SELECT id::text FROM reelpin.processing_runs
-		WHERE content_id = $1 AND processor_version = $2
+		WHERE content_id = $1 AND processor_version = $2 AND environment = $3
 		  AND status IN ('queued', 'processing', 'retry_scheduled')
 		ORDER BY created_at
 		LIMIT 1`,
-		contentID, ProcessorVersion,
+		contentID, ProcessorVersion, environment,
 	).Scan(&runID); err != nil {
 		return "", "", fmt.Errorf("reading the live processing run: %w", err)
 	}
@@ -250,6 +258,7 @@ func createJob(
 	identity sourceidentity.SourceIdentity,
 	runID string,
 	collectionIDs []string,
+	environment string,
 ) (jobs.JobRecord, error) {
 	encoded, err := json.Marshal(collectionIDs)
 	if err != nil {
@@ -266,12 +275,12 @@ func createJob(
 		INSERT INTO public.processing_jobs
 			(user_id, url, normalized_url, source_platform, source_content_type, source_content_id,
 			 processing_version, ingestion_method, status, current_step, max_attempts,
-			 collection_ids, processing_run_id)
-		VALUES ($1, $2, $2, $3, $4, $5, $6, $7, 'queued', 'queued', $8, $9, $10)
+			 collection_ids, processing_run_id, environment)
+		VALUES ($1, $2, $2, $3, $4, $5, $6, $7, 'queued', 'queued', $8, $9, $10, $11)
 		RETURNING id::text`,
 		request.UserID, identity.NormalizedURL, identity.Platform, identity.ContentType,
 		nullableText(identity.ContentID), ProcessorVersion, ingestion, defaultMaxAttempts,
-		encoded, runID,
+		encoded, runID, environment,
 	).Scan(&jobID); err != nil {
 		return jobs.JobRecord{}, fmt.Errorf("creating the processing job: %w", err)
 	}

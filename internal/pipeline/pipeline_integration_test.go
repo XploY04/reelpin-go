@@ -55,6 +55,7 @@ CREATE TABLE public.reels (
 CREATE TABLE public.processing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'test',
     url TEXT NOT NULL,
     normalized_url TEXT,
     source_platform TEXT,
@@ -266,6 +267,7 @@ func newHarness(t *testing.T, users ...string) *harness {
 		Geocoder:    h.geocoder,
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		TempRoot:    t.TempDir(),
+		Environment: testEnvironment,
 	})
 
 	// One content, one run, one private job per user: the shape enqueue creates.
@@ -278,9 +280,9 @@ func newHarness(t *testing.T, users ...string) *harness {
 		t.Fatalf("seeding content: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO reelpin.processing_runs (content_id, processor_version, platform, status)
-		VALUES ($1, $2, 'instagram', 'processing')
-		RETURNING id::text`, contentID, enqueue.ProcessorVersion).Scan(&h.runID); err != nil {
+		INSERT INTO reelpin.processing_runs (content_id, processor_version, platform, status, environment)
+		VALUES ($1, $2, 'instagram', 'processing', $3)
+		RETURNING id::text`, contentID, enqueue.ProcessorVersion, testEnvironment).Scan(&h.runID); err != nil {
 		t.Fatalf("seeding run: %v", err)
 	}
 	for _, user := range users {
@@ -620,5 +622,37 @@ func TestCategoriesReuseTheUsersExistingTree(t *testing.T) {
 	}
 	if len(h.categorizer.seen) == 0 || !strings.Contains(strings.Join(h.categorizer.seen, "|"), "Travel > Beaches") {
 		t.Fatalf("the categorizer was given %v, want the user's existing tree", h.categorizer.seen)
+	}
+}
+
+func TestAnotherEnvironmentsRunIsRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// The last line of defence: if the two deployments share a broker, this
+	// message reaches the wrong worker. Running it would process the other
+	// environment's content with these credentials.
+	if _, err := h.pool.Exec(ctx,
+		`UPDATE reelpin.processing_runs SET environment = 'production' WHERE id = $1`, h.runID); err != nil {
+		t.Fatalf("moving the run: %v", err)
+	}
+
+	err := h.pipeline.Process(ctx, queue.Message{RunID: h.runID, Platform: "instagram"})
+	if err == nil {
+		t.Fatal("the worker ran another environment's job")
+	}
+
+	var failure *Failure
+	if !errors.As(err, &failure) {
+		t.Fatalf("err = %v, want a classified failure", err)
+	}
+	if failure.Code != "foreign_environment" {
+		t.Errorf("failure code = %q", failure.Code)
+	}
+	if !failure.Terminal() {
+		t.Error("a shared broker is a misconfiguration: retrying sends it back to the same wrong worker")
+	}
+	if h.handler.calls.Load() != 0 {
+		t.Error("the run was prepared before the environment was checked")
 	}
 }

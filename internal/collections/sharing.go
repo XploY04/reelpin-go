@@ -386,7 +386,7 @@ func (s *Service) FileReel(ctx context.Context, userID, reelID string, collectio
 			return filed, err
 		}
 		if added > 0 {
-			if err := emitCollectionEvent(ctx, transaction, collectionID, userID, added); err != nil {
+			if err := emitCollectionEvent(ctx, transaction, collectionID, userID, added, s.environment); err != nil {
 				transaction.Rollback(ctx)
 				return filed, err
 			}

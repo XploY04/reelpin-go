@@ -52,6 +52,7 @@ CREATE TABLE reels (
 CREATE TABLE processing_jobs (
     id UUID PRIMARY KEY,
     user_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'test',
     url TEXT NOT NULL,
     normalized_url TEXT,
     source_platform TEXT,

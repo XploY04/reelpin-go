@@ -30,6 +30,7 @@ CREATE TABLE public.reels (
 CREATE TABLE public.processing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'test',
     url TEXT NOT NULL,
     normalized_url TEXT,
     source_platform TEXT,
@@ -124,7 +125,7 @@ func testService(t *testing.T) (*Service, *pgxpool.Pool) {
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
-	return New(pool, &sourceidentity.Resolver{}, DefaultLimits), pool
+	return New(pool, &sourceidentity.Resolver{}, DefaultLimits, testEnvironment), pool
 }
 
 const sharedReel = "https://www.instagram.com/reel/SHARED1/"
@@ -420,5 +421,54 @@ func seedMember(t *testing.T, pool *pgxpool.Pool, collectionID, userID, role str
 		collectionID, userID, role,
 	); err != nil {
 		t.Fatalf("seeding a member: %v", err)
+	}
+}
+
+func TestTheOtherEnvironmentsRunIsNotReused(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	first, err := service.Enqueue(ctx, Request{UserID: userA, URL: sharedReel})
+	if err != nil {
+		t.Fatalf("first share: %v", err)
+	}
+
+	// The same link, shared into the other deployment. Dev and production share
+	// this table, so without an environment the second share would attach to
+	// the first run and its result would land in the wrong environment.
+	other := New(pool, &sourceidentity.Resolver{}, DefaultLimits, "production")
+	second, err := other.Enqueue(ctx, Request{UserID: userB, URL: sharedReel})
+	if err != nil {
+		t.Fatalf("second share: %v", err)
+	}
+
+	if second.Job.ID == first.Job.ID {
+		t.Fatal("the other environment reused this environment's job")
+	}
+
+	var runs int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(DISTINCT environment) FROM reelpin.processing_runs`).Scan(&runs); err != nil {
+		t.Fatalf("counting runs: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("distinct environments with runs = %d, want one each", runs)
+	}
+
+	// Within one environment the dedup still holds: this is the behaviour the
+	// scoping must not break.
+	again, err := service.Enqueue(ctx, Request{UserID: userB, URL: sharedReel})
+	if err != nil {
+		t.Fatalf("third share: %v", err)
+	}
+	var sameRun bool
+	if err := pool.QueryRow(ctx, `
+		SELECT (SELECT processing_run_id FROM public.processing_jobs WHERE id = $1)
+		     = (SELECT processing_run_id FROM public.processing_jobs WHERE id = $2)`,
+		again.Job.ID, first.Job.ID).Scan(&sameRun); err != nil {
+		t.Fatalf("comparing runs: %v", err)
+	}
+	if !sameRun {
+		t.Error("two users in the same environment did not share one run")
 	}
 }

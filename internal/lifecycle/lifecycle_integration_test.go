@@ -27,6 +27,7 @@ CREATE TABLE public.reels (
 CREATE TABLE public.processing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'test',
     url TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued',
     result_reel_id UUID,
@@ -191,7 +192,7 @@ func testService(t *testing.T) (*Service, *pgxpool.Pool, *stubAuth, *stubCache) 
 
 	auth := &stubAuth{}
 	cache := &stubCache{}
-	return New(pool, auth, cache, slog.New(slog.NewJSONHandler(io.Discard, nil))), pool, auth, cache
+	return New(pool, auth, cache, slog.New(slog.NewJSONHandler(io.Discard, nil)), testEnvironment), pool, auth, cache
 }
 
 func seedSharedContent(t *testing.T, pool *pgxpool.Pool) (string, string) {

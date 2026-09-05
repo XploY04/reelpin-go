@@ -49,6 +49,7 @@ CREATE TABLE public.reels (
 CREATE TABLE public.processing_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'test',
     url TEXT NOT NULL,
     normalized_url TEXT,
     status TEXT NOT NULL DEFAULT 'queued',

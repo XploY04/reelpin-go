@@ -6,6 +6,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -42,6 +43,16 @@ func (c FailureClass) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// ErrForeignEnvironment is a misconfiguration, not a content problem: two
+// deployments are sharing a broker. It is terminal because retrying sends the
+// same message back to the same wrong worker.
+func ErrForeignEnvironment(runEnvironment, workerEnvironment string) *Failure {
+	return newFailure(ContentTerminal, "foreign_environment",
+		"This job belongs to another environment.",
+		fmt.Errorf("run belongs to %q but this worker serves %q: the deployments are sharing a broker",
+			runEnvironment, workerEnvironment))
 }
 
 // Failure is what a stage returns when it cannot finish.

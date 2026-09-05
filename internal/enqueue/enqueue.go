@@ -69,13 +69,20 @@ type Service struct {
 	pool     *pgxpool.Pool
 	resolver *sourceidentity.Resolver
 	limits   Limits
+	// environment scopes everything this service creates. Dev and production
+	// share one database, so a run or an event without it can be claimed by the
+	// other deployment.
+	environment string
 }
 
-func New(pool *pgxpool.Pool, resolver *sourceidentity.Resolver, limits Limits) *Service {
+func New(pool *pgxpool.Pool, resolver *sourceidentity.Resolver, limits Limits, environment string) *Service {
 	if limits.SubmissionsPerHour <= 0 {
 		limits = DefaultLimits
 	}
-	return &Service{pool: pool, resolver: resolver, limits: limits}
+	if environment == "" {
+		environment = DefaultEnvironment
+	}
+	return &Service{pool: pool, resolver: resolver, limits: limits, environment: environment}
 }
 
 // Enqueue is one transaction from the caller's point of view: either a job row
@@ -121,12 +128,12 @@ func (s *Service) Enqueue(ctx context.Context, request Request) (Result, error) 
 		return Result{}, err
 	}
 
-	runID, routingQueue, err := findOrCreateRun(ctx, transaction, contentID, identity, hasVersion)
+	runID, routingQueue, err := findOrCreateRun(ctx, transaction, contentID, identity, hasVersion, s.environment)
 	if err != nil {
 		return Result{}, err
 	}
 
-	job, err := createJob(ctx, transaction, request, identity, runID, collectionIDs)
+	job, err := createJob(ctx, transaction, request, identity, runID, collectionIDs, s.environment)
 	if err != nil {
 		return Result{}, err
 	}
@@ -138,9 +145,10 @@ func (s *Service) Enqueue(ctx context.Context, request Request) (Result, error) 
 	if err := outbox.Insert(ctx, transaction, outbox.Event{
 		// The job id doubles as the event id: one share produces one event, and
 		// a retried enqueue cannot produce two.
-		EventID:    eventID.String(),
-		EventType:  eventType(hasVersion),
-		RoutingKey: routingQueue,
+		EventID:     eventID.String(),
+		EventType:   eventType(hasVersion),
+		RoutingKey:  routingQueue,
+		Environment: s.environment,
 		Payload: map[string]any{
 			"run_id":             runID,
 			"platform":           identity.Platform,

@@ -144,7 +144,7 @@ func testService(t *testing.T) (*Service, *pgxpool.Pool) {
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
-	return New(pool, "https://reelpin.in", func() time.Time { return time.Now() }), pool
+	return New(pool, "https://reelpin.in", func() time.Time { return time.Now() }, testEnvironment), pool
 }
 
 func seedReel(t *testing.T, pool *pgxpool.Pool, userID, title string) string {
