@@ -63,6 +63,19 @@ jobs:
       - name: race tests
         run: go test -race ./...
 
+      - name: install pgvector into the postgres service
+        # The PostGIS image carries PostGIS but not pgvector, and the migrations
+        # need both. Installing it into the running service container is
+        # cheaper than maintaining a bespoke image.
+        run: |
+          container=$(docker ps --filter "ancestor=postgis/postgis:16-3.5" --format "{{.ID}}" | head -n1)
+          if [ -z "$container" ]; then
+            echo "the postgres service container was not found"
+            docker ps
+            exit 1
+          fi
+          docker exec "$container" bash -c "apt-get update -qq && apt-get install -y -qq postgresql-16-pgvector"
+
       - name: integration tests
         env:
           # Assembled at run time: a connection URI with inline credentials in
