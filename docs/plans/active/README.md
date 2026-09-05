@@ -17,3 +17,5 @@ Files matching `*.local.md` here are gitignored, for whoever is holding the pen.
 
 - [`backend-and-web-roadmap.md`](backend-and-web-roadmap.md): Go backend,
   authenticated ReelPin web, production-data migration and cutover.
+- [`architecture-decisions.md`](architecture-decisions.md): the decision gate
+  that must be completed before more implementation.
