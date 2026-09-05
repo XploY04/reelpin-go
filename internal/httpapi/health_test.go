@@ -228,7 +228,7 @@ func TestFrameworkErrorsAreJSON(t *testing.T) {
 		{name: "unknown route", method: "GET", path: "/missing", wantStatus: http.StatusNotFound, wantCode: "not_found"},
 		{name: "unknown api route", method: "GET", path: "/api/v1/nothing-here", wantStatus: http.StatusNotFound, wantCode: "not_found"},
 		{name: "wrong method", method: "POST", path: "/api/v1/health/live", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
-		{name: "wrong method on a reel route", method: "DELETE", path: "/api/v1/reels/abc", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
+		{name: "wrong method on a reel route", method: "PATCH", path: "/api/v1/reels/abc", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
 	}
 
 	for _, tt := range tests {

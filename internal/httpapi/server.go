@@ -41,6 +41,7 @@ type Deps struct {
 	Collections   Collections
 	Map           MapService
 	Notifications Notifications
+	Lifecycle     Lifecycle
 	// AdminKey guards the operator routes. Empty means they are unavailable
 	// rather than open.
 	AdminKey string
@@ -214,6 +215,9 @@ func (s *Server) routeTable() []Route {
 		}, false),
 		guarded(http.MethodDelete, "/map/items/{map_item_id}", s.handleDeleteMapItem, routeLimit{}, false),
 		guarded(http.MethodGet, "/discover", s.handleDiscover, routeLimit{}, true),
+
+		guarded(http.MethodDelete, "/reels/{reel_id}", s.handleDeleteReel, routeLimit{}, false),
+		apiOnly(http.MethodDelete, "/account", s.handleDeleteAccount),
 
 		// Device tokens. Registration is metered and fails closed: it writes,
 		// and the native path calls it on every launch.

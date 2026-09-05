@@ -9,6 +9,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/reels"
@@ -140,6 +141,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Collections:   newFakeCollections(),
 		Map:           &fakeMap{},
 		Notifications: &fakeNotifications{},
+		Lifecycle:     &fakeLifecycle{},
 		AdminKey:      testAdminKey,
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
@@ -341,4 +343,21 @@ func (f *fakeNotifications) SendCampaign(context.Context, string) (notify.Campai
 func (f *fakeNotifications) CancelCampaign(context.Context, string) (notify.Campaign, error) {
 	f.lastAction = "cancel_campaign"
 	return f.campaign, f.err
+}
+
+type fakeLifecycle struct {
+	err        error
+	report     lifecycle.DeleteAccountReport
+	lastUserID string
+	lastAction string
+}
+
+func (f *fakeLifecycle) DeleteReel(_ context.Context, userID, _ string) error {
+	f.lastUserID, f.lastAction = userID, "delete_reel"
+	return f.err
+}
+
+func (f *fakeLifecycle) DeleteAccount(_ context.Context, userID string) (lifecycle.DeleteAccountReport, error) {
+	f.lastUserID, f.lastAction = userID, "delete_account"
+	return f.report, f.err
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/platform/social"
@@ -122,6 +123,10 @@ func run(logger *slog.Logger) error {
 			Notifications: notify.NewService(pool,
 				notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 			AdminKey: cfg.AdminKey,
+			// The identity itself is deleted through Supabase, which this
+			// service does not own; until that adapter exists the account
+			// delete removes everything else and reports honestly.
+			Lifecycle: lifecycle.New(pool, nil, responseCache, logger),
 			Map: mapview.NewService(pool,
 				mapview.NewGooglePlaces(cfg.GooglePlacesAPIKey, 0), time.Now),
 			Limiter:        limiterOrNil(limiter),

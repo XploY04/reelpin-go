@@ -1,7 +1,12 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 45,
+  "route_count": 47,
   "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/v1/account",
+      "authenticated": true
+    },
     {
       "method": "GET",
       "path": "/api/v1/account/entitlements",
@@ -221,6 +226,12 @@
       "method": "GET",
       "path": "/api/v1/reels/filters",
       "alias": "/reels/filters",
+      "authenticated": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/reels/{reel_id}",
+      "alias": "/reels/{reel_id}",
       "authenticated": true
     },
     {

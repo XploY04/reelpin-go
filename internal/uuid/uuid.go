@@ -3,6 +3,7 @@
 package uuid
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 )
@@ -41,3 +42,17 @@ func (u UUID) String() string {
 }
 
 func (u UUID) IsZero() bool { return u == Nil }
+
+// NewString returns a random version 4 UUID. It is used for ids the database
+// does not generate, such as an outbox event written from application code.
+func NewString() string {
+	var buffer [16]byte
+	if _, err := rand.Read(buffer[:]); err != nil {
+		// crypto/rand does not fail on any platform this runs on; if it ever
+		// did, a predictable id would be worse than stopping.
+		panic("uuid: " + err.Error())
+	}
+	buffer[6] = (buffer[6] & 0x0f) | 0x40
+	buffer[8] = (buffer[8] & 0x3f) | 0x80
+	return UUID(buffer).String()
+}

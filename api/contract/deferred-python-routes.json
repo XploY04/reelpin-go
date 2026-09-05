@@ -1,14 +1,7 @@
 {
   "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
-  "deferred_route_count": 20,
+  "deferred_route_count": 18,
   "routes": [
-    {
-      "method": "DELETE",
-      "path": "/api/v1/account",
-      "alias": "",
-      "owner": "task-17",
-      "reason": "Reel and account deletion."
-    },
     {
       "method": "GET",
       "path": "/api/v1/dashboard/overview",
@@ -106,13 +99,6 @@
       "alias": "/reels/reclassify-categories",
       "owner": "task-21",
       "reason": "Evidence gate: replaced by a maintenance command unless a real caller exists."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/reels/{reel_id}",
-      "alias": "/reels/{reel_id}",
-      "owner": "task-17",
-      "reason": "Reel and account deletion."
     },
     {
       "method": "GET",

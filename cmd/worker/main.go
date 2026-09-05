@@ -100,6 +100,11 @@ func run(logger *slog.Logger) error {
 
 	go workerhealth.New(redisClient, pool, cfg.WorkerPrefix(), workerID, queue.WorkQueues).Run(ctx)
 
+	// Housekeeping the queue cannot do for itself: runs whose worker vanished
+	// come back, and published events stop accumulating.
+	started++
+	go func() { done <- runMaintenance(ctx, pool, logger) }()
+
 	dispatcher := outbox.NewDispatcher(pool, publisher, logger, cfg.OutboxBatchSize)
 	started++
 	go func() { done <- dispatcher.Run(ctx, time.Second) }()
@@ -221,6 +226,38 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	return firstErr
+}
+
+// maintenanceInterval is how often the housekeeping sweep runs. It is slow on
+// purpose: none of this is urgent, and all of it touches shared tables.
+const maintenanceInterval = 5 * time.Minute
+
+// runMaintenance reclaims abandoned runs and trims published events. Retention
+// of user-facing data stays a deliberate command, not a background job.
+func runMaintenance(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
+	ticker := time.NewTicker(maintenanceInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			reclaimed, err := lease.ReclaimExpired(ctx, pool, 200)
+			if err != nil {
+				logger.Warn("reclaiming expired leases failed", "error", err)
+			} else if reclaimed > 0 {
+				logger.Info("reclaimed runs from workers that went away", "count", reclaimed)
+			}
+
+			if _, err := pool.Exec(ctx, `
+				DELETE FROM reelpin.outbox_events
+				WHERE published_at IS NOT NULL AND published_at < now() - interval '14 days'`,
+			); err != nil {
+				logger.Warn("trimming published outbox events failed", "error", err)
+			}
+		}
+	}
 }
 
 // dispatch routes a message by what it describes. Processing a run, filing a
