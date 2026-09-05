@@ -34,6 +34,11 @@ production deploy, and then the two are not the same image.
 Deployment is `workflow_dispatch` only today. Making the dev deploy automatic on
 push to `dev` is step 1 below.
 
+**Production is a promotion, not a build.** Deploy to dev first, take the digest
+from that run, and dispatch production with it in the `digest` input. Leaving
+`digest` empty builds a fresh image, which is fine for dev and wrong for
+production: it would deploy bytes nothing tested.
+
 Migrations run as one job before anything new starts. The runner takes a
 PostgreSQL advisory lock, so two deploys racing cannot both apply. Migrations
 are expand-only: **never roll one back**. Roll back the application and ship a

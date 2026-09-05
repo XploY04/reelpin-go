@@ -181,6 +181,25 @@ jobs:
             exit 1
           }
 
+      - name: running another binary in the image needs an entrypoint override
+        # The image entrypoint is the API. This is the mistake the release
+        # workflow made once: appending a command hands it to the API instead.
+        run: |
+          set +e
+          output=$(docker run --rm reelpin-api:ci /usr/local/bin/reelpin-maintenance migrate 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -ne 2 ]; then
+            echo "the api accepted stray arguments instead of refusing them (exit $status)"
+            exit 1
+          fi
+          docker run --rm --entrypoint /usr/local/bin/reelpin-maintenance reelpin-api:ci --help 2>&1 | head -n 3 || true
+          if ! grep -q -- "--entrypoint" .github/workflows/release.yml; then
+            echo "the release workflow runs maintenance without an entrypoint override"
+            exit 1
+          fi
+
       - name: sbom
         uses: anchore/sbom-action@v0.24.2
         with:

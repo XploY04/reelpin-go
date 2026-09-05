@@ -5,15 +5,32 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
+
+// defaultHealthcheckURL follows the API's configured port, so a service moved
+// off 8000 is not reported unhealthy by its own health check.
+func defaultHealthcheckURL() string {
+	if url := strings.TrimSpace(os.Getenv("HEALTHCHECK_URL")); url != "" {
+		return url
+	}
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "8000"
+	}
+	return "http://127.0.0.1:" + port + "/api/v1/health/live"
+}
 
 // runHealthcheck is the container's HEALTHCHECK. It calls liveness, which never
 // touches the database, so a failure means this process is gone rather than a
 // dependency being slow. It prints nothing on success: Docker keeps the output.
 func runHealthcheck(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
-	url := flags.String("url", "http://127.0.0.1:8000/api/v1/health/live", "the liveness endpoint to call")
+	// One image runs both binaries on different ports, so the default follows
+	// PORT and the deployment can override the whole URL for the worker.
+	url := flags.String("url", defaultHealthcheckURL(), "the liveness endpoint to call")
 	timeout := flags.Duration("timeout", 3*time.Second, "how long to wait")
 	if err := flags.Parse(args); err != nil {
 		return err

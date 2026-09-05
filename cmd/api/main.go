@@ -37,6 +37,16 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
+	// This binary takes no arguments. Being handed some means something meant
+	// to run a different command inside the image and forgot --entrypoint, and
+	// silently serving instead would hide it.
+	if len(os.Args) > 1 {
+		logger.Error("this command takes no arguments",
+			"args", os.Args[1:],
+			"hint", "to run another binary in this image, pass --entrypoint")
+		os.Exit(2)
+	}
+
 	if err := run(logger); err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)

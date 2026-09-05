@@ -54,7 +54,13 @@ EXPOSE 8000 9100
 
 # Liveness never touches the database, so a failing check means the process
 # itself is gone, not that a dependency is slow.
+#
+# The API and the worker serve different endpoints on different ports, and one
+# image runs both, so the URL comes from an environment variable the deployment
+# sets. The default matches the API's default port; a worker deployment sets
+# HEALTHCHECK_URL to its own metrics listener.
+ENV HEALTHCHECK_URL=http://127.0.0.1:8000/api/v1/health/live
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["/usr/local/bin/reelpin-maintenance", "healthcheck"]
+    CMD /usr/local/bin/reelpin-maintenance healthcheck --url "$HEALTHCHECK_URL"
 
 ENTRYPOINT ["/usr/local/bin/reelpin-api"]

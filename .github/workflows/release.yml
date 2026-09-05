@@ -9,11 +9,18 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Which host to deploy the built digest to
+        description: Which host to deploy to
         required: true
         type: choice
         options: [none, dev, production]
         default: none
+      digest:
+        description: >-
+          Promote this already-built digest (sha256:...) instead of building a
+          new one. Production should always be given the digest that was tested
+          on dev; leave empty only for a dev deploy of the current commit.
+        required: false
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -21,6 +28,9 @@ env:
 
 jobs:
   build:
+    # Skipped when a digest is being promoted: the whole point of promotion is
+    # that production runs the bytes dev tested, not a fresh build of them.
+    if: inputs.digest == '' || inputs.digest == null
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -69,12 +79,29 @@ jobs:
     # Deployment is manual until the cutover. Go does not own traffic yet, and a
     # push-triggered deploy would be a release nobody asked for. Turning this
     # into an automatic dev deploy is step 1 of deploy/CUTOVER.md.
-    if: github.event_name == 'workflow_dispatch' && inputs.environment != 'none'
+    if: |
+      always() && github.event_name == 'workflow_dispatch' &&
+      inputs.environment != 'none' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     needs: build
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: choose the digest to deploy
+        # Either the one just built, or the one being promoted. Never a tag.
+        run: |
+          digest="${{ inputs.digest }}"
+          if [ -z "$digest" ]; then
+            digest="${{ needs.build.outputs.digest }}"
+          fi
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "refusing to deploy '$digest': pass an image digest, not a tag"; exit 1 ;;
+          esac
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "deploying ${{ env.IMAGE }}@$digest"
 
       - name: open an ssh session to the host
         env:
@@ -97,24 +124,21 @@ jobs:
       - name: migrate
         # One migration job, before anything new starts. The runner takes a
         # PostgreSQL advisory lock, so two deploys racing cannot both apply.
-        env:
-          DIGEST: ${{ needs.build.outputs.digest }}
         run: |
+          # --entrypoint is required: the image's entrypoint is the API, so
+          # trailing arguments would be handed to the API and the migration
+          # would never run.
           $SSH "docker run --rm --env-file /etc/reelpin/${{ inputs.environment }}.env \
-            ${{ env.IMAGE }}@${DIGEST} \
-            /usr/local/bin/reelpin-maintenance migrate"
+            --entrypoint /usr/local/bin/reelpin-maintenance \
+            ${{ env.IMAGE }}@${DIGEST} migrate"
 
       - name: deploy the api
-        env:
-          DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           $SSH "sudo /tmp/reelpin-deploy.sh api ${{ inputs.environment }} ${{ env.IMAGE }}@${DIGEST}"
 
       - name: deploy the worker
         # The worker is deployed separately: an API rollback must be able to
         # leave workers draining RabbitMQ, because nothing else can consume it.
-        env:
-          DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           $SSH "sudo /tmp/reelpin-deploy.sh worker ${{ inputs.environment }} ${{ env.IMAGE }}@${DIGEST}"
 
