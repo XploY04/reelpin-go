@@ -28,7 +28,8 @@ The cost is another set of resources, migrations and secrets. Repository
 commands must be able to create an empty development environment, and production
 migrations must still preserve existing data.
 
-The current EC2 development host is in `ap-south-1`, while both Supabase
-projects are in `ap-northeast-1`. A real readiness ping took about 265 ms.
-Development can accept that cost; production Go compute should run near the
-production database and be selected from measured latency.
+The current EC2 development host and the provided production EC2 are in Mumbai,
+while both Supabase projects are in Tokyo. A development readiness ping took
+about 265 ms. The product owner chose the existing Mumbai production host, so
+the production rehearsal must measure and explicitly accept database latency;
+an SLO failure is the trigger to move compute near the database.

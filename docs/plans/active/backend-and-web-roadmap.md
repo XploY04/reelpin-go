@@ -36,7 +36,7 @@ track and changes two assumptions:
 | Service shape | One Go module with API, worker and maintenance binaries | One deployable codebase keeps transactions, contracts and debugging together | Independent teams or scaling measurements require separate services |
 | Database | PostgreSQL in Supabase | Existing production data is there; relational ownership, JSONB, PostGIS, full-text search and pgvector fit the product | A measured workload cannot be handled by PostgreSQL |
 | Environments | Separate Supabase projects, Redis instances and RabbitMQ virtual hosts | Infrastructure isolation prevents a dev process from reading or claiming production work | Never replace this with row flags |
-| Compute region | Run production Go near the production Supabase region | The current cross-region development database ping is about 265 ms before query work starts | Change only after measuring database and user latency |
+| Compute region | Use the provided Mumbai production EC2 while Supabase remains in Tokyo | Reuse the existing production host and measure the accepted cross-region latency | Move compute after production rehearsal or latency SLO failure |
 | Authentication | Supabase Auth for Flutter and web; local JWKS verification in Go | One identity across clients, no per-request Auth network call | Immediate token revocation becomes a measured requirement |
 | Queue | RabbitMQ with durable queues, publisher confirms, manual acknowledgements and dead letters | Processing is long-running, retryable and observable | A managed workflow engine becomes cheaper than operating the queue |
 | Delivery | At-least-once messages with idempotent stages and a transactional outbox | Exactly-once delivery is not available across the database and broker | Do not claim exactly-once behavior |
@@ -242,7 +242,7 @@ It can proceed while the worker waves continue.
 | Component | Development | Production |
 |-----------|-------------|------------|
 | Supabase | `reelpin-go` project | Current ReelPin project |
-| Go API | `reelpin-ec2-dev` in `ap-south-1`, localhost:8080 until routed | Compute near Supabase in `ap-northeast-1` |
+| Go API | `reelpin-ec2-dev` in `ap-south-1`, localhost:8080 until routed | Provided production EC2 in Mumbai |
 | Python API | Existing dev service on localhost:8000 | Remains until Go write cutover |
 | Redis | Dedicated Go development instance or namespace | Dedicated production instance |
 | RabbitMQ | Dedicated development virtual host | Dedicated production virtual host |
@@ -294,7 +294,8 @@ It can proceed while the worker waves continue.
    ingestion path works end to end.
 6. Finish backend worker, platform and search waves.
 7. Rehearse production migrations against a disposable schema copy.
-8. Provision production Go compute near Supabase in `ap-northeast-1`.
+8. Rehearse on the provided Mumbai production EC2 and record cross-region
+   database latency, CPU and memory evidence.
 9. Deploy the tested Go image beside Python in production.
 10. Shadow and compare safe reads.
 11. Launch production web for existing users and new sign-ups.

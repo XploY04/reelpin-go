@@ -443,3 +443,177 @@ cost per processed item is measured.
 After Q101 through Q116 are resolved, one final value questionnaire will set
 exact timeouts, retention periods, rate limits, queue names, health windows and
 release thresholds. Only then is the implementation plan written.
+
+## Clarification status
+
+- Confirmed: Q101-Q109 and Q111-Q115.
+- Under discussion: Q110. The evidence-backed recommendation is one Go process,
+  one media consumer and one reserved light consumer in development, with
+  deterministic routing and durable escalation from light to media.
+- Deferred but still blocking public writes: Q116.
+
+## 12. Final implementation values
+
+This is the last question batch before the detailed implementation plan. Option
+A is the recommendation unless stated otherwise.
+
+Q117. Resolve Q110 worker allocation: A deterministic media/light routing, one
+media plus one light consumer on dev, production may use two media plus one light
+only after its load test; B use Gemini to classify every job and always run two
+media plus one light; C keep Python's one shared queue. Recommendation: A.
+
+Q118. Submission request: A `{url, collection_ids?}` for web plus a separate
+native share-resolution endpoint; B accept arbitrary provider payloads in one
+body; C URL only forever.
+
+Q119. Library contents: A only completed saves appear in the library and active
+jobs appear as separate loading cards; B store incomplete rows in the library;
+C hide all processing state.
+
+Q120. Cursor order: A newest first by `(saved_at, user_save_id)` with an opaque
+signed or encoded cursor; B ID only; C client timestamp.
+
+Q121. Idempotency-key lifetime: A retain request keys for 24 hours while content
+uniqueness remains permanent; B seven days; C no expiry.
+
+Q122. Job polling: A 2 seconds initially, back off to 10 seconds, stop at a
+terminal state or after 30 minutes; B fixed 1 second; C fixed 15 seconds.
+
+Q123. HTTP server limits: A 5-second header, 15-second read, 15-second write,
+60-second idle and 1 MiB headers; B custom values; C framework defaults.
+
+Q124. Database pool per API instance: A maximum 10, minimum 2, 30-minute
+connection lifetime and 5-minute idle time; B maximum 25; C driver defaults.
+
+Q125. Database query timeout: A 5 seconds normally and 2 seconds for readiness;
+B 15 seconds; C no query timeout.
+
+Q126. Submission limits before a cost budget exists: A 5 per user per hour, 20
+per IP per hour and 2 active jobs per user; B current Python limits of 10, 30 and
+4; C custom values.
+
+Q127. Search limits: A 30 requests per user per minute and 90 per IP; B 10 and
+30; C custom values.
+
+Q128. Unverified email abuse: A CAPTCHA after suspicious behavior plus IP/device
+limits; B CAPTCHA on every sign-up and submission; C no CAPTCHA. Recommendation:
+A. Google and email sign-in remain available.
+
+Q129. URL input: A maximum 2,048 characters, HTTP/S only, maximum 5 redirects,
+and DNS safety checked before every connection; B 10,000 characters and 10
+redirects; C custom values.
+
+Q130. Fetch limits: A HTML 5 MiB, images 20 MiB each, total media 500 MiB and
+video duration 30 minutes; B smaller limits; C custom values.
+
+Q131. Temporary storage: A 1 GiB per job, stop accepting media work at 80% disk,
+and delete temporary files after every terminal outcome; B 2 GiB and 90%; C
+custom values.
+
+Q132. Unreferenced global content: A retain indefinitely for deduplication unless
+the source is private, deleted, legally removed or a user deletion requires
+purge; B purge after 90 days; C purge immediately. Your earlier answer implies A.
+
+Q133. Content-version retention: A retain every immutable version; B retain the
+current and previous two; C current only.
+
+Q134. Weekly category curator: A Sunday 02:00 UTC, require proposals from 3
+distinct contents, confidence at least 0.90, add at most 5 categories per run,
+and retain an audit/rollback record; B approve every proposal; C custom values.
+
+Q135. Taxonomy shape: A one global category, optional subcategory and many tags;
+B categories only; C unlimited category depth.
+
+Q136. RabbitMQ names: A exchange `reelpin.processing`, queues
+`reelpin.processing.media`, `reelpin.processing.light`, retry queues and one
+dead-letter queue; B shorter names; C custom names.
+
+Q137. Retry delays for three failed-stage executions: A 30 seconds then 5
+minutes; the third failure becomes terminal; B 15 seconds then 5 minutes; C
+custom values.
+
+Q138. Stage timeouts: A prepare 30s, download 180s, transcribe 300s, extract 90s,
+categorize 45s, persist 30s and index 60s; B use one 30-minute timeout; C custom.
+
+Q139. Whole-run safety timeout: A 30 minutes even when stage limits would permit
+more; B 60 minutes; C no whole-run limit.
+
+Q140. Worker health: A heartbeat every 15 seconds and stale after 90 seconds; B
+30 and 120; C custom.
+
+Q141. Provider concurrency inside the dev worker: A media total 1, Gemini 2,
+Apify actor/account 1 and light HTTP 4, all still bounded by the media/light
+consumer counts; B one for every provider; C custom values.
+
+Q142. Notifications: A separate durable queue consumed by the same worker binary
+with one lightweight consumer; B share the light-processing queue; C defer all
+notifications.
+
+Q143. Search evaluation gate: A at least 50 labeled real queries, Recall@10 at
+least 0.85, nDCG@10 at least 0.75, zero-result cases tested and p95 below 1.5s;
+B quality review only; C custom thresholds.
+
+Q144. Search freshness: A searchable within 60 seconds after a save completes;
+B 5 minutes; C only after a nightly index.
+
+Q145. API launch SLO: A 99.5% monthly availability and p95 under 800ms for read
+routes, excluding provider-backed processing; B 99.9% and 500ms; C custom.
+
+Q146. Processing SLO: A p95 light jobs under 30 seconds and media jobs under 10
+minutes; B 60 seconds and 5 minutes; C measure first and set before production.
+Recommendation: C because every platform is launching and real timings are not
+known yet.
+
+Q147. Alert thresholds: A 5xx above 2% for 5 minutes, oldest ready job above 10
+minutes, any dead-letter, worker stale 90 seconds, disk above 80% and provider
+failure burst of 5; B custom; C alerts after launch.
+
+Q148. Observability retention: A logs 30 days, metrics 90 days, traces 7 days;
+B 7, 30 and 3 days; C custom.
+
+Q149. Trace sampling: A 10% of normal requests and 100% of errors, with no raw
+tokens, URLs or user IDs; B trace every request; C custom.
+
+Q150. Backup verification: A automated daily backups/PITR supporting the one-hour
+RPO, plus a restore drill every month; B quarterly restore drill; C custom.
+
+Q151. Production migration proof: A exact table counts, all failed rows listed,
+duplicate report, foreign-key checks and a deterministic sample of 100 old
+records compared through Python and Go; B counts only; C custom.
+
+Q152. Account deletion: A immediately remove user saves, collections, tokens and
+profile; retain only globally reusable public content with no user link; B also
+purge all global content once unreferenced; C custom.
+
+Q153. API browser access: A web browser calls Next.js only, so Go has no browser
+CORS allowlist initially; Flutter calls Go as a native client; B allow direct
+browser calls from `reelpin.in`; C allow all origins.
+
+Q154. Secret rotation: A rotate application secrets every 90 days and immediately
+after suspected exposure; B yearly; C only after exposure.
+
+Q155. Development deployment: A automatically deploy `dev` after all checks;
+production remains a manual digest promotion; B both manual; C both automatic.
+
+Q156. Production rollout: A internal smoke test, then web launch to all users
+with automatic rollback thresholds and a 24-hour close-watch period; B selected
+users first; C immediate launch without observation.
+
+Q157. Production database latency trigger: A move compute near Supabase if read
+p95 exceeds 800ms or database network time exceeds 150ms for 15 minutes; B accept
+any Mumbai-to-Tokyo latency; C custom.
+
+Q158. Self-hosted RabbitMQ/Redis backup: A persist RabbitMQ disk, snapshot it
+daily, and accept Redis loss because its state is disposable; B back up both; C
+back up neither.
+
+Q159. Global-content legal/privacy purge: A support a blocklist and maintenance
+purge keyed by source identity, removing derived text, embeddings and media; B
+manual SQL only; C never purge global content.
+
+Q160. Deferred cost decision gate: A allow development testing without a budget,
+but block public link submission until Q116 is replaced with an alert and hard
+limit; B launch publicly without a budget; C block all further work.
+
+Answer with `DEFAULT Q117-Q160` and list exceptions. Q146 defaults to C; all
+other questions default to A.
