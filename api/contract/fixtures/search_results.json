@@ -1,0 +1,68 @@
+{
+  "request": {
+    "body": {
+      "query": "artjuna cafe",
+      "limit": 5
+    },
+    "method": "POST",
+    "target": "/api/v1/search"
+  },
+  "response": {
+    "query": "artjuna cafe",
+    "results": [
+      {
+        "display_score_label": "Strong match",
+        "reel": {
+          "actionable_items": [],
+          "category": "food_and_drink",
+          "category_label": "Food And Drink",
+          "content_type": "reel",
+          "created_at": "2026-09-02T12:00:00Z",
+          "display_date": "Sep 2, 2026",
+          "events": [],
+          "has_map_locations": true,
+          "id": "22222222-2222-4222-8222-222222222222",
+          "key_facts": [
+            "Opens at 8am"
+          ],
+          "map_location_count": 1,
+          "mappable_locations": [
+            {
+              "address": null,
+              "city": "Anjuna",
+              "country": null,
+              "google_maps_url": "https://www.google.com/maps/search/?api=1\u0026query=Artjuna%20Cafe",
+              "latitude": 15.5834,
+              "location_address": "Anjuna",
+              "location_display_label": "Artjuna Cafe",
+              "location_name": "Artjuna Cafe",
+              "longitude": 73.7407,
+              "marker_id": "22222222-2222-4222-8222-222222222222:0",
+              "name": "Artjuna Cafe",
+              "neighborhood": null,
+              "state": null
+            }
+          ],
+          "parse_status": "parsed",
+          "people_mentioned": [],
+          "primary_location_label": "Artjuna Cafe",
+          "relative_date": "2 days ago",
+          "saved_date_key": "2026-09-02",
+          "source_content_type": "reels",
+          "source_platform": "instagram",
+          "sub_category": "cafes",
+          "sub_category_label": "Cafes",
+          "summary": "Three cafes worth the ride.",
+          "thumbnail_url": null,
+          "title": "Best cafes in Goa",
+          "url": "https://www.instagram.com/reel/abc/"
+        },
+        "relevance_percent": 100,
+        "relevance_score": 0.0492
+      }
+    ],
+    "search_mode": "dense+sparse+fuzzy",
+    "total": 1
+  },
+  "status": 200
+}

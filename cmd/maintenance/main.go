@@ -73,7 +73,7 @@ func runBackfill(ctx context.Context, logger *slog.Logger, cfg config.Config, ar
 
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|backfill-content|replay-dead-letters|retention|backfill-embeddings> [flags]")
+		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|backfill-content|replay-dead-letters|retention|backfill-embeddings|search-eval> [flags]")
 	}
 
 	cfg, err := config.Load()
@@ -127,6 +127,9 @@ func run(logger *slog.Logger, args []string) error {
 
 	case "backfill-embeddings":
 		return runEmbeddingBackfill(ctx, logger, cfg, args[1:])
+
+	case "search-eval":
+		return runSearchEval(ctx, logger, cfg, args[1:])
 
 	default:
 		return fmt.Errorf("unknown command %q", command)

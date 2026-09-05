@@ -42,6 +42,7 @@ type Deps struct {
 	Map           MapService
 	Notifications Notifications
 	Lifecycle     Lifecycle
+	Search        Searcher
 	// AdminKey guards the operator routes. Empty means they are unavailable
 	// rather than open.
 	AdminKey string
@@ -268,6 +269,13 @@ func (s *Server) routeTable() []Route {
 			handler: s.rateLimited(adminLimit, s.handleCancelCampaign),
 			limit:   adminLimit,
 		},
+
+		// Search costs a provider call for the query vector, so it is metered
+		// and fails closed.
+		guarded(http.MethodPost, "/search", s.handleSearch, routeLimit{
+			User: &ratelimit.Search,
+			IP:   &ratelimit.SearchIP,
+		}, true),
 
 		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, routeLimit{
 			User:     &ratelimit.ShareResolve,

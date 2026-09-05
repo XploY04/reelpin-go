@@ -14,6 +14,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/search"
 )
 
 // -update rewrites the golden files instead of comparing against them.
@@ -130,6 +131,39 @@ func TestResponseContract(t *testing.T) {
 		{
 			name: "share_token_minted", method: "POST", target: "/api/v1/share-tokens",
 			token: "Bearer good.token", wantStatus: 200, body: `{}`,
+		},
+
+		{
+			name: "search_results", method: "POST", target: "/api/v1/search",
+			token: "Bearer good.token", wantStatus: 200,
+			body: `{"query":"artjuna cafe","limit":5}`,
+			deps: func() Deps {
+				deps := testDeps(&fakePinger{})
+				deps.Search = &fakeSearch{response: search.Response{
+					Query:      "artjuna cafe",
+					SearchMode: "dense+sparse+fuzzy",
+					Total:      1,
+					Results: []search.Result{{
+						Reel:              reels.BuildDisplayReel(sampleReel(testReelID, testUserID), testNow),
+						RelevanceScore:    0.0492,
+						RelevancePercent:  100,
+						DisplayScoreLabel: "Strong match",
+					}},
+				}}
+				return deps
+			},
+		},
+		{
+			name: "search_empty", method: "POST", target: "/api/v1/search",
+			token: "Bearer good.token", wantStatus: 200,
+			body: `{"query":"scuba diving in switzerland"}`,
+			deps: func() Deps {
+				deps := testDeps(&fakePinger{})
+				deps.Search = &fakeSearch{response: search.Response{
+					Query: "scuba diving in switzerland", SearchMode: "empty",
+				}}
+				return deps
+			},
 		},
 
 		{name: "error_authentication_required", target: "/api/v1/reels", wantStatus: 401},

@@ -1,6 +1,6 @@
 {
   "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
-  "deferred_route_count": 18,
+  "deferred_route_count": 17,
   "routes": [
     {
       "method": "GET",
@@ -120,13 +120,6 @@
       "alias": "",
       "owner": "task-21",
       "reason": "Retired: zero rows and no current Flutter client method."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/search",
-      "alias": "/search",
-      "owner": "task-19",
-      "reason": "Hybrid search."
     }
   ]
 }

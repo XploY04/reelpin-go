@@ -13,6 +13,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/uuid"
@@ -142,6 +143,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Map:           &fakeMap{},
 		Notifications: &fakeNotifications{},
 		Lifecycle:     &fakeLifecycle{},
+		Search:        &fakeSearch{},
 		AdminKey:      testAdminKey,
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
@@ -360,4 +362,24 @@ func (f *fakeLifecycle) DeleteReel(_ context.Context, userID, _ string) error {
 func (f *fakeLifecycle) DeleteAccount(_ context.Context, userID string) (lifecycle.DeleteAccountReport, error) {
 	f.lastUserID, f.lastAction = userID, "delete_account"
 	return f.report, f.err
+}
+
+type fakeSearch struct {
+	err         error
+	response    search.Response
+	lastUserID  string
+	lastQuery   string
+	lastFilters search.Filters
+	lastLimit   int
+}
+
+func (f *fakeSearch) Search(_ context.Context, userID, query string, filters search.Filters, limit int) (search.Response, error) {
+	f.lastUserID, f.lastQuery, f.lastFilters, f.lastLimit = userID, query, filters, limit
+	if f.err != nil {
+		return search.Response{}, f.err
+	}
+	if f.response.Results == nil {
+		f.response.Results = []search.Result{}
+	}
+	return f.response, nil
 }

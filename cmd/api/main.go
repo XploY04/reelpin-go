@@ -16,6 +16,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
@@ -25,6 +26,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/redis/go-redis/v9"
@@ -129,6 +131,8 @@ func run(logger *slog.Logger) error {
 			Lifecycle: lifecycle.New(pool, nil, responseCache, logger),
 			Map: mapview.NewService(pool,
 				mapview.NewGooglePlaces(cfg.GooglePlacesAPIKey, 0), time.Now),
+			Search: search.NewService(pool,
+				embed.NewGemini(cfg.GeminiAPIKey, 0), logger, time.Now),
 			Limiter:        limiterOrNil(limiter),
 			Cache:          responseCache,
 			TrustedProxies: cfg.TrustedProxyCIDRs,
