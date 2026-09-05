@@ -1,10 +1,15 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 const localDatabaseURL = "postgres://reelpin:reelpin@localhost:5432/reelpin"
@@ -16,6 +21,30 @@ type Config struct {
 	Version             string
 	SupabaseURL         string
 	SupabaseJWTAudience string
+
+	// RedisURL is required in production: rate limits fail closed without it,
+	// which would refuse every submission. Outside production it may be empty,
+	// and everything Redis-backed is simply off.
+	RedisURL       string
+	RedisKeyPrefix string
+	// RateLimitSalt keys the hash that keeps user ids and IPs out of Redis keys
+	// and logs. Rotating it resets every rate window, which is acceptable:
+	// rate state is disposable. In development an absent salt is generated per
+	// process for the same reason.
+	RateLimitSalt string
+}
+
+// RedisOptions parses RedisURL and applies the service's timeouts. One place,
+// so the API and the worker cannot drift apart on how long they wait.
+func (c Config) RedisOptions() (*redis.Options, error) {
+	options, err := redis.ParseURL(c.RedisURL)
+	if err != nil {
+		return nil, fmt.Errorf("REDIS_URL: %w", err)
+	}
+	options.DialTimeout = 5 * time.Second
+	options.ReadTimeout = 3 * time.Second
+	options.WriteTimeout = 3 * time.Second
+	return options, nil
 }
 
 var validEnvironments = map[string]bool{
@@ -33,6 +62,10 @@ func Load() (Config, error) {
 
 		SupabaseURL:         strings.TrimSpace(os.Getenv("SUPABASE_URL")),
 		SupabaseJWTAudience: envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
+
+		RedisURL:       strings.TrimSpace(os.Getenv("REDIS_URL")),
+		RedisKeyPrefix: envOr("REDIS_KEY_PREFIX", "reelpin"),
+		RateLimitSalt:  strings.TrimSpace(os.Getenv("RATE_LIMIT_SALT")),
 	}
 
 	if !validEnvironments[cfg.Environment] {
@@ -60,6 +93,28 @@ func Load() (Config, error) {
 	// Tests inject a fake authenticator, so only a running service needs Supabase.
 	if cfg.SupabaseURL == "" && cfg.Environment != "test" {
 		return Config{}, fmt.Errorf("SUPABASE_URL is required in %s", cfg.Environment)
+	}
+
+	if cfg.RedisURL == "" && cfg.Environment == "production" {
+		return Config{}, fmt.Errorf("REDIS_URL is required in production: submissions fail closed without rate limits")
+	}
+	if cfg.RedisURL != "" {
+		if _, err := redis.ParseURL(cfg.RedisURL); err != nil {
+			return Config{}, fmt.Errorf("REDIS_URL: %w", err)
+		}
+	}
+
+	if cfg.RateLimitSalt == "" {
+		if cfg.Environment == "production" {
+			return Config{}, fmt.Errorf("RATE_LIMIT_SALT is required in production: it keeps user ids and IPs out of Redis keys and logs")
+		}
+		// A per-process salt outside production: windows reset on restart,
+		// which disposable rate state is allowed to do.
+		generated := make([]byte, 16)
+		if _, err := rand.Read(generated); err != nil {
+			return Config{}, fmt.Errorf("generating a development salt: %w", err)
+		}
+		cfg.RateLimitSalt = hex.EncodeToString(generated)
 	}
 
 	return cfg, nil
