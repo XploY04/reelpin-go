@@ -146,9 +146,12 @@ jobs:
           docker run --rm --entrypoint yt-dlp reelpin-api:ci --version
           docker run --rm --entrypoint ffmpeg reelpin-api:ci -version | head -n1
 
-      - name: no package manager or compiler is left in the image
+      - name: no compiler or build toolchain is left in the image
+        # apt and dpkg are part of the Debian base and removing them would be a
+        # different kind of fragile. What must not survive the build stage is a
+        # toolchain: with one, a foothold in the container can compile.
         run: |
-          for binary in apt apt-get dpkg gcc go; do
+          for binary in gcc cc g++ make go python3; do
             if docker run --rm --entrypoint sh reelpin-api:ci -c "command -v $binary" >/dev/null 2>&1; then
               echo "$binary is still in the runtime image"
               exit 1
