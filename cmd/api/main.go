@@ -11,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/postgres"
 )
 
 func main() {
@@ -40,9 +42,27 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
+	verifier, err := auth.NewVerifier(ctx, cfg.SupabaseURL, cfg.SupabaseJWTAudience)
+	if err != nil {
+		return fmt.Errorf("supabase jwks: %w", err)
+	}
+	// Runs before the pool closes, after the server has stopped serving.
+	defer func() {
+		if err := verifier.Shutdown(context.Background()); err != nil {
+			logger.Error("jwks cache shutdown failed", "error", err)
+		}
+	}()
+
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.New(pool, logger, cfg.Version).Routes(),
+		Addr: fmt.Sprintf(":%d", cfg.Port),
+		Handler: httpapi.New(httpapi.Deps{
+			DB:      pool,
+			Auth:    verifier,
+			Reels:   postgres.NewReels(pool),
+			Jobs:    postgres.NewJobs(pool),
+			Logger:  logger,
+			Version: cfg.Version,
+		}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

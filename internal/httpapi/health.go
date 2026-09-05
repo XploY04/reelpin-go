@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const serviceName = "ReelMind API"
+const serviceName = "ReelPin API"
 
 type ServiceHealthCheck struct {
 	Healthy   bool           `json:"healthy"`
@@ -45,7 +45,7 @@ func (s *Server) databaseCheck(ctx context.Context, checkedAt string) ServiceHea
 	defer cancel()
 
 	start := time.Now()
-	err := s.db.Ping(ctx)
+	err := s.deps.DB.Ping(ctx)
 	latency := float64(time.Since(start).Microseconds()) / 1000
 
 	check := ServiceHealthCheck{
@@ -72,13 +72,12 @@ func (s *Server) readiness(ctx context.Context) HealthResponse {
 	resp := HealthResponse{
 		Status:    "ok",
 		Ready:     db.Healthy,
-		Version:   s.version,
+		Version:   s.deps.Version,
 		Service:   serviceName,
 		CheckedAt: checkedAt,
 		Checks: map[string]ServiceHealthCheck{
-			"api": apiCheck(checkedAt),
-			// legacy key: Python called Supabase, Go talks to the same Postgres directly.
-			"supabase": db,
+			"api":      apiCheck(checkedAt),
+			"database": db,
 		},
 	}
 	if !resp.Ready {
@@ -92,7 +91,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{
 		Status:    "ok",
 		Ready:     true,
-		Version:   s.version,
+		Version:   s.deps.Version,
 		Service:   serviceName,
 		CheckedAt: checkedAt,
 		Checks:    map[string]ServiceHealthCheck{"api": apiCheck(checkedAt)},
@@ -106,9 +105,4 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, resp)
-}
-
-// handleHealth keeps the old contract: always 200, even when degraded.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.readiness(r.Context()))
 }

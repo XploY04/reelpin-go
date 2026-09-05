@@ -3,9 +3,10 @@ package config
 import "testing"
 
 func TestLoadDefaults(t *testing.T) {
-	for _, key := range []string{"ENVIRONMENT", "PORT", "DATABASE_URL", "APP_VERSION"} {
+	for _, key := range configKeys {
 		t.Setenv(key, "")
 	}
+	t.Setenv("SUPABASE_URL", "https://project.supabase.co")
 
 	cfg, err := Load()
 	if err != nil {
@@ -23,6 +24,14 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Version != "dev" {
 		t.Errorf("Version = %q, want dev", cfg.Version)
 	}
+	if cfg.SupabaseJWTAudience != "authenticated" {
+		t.Errorf("SupabaseJWTAudience = %q, want authenticated", cfg.SupabaseJWTAudience)
+	}
+}
+
+var configKeys = []string{
+	"ENVIRONMENT", "PORT", "DATABASE_URL", "APP_VERSION",
+	"SUPABASE_URL", "SUPABASE_JWT_AUDIENCE",
 }
 
 func TestLoad(t *testing.T) {
@@ -43,12 +52,21 @@ func TestLoad(t *testing.T) {
 		},
 		{
 			name: "production with database url",
-			env:  map[string]string{"ENVIRONMENT": "production", "DATABASE_URL": "postgres://user:pass@db:5432/reelpin"},
+			env: map[string]string{
+				"ENVIRONMENT":  "production",
+				"DATABASE_URL": "postgres://user:pass@db:5432/reelpin",
+				"SUPABASE_URL": "https://project.supabase.co",
+			},
 			check: func(t *testing.T, c Config) {
 				if c.DatabaseURL != "postgres://user:pass@db:5432/reelpin" {
 					t.Errorf("DatabaseURL = %q", c.DatabaseURL)
 				}
 			},
+		},
+		{
+			name:    "development without supabase url",
+			env:     map[string]string{"ENVIRONMENT": "development"},
+			wantErr: true,
 		},
 		{
 			name:    "invalid environment",
@@ -57,29 +75,29 @@ func TestLoad(t *testing.T) {
 		},
 		{
 			name:    "non numeric port",
-			env:     map[string]string{"PORT": "eight-thousand"},
+			env:     map[string]string{"SUPABASE_URL": "https://project.supabase.co", "PORT": "eight-thousand"},
 			wantErr: true,
 		},
 		{
 			name:    "port too low",
-			env:     map[string]string{"PORT": "0"},
+			env:     map[string]string{"SUPABASE_URL": "https://project.supabase.co", "PORT": "0"},
 			wantErr: true,
 		},
 		{
 			name:    "port too high",
-			env:     map[string]string{"PORT": "70000"},
+			env:     map[string]string{"SUPABASE_URL": "https://project.supabase.co", "PORT": "70000"},
 			wantErr: true,
 		},
 		{
 			name:    "production without database url",
-			env:     map[string]string{"ENVIRONMENT": "production"},
+			env:     map[string]string{"ENVIRONMENT": "production", "SUPABASE_URL": "https://project.supabase.co"},
 			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, key := range []string{"ENVIRONMENT", "PORT", "DATABASE_URL", "APP_VERSION"} {
+			for _, key := range configKeys {
 				t.Setenv(key, tt.env[key])
 			}
 
