@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,49 +45,86 @@ func New(deps Deps) *Server {
 
 func (s *Server) now() time.Time { return s.deps.Now().UTC() }
 
+// Route is one endpoint this server serves. The table is the single source of
+// truth for both registration and the contract manifest.
+type Route struct {
+	Method        string `json:"method"`
+	Path          string `json:"path"`
+	Alias         string `json:"alias,omitempty"`
+	Authenticated bool   `json:"authenticated"`
+
+	handler http.HandlerFunc
+	// claimMethods registers the path again without a method, so a wrong method
+	// gets a JSON 405 instead of the mux's plain text. It is off for a literal
+	// path already covered by a sibling wildcard, which would conflict.
+	claimMethods bool
+}
+
+func (s *Server) routeTable() []Route {
+	read := func(path string, handler http.HandlerFunc, claimMethods bool) Route {
+		return Route{
+			Method:        http.MethodGet,
+			Path:          "/api/v1" + path,
+			Alias:         path,
+			Authenticated: true,
+			handler:       s.authenticated(handler),
+			claimMethods:  claimMethods,
+		}
+	}
+
+	return []Route{
+		{Method: http.MethodGet, Path: "/api/v1/health/live", handler: s.handleLive, claimMethods: true},
+		{Method: http.MethodGet, Path: "/api/v1/health/ready", handler: s.handleReady, claimMethods: true},
+		{Method: http.MethodGet, Path: "/api/v1/health", handler: s.handleHealth, claimMethods: true},
+
+		read("/reels", s.handleListReels, true),
+		read("/reels/filters", s.handlePlatformFilters, false),
+		read("/reels/category-filters", s.handleCategoryFilters, false),
+		read("/reels/{reel_id}", s.handleGetReel, true),
+		read("/processing-jobs", s.handleListJobs, true),
+		read("/processing-jobs/{job_id}", s.handleGetJob, true),
+		read("/account/library-stats", s.handleLibraryStats, true),
+		read("/account/entitlements", s.handleEntitlements, true),
+	}
+}
+
+// RouteManifest is the registered surface, without handlers, for contract tests.
+func (s *Server) RouteManifest() []Route {
+	table := s.routeTable()
+	manifest := make([]Route, 0, len(table))
+	for _, route := range table {
+		manifest = append(manifest, Route{
+			Method:        route.Method,
+			Path:          route.Path,
+			Alias:         route.Alias,
+			Authenticated: route.Authenticated,
+		})
+	}
+	sort.Slice(manifest, func(i, j int) bool {
+		if manifest[i].Path != manifest[j].Path {
+			return manifest[i].Path < manifest[j].Path
+		}
+		return manifest[i].Method < manifest[j].Method
+	})
+	return manifest
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	for path, handler := range map[string]http.HandlerFunc{
-		"/api/v1/health/live":  s.handleLive,
-		"/api/v1/health/ready": s.handleReady,
-		"/api/v1/health":       s.handleHealth,
-	} {
-		mux.HandleFunc("GET "+path, handler)
-		mux.HandleFunc(path, methodNotAllowed)
-	}
-
-	// Every read endpoint is served twice: the canonical path and the bare alias
-	// the shipped app still calls.
-	for path, handler := range map[string]http.HandlerFunc{
-		"/reels":                    s.handleListReels,
-		"/reels/filters":            s.handlePlatformFilters,
-		"/reels/category-filters":   s.handleCategoryFilters,
-		"/reels/{reel_id}":          s.handleGetReel,
-		"/processing-jobs":          s.handleListJobs,
-		"/processing-jobs/{job_id}": s.handleGetJob,
-		"/account/library-stats":    s.handleLibraryStats,
-		"/account/entitlements":     s.handleEntitlements,
-	} {
-		guarded := s.authenticated(handler)
-		mux.HandleFunc("GET /api/v1"+path, guarded)
-		mux.HandleFunc("GET "+path, guarded)
-	}
-
-	// The mux answers a wrong method with a plain-text 405, so the paths are
-	// claimed again without a method to keep every body JSON. The two literal
-	// children of /reels/{reel_id} are left out: that wildcard already covers
-	// them, and claiming them again conflicts with it.
-	for _, path := range []string{
-		"/reels",
-		"/reels/{reel_id}",
-		"/processing-jobs",
-		"/processing-jobs/{job_id}",
-		"/account/library-stats",
-		"/account/entitlements",
-	} {
-		mux.HandleFunc("/api/v1"+path, methodNotAllowed)
-		mux.HandleFunc(path, methodNotAllowed)
+	// Every endpoint is served twice: the canonical path and the bare alias the
+	// shipped app still calls.
+	for _, route := range s.routeTable() {
+		paths := []string{route.Path}
+		if route.Alias != "" {
+			paths = append(paths, route.Alias)
+		}
+		for _, path := range paths {
+			mux.HandleFunc(route.Method+" "+path, route.handler)
+			if route.claimMethods {
+				mux.HandleFunc(path, methodNotAllowed)
+			}
+		}
 	}
 
 	mux.HandleFunc("/", notFound)

@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels"
+  },
+  "response": {
+    "detail": "Could not load reels right now.",
+    "error_code": "reel_list_failed",
+    "message": "Could not load reels right now.",
+    "retryable": true,
+    "success": false
+  },
+  "status": 500
+}

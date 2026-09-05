@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels?limit=0"
+  },
+  "response": {
+    "detail": "limit must be between 1 and 100",
+    "error_code": "validation_error",
+    "message": "The request is missing required fields or contains invalid values.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 422
+}

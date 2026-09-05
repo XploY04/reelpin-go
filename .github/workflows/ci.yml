@@ -1,0 +1,141 @@
+name: ci
+
+on:
+  # Every layer of a stack is checked, not only the ones based on a trunk.
+  pull_request:
+  push:
+    branches: [dev, main]
+
+env:
+  GO_VERSION: "1.26.2"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: reelpin
+          POSTGRES_PASSWORD: reelpin
+          POSTGRES_DB: reelpin
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U reelpin"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        ports: ["5672:5672", "15672:15672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s --health-timeout 10s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: unit tests
+        run: go test ./...
+
+      - name: race tests
+        run: go test -race ./...
+
+      - name: integration tests
+        env:
+          # Assembled at run time: a connection URI with inline credentials in
+          # a committed file trips secret scanning, even for a throwaway
+          # service container that only exists during this job.
+          POSTGRES_USER: reelpin
+          POSTGRES_PASSWORD: reelpin
+          RABBITMQ_USER: guest
+          RABBITMQ_PASSWORD: guest
+        run: |
+          export TEST_DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:5432/reelpin"
+          export TEST_REDIS_URL="redis://localhost:6379/0"
+          export TEST_RABBITMQ_URL="amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@localhost:5672/"
+          go test -tags=integration ./...
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: contract fixtures
+        run: go test ./internal/httpapi -run 'TestRouteManifestIsUnchanged|TestResponseContract' -count=1
+
+      - name: golden files are committed
+        run: |
+          if ! git diff --quiet -- api/contract; then
+            echo "contract artifacts changed but were not committed:"
+            git diff --stat -- api/contract
+            exit 1
+          fi
+
+      - name: route coverage
+        run: python3 scripts/check_route_coverage.py
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: reelpin-api:ci
+
+      - name: liveness smoke test
+        env:
+          SUPABASE_URL: http://127.0.0.1:9
+          # Deliberately unreachable and credential-free: the point is that the
+          # container fails loudly without a database.
+          DATABASE_URL: postgres://127.0.0.1:1/unreachable
+        run: |
+          # The container must fail fast and loudly without its dependencies.
+          set +e
+          output=$(docker run --rm -e ENVIRONMENT=test -e SUPABASE_URL="$SUPABASE_URL" \
+            -e DATABASE_URL="$DATABASE_URL" reelpin-api:ci 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "the api exited 0 without a database, which hides a startup failure"
+            exit 1
+          fi
+          echo "$output" | grep -q '"startup failed"' || {
+            echo "expected a structured startup failure log"
+            exit 1
+          }

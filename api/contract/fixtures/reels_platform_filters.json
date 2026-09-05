@@ -1,0 +1,146 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels/filters?platform=instagram"
+  },
+  "response": {
+    "categories": [
+      {
+        "category": "food",
+        "count": 6,
+        "label": "Food",
+        "subcategories": [
+          {
+            "count": 3,
+            "label": "Bakeries",
+            "name": "bakeries"
+          },
+          {
+            "count": 3,
+            "label": "Cafes",
+            "name": "cafes"
+          }
+        ]
+      },
+      {
+        "category": "tech",
+        "count": 4,
+        "label": "Tech",
+        "subcategories": [
+          {
+            "count": 4,
+            "label": "Ai",
+            "name": "ai"
+          }
+        ]
+      },
+      {
+        "category": "Other",
+        "count": 2,
+        "label": "Other",
+        "subcategories": [
+          {
+            "count": 2,
+            "label": "Other",
+            "name": "Other"
+          }
+        ]
+      },
+      {
+        "category": "misc",
+        "count": 1,
+        "label": "Misc",
+        "subcategories": [
+          {
+            "count": 1,
+            "label": "Other",
+            "name": "Other"
+          }
+        ]
+      }
+    ],
+    "platforms": [
+      {
+        "categories": [
+          {
+            "category": "food",
+            "count": 6,
+            "label": "Food",
+            "subcategories": [
+              {
+                "count": 3,
+                "label": "Bakeries",
+                "name": "bakeries"
+              },
+              {
+                "count": 3,
+                "label": "Cafes",
+                "name": "cafes"
+              }
+            ]
+          }
+        ],
+        "count": 6,
+        "label": "Instagram",
+        "platform": "instagram",
+        "top_category": "food"
+      },
+      {
+        "categories": [
+          {
+            "category": "tech",
+            "count": 4,
+            "label": "Tech",
+            "subcategories": [
+              {
+                "count": 4,
+                "label": "Ai",
+                "name": "ai"
+              }
+            ]
+          }
+        ],
+        "count": 4,
+        "label": "X",
+        "platform": "x",
+        "top_category": "tech"
+      },
+      {
+        "categories": [
+          {
+            "category": "Other",
+            "count": 2,
+            "label": "Other",
+            "subcategories": [
+              {
+                "count": 2,
+                "label": "Other",
+                "name": "Other"
+              }
+            ]
+          },
+          {
+            "category": "misc",
+            "count": 1,
+            "label": "Misc",
+            "subcategories": [
+              {
+                "count": 1,
+                "label": "Other",
+                "name": "Other"
+              }
+            ]
+          }
+        ],
+        "count": 3,
+        "label": "Other",
+        "platform": "other",
+        "top_category": "Other"
+      }
+    ],
+    "selected_preview_count": 6,
+    "top_platform": "instagram",
+    "total_count": 13
+  },
+  "status": 200
+}

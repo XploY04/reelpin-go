@@ -1,0 +1,69 @@
+{
+  "note": "Registered Go routes. A change here is an API contract change.",
+  "route_count": 11,
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/account/entitlements",
+      "alias": "/account/entitlements",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/account/library-stats",
+      "alias": "/account/library-stats",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/live",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/ready",
+      "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/processing-jobs",
+      "alias": "/processing-jobs",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/processing-jobs/{job_id}",
+      "alias": "/processing-jobs/{job_id}",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels",
+      "alias": "/reels",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels/category-filters",
+      "alias": "/reels/category-filters",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels/filters",
+      "alias": "/reels/filters",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels/{reel_id}",
+      "alias": "/reels/{reel_id}",
+      "authenticated": true
+    }
+  ]
+}

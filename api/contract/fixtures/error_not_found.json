@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/nope"
+  },
+  "response": {
+    "detail": "Unknown route",
+    "error_code": "not_found",
+    "message": "This endpoint does not exist.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 404
+}

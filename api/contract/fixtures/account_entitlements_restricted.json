@@ -1,0 +1,52 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/account/entitlements"
+  },
+  "response": {
+    "current_entitlement": {
+      "billing_interval": "monthly",
+      "error_message": "Plan access could not be verified right now.",
+      "is_premium": false,
+      "plan": "restricted",
+      "restricted": true,
+      "subscription_status": "unavailable"
+    },
+    "features": {
+      "discover": false,
+      "map": false,
+      "save_reels": false,
+      "search": false,
+      "unlimited_map_pins": false,
+      "unlimited_saves": false
+    },
+    "is_premium": false,
+    "limits": {
+      "pinned_locations": 10,
+      "processing_jobs_per_hour": null,
+      "saved_reels": 25,
+      "searches_per_month": 50
+    },
+    "paywall_messages": {
+      "account": "Plan access could not be verified right now.",
+      "history": "Plan access could not be verified right now.",
+      "save_limit": "Plan access could not be verified right now."
+    },
+    "plan": "restricted",
+    "plan_cards": [],
+    "pricing": {
+      "free_monthly": "$0",
+      "pro_monthly": "$9.99",
+      "pro_yearly": "$79.99"
+    },
+    "usage": {
+      "categories": 0,
+      "pinned_locations": 0,
+      "saved_reels": 0,
+      "subcategories": 0,
+      "tags": 0
+    },
+    "user_id": "11111111-1111-4111-8111-111111111111"
+  },
+  "status": 200
+}

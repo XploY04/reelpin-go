@@ -1,0 +1,384 @@
+{
+  "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
+  "deferred_route_count": 54,
+  "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/v1/account",
+      "alias": "",
+      "owner": "task-17",
+      "reason": "Reel and account deletion."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/notification-campaigns",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/cancel",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/send",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/invites/{token}/accept",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/shared/{token}",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/{collection_id}",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/collections/{collection_id}",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/invites",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/items",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/items/{reel_id}",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/leave",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/link",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/link",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/{collection_id}/members",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/members/{member_user_id}",
+      "alias": "",
+      "owner": "task-14",
+      "reason": "Collections and share-time filing."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dashboard/overview",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: ported only if a real operational consumer exists."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/device-push-tokens",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/device-push-tokens",
+      "alias": "/device-push-tokens",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/discover",
+      "alias": "/discover",
+      "owner": "task-15",
+      "reason": "Map and Discover."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/folders",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/folders",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/folders/{folder_id}",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/folders/{folder_id}",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/folders/{folder_id}",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/folders/{folder_id}/reels",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/folders/{folder_id}/reels/{reel_id}",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: folder rows migrate into collections unless supported clients still call these."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/map",
+      "alias": "/map",
+      "owner": "task-15",
+      "reason": "Map and Discover."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/map/items/{map_item_id}",
+      "alias": "/map/items/{map_item_id}",
+      "owner": "task-15",
+      "reason": "Map and Discover."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/map/pins",
+      "alias": "/map/pins",
+      "owner": "task-15",
+      "reason": "Map and Discover."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/map/search",
+      "alias": "/map/search",
+      "owner": "task-15",
+      "reason": "Map and Discover."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metrics",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Evidence gate: ported only if a real operational consumer exists."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/notifications/{notification_id}/opened",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/price-tracks",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Retired: zero rows and no current Flutter client method."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/price-tracks",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Retired: zero rows and no current Flutter client method."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/price-tracks/{track_id}",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Retired: zero rows and no current Flutter client method."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/proactive-recall/push",
+      "alias": "",
+      "owner": "task-16",
+      "reason": "Push notifications and campaigns."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/process-reel",
+      "alias": "/process-reel",
+      "owner": "task-09",
+      "reason": "Enqueue, share tokens, and global deduplication."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/process-video",
+      "alias": "/process-video",
+      "owner": "task-21",
+      "reason": "Retired: the Python route already returns 501 and the pipeline is test-only."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/processing-jobs/reels",
+      "alias": "/processing-jobs/reels",
+      "owner": "task-09",
+      "reason": "Enqueue, share tokens, and global deduplication."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/reels/reclassify-categories",
+      "alias": "/reels/reclassify-categories",
+      "owner": "task-21",
+      "reason": "Evidence gate: replaced by a maintenance command unless a real caller exists."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/reels/{reel_id}",
+      "alias": "/reels/{reel_id}",
+      "owner": "task-17",
+      "reason": "Reel and account deletion."
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reminders",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Retired: zero rows and no current Flutter client method."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/reminders",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Retired: zero rows and no current Flutter client method."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/reminders/{reminder_id}",
+      "alias": "",
+      "owner": "task-21",
+      "reason": "Retired: zero rows and no current Flutter client method."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/search",
+      "alias": "/search",
+      "owner": "task-19",
+      "reason": "Hybrid search."
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/share-tokens",
+      "alias": "/share-tokens",
+      "owner": "task-09",
+      "reason": "Enqueue, share tokens, and global deduplication."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/share-tokens",
+      "alias": "/share-tokens",
+      "owner": "task-09",
+      "reason": "Enqueue, share tokens, and global deduplication."
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/share/resolve",
+      "alias": "/share/resolve",
+      "owner": "task-04",
+      "reason": "Source identity and safe share resolution."
+    }
+  ]
+}

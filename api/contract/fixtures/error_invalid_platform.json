@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels?platform=myspace"
+  },
+  "response": {
+    "allowed": [
+      "instagram",
+      "linkedin",
+      "other",
+      "pinterest",
+      "reddit",
+      "tiktok",
+      "x",
+      "youtube"
+    ],
+    "detail": "Supported platform values: instagram, linkedin, other, pinterest, reddit, tiktok, x, youtube.",
+    "error_code": "invalid_platform",
+    "message": "'myspace' is not a supported platform filter.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 400
+}

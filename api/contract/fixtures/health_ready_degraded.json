@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/health/ready"
+  },
+  "response": {
+    "checked_at": "\u003cvolatile\u003e",
+    "checks": {
+      "api": {
+        "checked_at": "\u003cvolatile\u003e",
+        "details": {},
+        "healthy": true,
+        "message": "API process is reachable.",
+        "status": "ok"
+      },
+      "supabase": {
+        "checked_at": "\u003cvolatile\u003e",
+        "details": {},
+        "healthy": false,
+        "latency_ms": "\u003cvolatile\u003e",
+        "message": "Database is not reachable.",
+        "status": "degraded"
+      }
+    },
+    "ready": false,
+    "service": "ReelMind API",
+    "status": "degraded",
+    "version": "test"
+  },
+  "status": 503
+}

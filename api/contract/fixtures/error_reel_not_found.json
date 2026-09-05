@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels/not-a-uuid"
+  },
+  "response": {
+    "detail": "Record not found",
+    "error_code": "reel_not_found",
+    "message": "The requested record was not found.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 404
+}

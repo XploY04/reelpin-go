@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels"
+  },
+  "response": {
+    "detail": "Missing Authorization bearer token.",
+    "error_code": "authentication_required",
+    "message": "Sign in is required.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 401
+}

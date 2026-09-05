@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v1/health/live"
+  },
+  "response": {
+    "detail": "Only GET is allowed",
+    "error_code": "method_not_allowed",
+    "message": "This endpoint does not accept that method.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 405
+}

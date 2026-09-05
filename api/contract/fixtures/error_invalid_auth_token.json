@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v1/reels"
+  },
+  "response": {
+    "detail": "The access token could not be verified.",
+    "error_code": "invalid_auth_token",
+    "message": "Your sign-in session is invalid or expired.",
+    "retryable": false,
+    "success": false
+  },
+  "status": 401
+}

@@ -1,0 +1,333 @@
+{
+  "source": "reelpin-api app.main FastAPI application",
+  "generated_from": "api/contract/python-openapi.json",
+  "canonical_route_count": 65,
+  "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/v1/account",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/items/{reel_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/link",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/collections/{collection_id}/members/{member_user_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/device-push-tokens",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/folders/{folder_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/folders/{folder_id}/reels/{reel_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/map/items/{map_item_id}",
+      "alias": "/map/items/{map_item_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/price-tracks/{track_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/reels/{reel_id}",
+      "alias": "/reels/{reel_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/reminders/{reminder_id}",
+      "alias": ""
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/share-tokens",
+      "alias": "/share-tokens"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/account/entitlements",
+      "alias": "/account/entitlements"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/account/library-stats",
+      "alias": "/account/library-stats"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/notification-campaigns",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/shared/{token}",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/{collection_id}",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/collections/{collection_id}/members",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dashboard/overview",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/discover",
+      "alias": "/discover"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/folders",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/folders/{folder_id}",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/live",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/ready",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/map",
+      "alias": "/map"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/map/search",
+      "alias": "/map/search"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metrics",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/price-tracks",
+      "alias": ""
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/processing-jobs",
+      "alias": "/processing-jobs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/processing-jobs/{job_id}",
+      "alias": "/processing-jobs/{job_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels",
+      "alias": "/reels"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels/category-filters",
+      "alias": "/reels/category-filters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels/filters",
+      "alias": "/reels/filters"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reels/{reel_id}",
+      "alias": "/reels/{reel_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reminders",
+      "alias": ""
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/collections/{collection_id}",
+      "alias": ""
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/folders/{folder_id}",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/cancel",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/notification-campaigns/{campaign_id}/send",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/invites/{token}/accept",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/invites",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/items",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/leave",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collections/{collection_id}/link",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/device-push-tokens",
+      "alias": "/device-push-tokens"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/folders",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/folders/{folder_id}/reels",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/map/pins",
+      "alias": "/map/pins"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/notifications/{notification_id}/opened",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/price-tracks",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/proactive-recall/push",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/process-reel",
+      "alias": "/process-reel"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/process-video",
+      "alias": "/process-video"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/processing-jobs/reels",
+      "alias": "/processing-jobs/reels"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/reels/reclassify-categories",
+      "alias": "/reels/reclassify-categories"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/reminders",
+      "alias": ""
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/search",
+      "alias": "/search"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/share-tokens",
+      "alias": "/share-tokens"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/share/resolve",
+      "alias": "/share/resolve"
+    }
+  ],
+  "aliases_without_canonical_route": []
+}
