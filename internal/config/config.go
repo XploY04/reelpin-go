@@ -29,6 +29,15 @@ type Config struct {
 	GoogleMapsAPIKey        string
 	// WorkerTempRoot is where a run's media lives while it is being processed.
 	WorkerTempRoot string
+	ApifyToken     string
+	// ApifyActors maps a platform to its configured actor id. An unconfigured
+	// platform falls back instead of failing.
+	ApifyActors map[string]string
+	// InstagramCookies holds base64 Netscape cookie data per slot. The
+	// deprecated single-slot variables are deliberately not read.
+	InstagramCookies   map[string]string
+	SupabaseServiceKey string
+	StorageBucket      string
 	// TrustedProxyCIDRs are the only sources whose forwarding headers are
 	// believed. Empty means every client is identified by its socket address.
 	TrustedProxyCIDRs []netip.Prefix
@@ -62,6 +71,20 @@ func Load() (Config, error) {
 		GeminiAPIKey:        strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
 		GoogleMapsAPIKey:    strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY")),
 		WorkerTempRoot:      envOr("WORKER_TEMP_ROOT", filepath.Join(os.TempDir(), "reelpin-runs")),
+		ApifyToken:          strings.TrimSpace(os.Getenv("APIFY_TOKEN")),
+		SupabaseServiceKey:  strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY")),
+		StorageBucket:       envOr("SUPABASE_STORAGE_BUCKET", "reel-thumbnails"),
+		ApifyActors: map[string]string{
+			"instagram": strings.TrimSpace(os.Getenv("APIFY_INSTAGRAM_ACTOR")),
+			"youtube":   strings.TrimSpace(os.Getenv("APIFY_YOUTUBE_ACTOR")),
+			"linkedin":  strings.TrimSpace(os.Getenv("APIFY_LINKEDIN_ACTOR")),
+			"x":         strings.TrimSpace(os.Getenv("APIFY_X_ACTOR")),
+		},
+		InstagramCookies: map[string]string{
+			"active":   strings.TrimSpace(os.Getenv("INSTAGRAM_COOKIES_ACTIVE_B64")),
+			"backup":   strings.TrimSpace(os.Getenv("INSTAGRAM_COOKIES_BACKUP_B64")),
+			"tertiary": strings.TrimSpace(os.Getenv("INSTAGRAM_COOKIES_TERTIARY_B64")),
+		},
 	}
 
 	for _, setting := range []struct {

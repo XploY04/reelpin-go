@@ -14,14 +14,20 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/apify"
 	"github.com/XploY04/reelpin-go/internal/config"
+	"github.com/XploY04/reelpin-go/internal/cookies"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
+	"github.com/XploY04/reelpin-go/internal/media"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/platform/instagram"
 	"github.com/XploY04/reelpin-go/internal/queue"
+	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/storage"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -105,11 +111,30 @@ func run(logger *slog.Logger) error {
 	}
 
 	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey})
+
+	// One safe client, one command runner and one cookie jar are shared by
+	// every platform handler.
+	safeClient := safehttp.New(safehttp.Config{})
+	runner := media.ExecRunner{}
+	cookieJar := cookies.New(cfg.InstagramCookies)
+	actors := apify.New(apify.Config{Token: cfg.ApifyToken, Actors: cfg.ApifyActors})
+	thumbnails := storage.NewSupabase(cfg.SupabaseURL, cfg.StorageBucket, cfg.SupabaseServiceKey, 0)
+
+	instagramHandler := instagram.New(instagram.Deps{
+		HTTP:       safeClient,
+		Downloader: media.NewYTDLP(runner),
+		Audio:      media.NewFFmpeg(runner),
+		Apify:      actors,
+		Cookies:    cookieJar,
+		Storage:    thumbnails,
+		Logger:     logger,
+	})
 	processor := pipeline.New(pipeline.Deps{
 		Pool: pool,
-		// Platform handlers arrive with their own tasks; until then a share of
-		// an unhandled source fails as unsupported rather than silently.
-		Handlers:    platform.NewRegistry(),
+		// The remaining platforms arrive with their own tasks; until then a
+		// share of an unhandled source fails as unsupported rather than
+		// silently.
+		Handlers:    platform.NewRegistry(instagramHandler),
 		Transcriber: gemini,
 		ImageReader: gemini,
 		Extractor:   gemini,
@@ -133,6 +158,7 @@ func run(logger *slog.Logger) error {
 		}(name)
 	}
 
+	logger.Info("cookie slots configured", "slots", len(cookieJar.Slots()))
 	logger.Info("worker started",
 		"queues", len(queue.WorkQueues),
 		"queue_concurrency", cfg.WorkerQueueConcurrency,
