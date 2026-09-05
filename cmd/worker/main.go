@@ -18,8 +18,10 @@ import (
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/queue"
+	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -75,6 +77,23 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer publisher.Close()
+
+	// Heartbeats are how readiness sees the fleet. Redis being optional in
+	// development means a worker without it simply is not counted.
+	if cfg.RedisURL != "" {
+		options, err := cfg.RedisOptions()
+		if err != nil {
+			return err
+		}
+		redisClient := redis.NewClient(options)
+		defer redisClient.Close()
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("redis connect: %w", err)
+		}
+		go workerhealth.New(redisClient, cfg.RedisKeyPrefix, cfg.WorkerID, queue.WorkQueues).Run(ctx)
+	} else {
+		logger.Warn("no REDIS_URL: this worker sends no heartbeats and readiness cannot see it")
+	}
 
 	registry := handlers()
 	handle := func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
