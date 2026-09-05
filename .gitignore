@@ -4,6 +4,8 @@ reelpin-go
 
 # local env
 .env
+.env.*
+!.env.example
 
 # Committed knowledge lives in docs/. Only personal and scratch material is
 # ignored: calendars, the learning curriculum, and anything under a scratch

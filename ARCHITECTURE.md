@@ -14,9 +14,9 @@ That backend is `reelpin-api` (Python/FastAPI) and it serves every real user
 today. This repository is a rewrite of it in Go. **Nothing here is in the
 request path of a real user.**
 
-Both services talk to the same Supabase project, and dev and production share
-that one project, separated by an `environment` column. Anything that claims
-work has to respect that column.
+The current Supabase project is production. Go development uses a different
+Supabase project. Redis and RabbitMQ are separated the same way. Isolation is an
+infrastructure boundary, not an `environment` column repeated in every row.
 
 ## Shape
 
@@ -52,7 +52,7 @@ true. See [`docs/decisions/0001-layered-packages.md`](docs/decisions/0001-layere
 
 ## What exists today
 
-- `cmd/api`, serving three health endpoints and eight authenticated read
+- `cmd/api`, serving two health endpoints and seven authenticated read
   endpoints. See [`docs/api-contract.md`](docs/api-contract.md).
 - Supabase JWT verification against the project's JWKS, done locally in
   middleware. No network call per request.
@@ -64,7 +64,9 @@ true. See [`docs/decisions/0001-layered-packages.md`](docs/decisions/0001-layere
 Named so that nobody looks for them: `cmd/worker`, the processing pipeline,
 RabbitMQ and the transactional outbox, Redis rate limits and caches, the global
 content model that lets two users share one download, embeddings and hybrid
-search, and the production cutover. Each arrives as its own reviewed layer.
+search, and the production cutover. The greenfield schema must create every
+table it needs in an empty Supabase project; it cannot depend on Python tables
+already existing. Each piece arrives as its own reviewed layer.
 
 Where a planned piece changes a rule in this document, the document changes in
 the same pull request.

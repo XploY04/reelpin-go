@@ -14,7 +14,7 @@ testable without setting a variable.
 | `PORT` | `8000` | Must parse and be 1..65535. |
 | `APP_VERSION` | `dev` | Reported in the health response. |
 | `DATABASE_URL` | compose DSN | **Required** in production; outside it, falls back to the local compose database. |
-| `SUPABASE_URL` | — | **Required** outside the `test` environment. The JWKS is fetched from it at startup. |
+| `SUPABASE_URL` | none | **Required** outside the `test` environment. The JWKS is fetched from it at startup. |
 | `SUPABASE_JWT_AUDIENCE` | `authenticated` | Checked on every token. |
 
 Startup fails loudly and immediately on a missing required variable. A service
@@ -39,9 +39,16 @@ diff, so a later fix does not clear it.
 
 It is local only. Production uses managed PostgreSQL.
 
+## Environments
+
+The current Supabase project is production. Development uses a separate
+Supabase project and runs on the host reached through `ssh reelpin-ec2-dev`.
+Development and production also use separate Redis instances and RabbitMQ
+virtual hosts. Database rows do not carry an environment discriminator.
+
 ## Health
 
-Three endpoints, and the difference between them matters:
+Two endpoints, and the difference between them matters:
 
 - **`/api/v1/health/live`** never touches the database and always answers 200.
   A failure here means the process is gone. This is what a container health
@@ -49,13 +56,9 @@ Three endpoints, and the difference between them matters:
 - **`/api/v1/health/ready`** pings the database with a 2s bound and answers 503
   when it fails. This is what a load balancer should call, because a replica
   that cannot reach the database should stop receiving traffic.
-- **`/api/v1/health`** returns the readiness body with a 200 no matter what.
-  It exists only because the Python service behaved that way. Do not use it to
-  decide anything.
 
-The response keeps `service: "ReelMind API"` and a check named `supabase` that
-is really this service's own PostgreSQL. Both are compatibility with the shipped
-app. Renaming them is a breaking change.
+The response reports `service: "ReelPin API"`. Readiness names its PostgreSQL
+dependency `database`.
 
 A failed database check reports `degraded`, never `error`, and every check in
 one response carries the same `checked_at`.
@@ -69,8 +72,8 @@ order. A supervisor that kills faster than 10s will cut requests off.
 ## Authentication in practice
 
 Tokens are verified locally against the Supabase JWKS. It is fetched once at
-startup with a 5s timeout, cached for at most 10 minutes, and refreshed once
-when a token arrives with an unknown `kid`.
+startup with a 5s timeout and cached for at most 10 minutes. An unknown `kid`
+can force an immediate refresh, limited to one refresh per five-second window.
 
 The consequences worth knowing:
 
@@ -78,8 +81,8 @@ The consequences worth knowing:
   is a startup failure.
 - **There is no per-request network call**, so Supabase being slow does not make
   the API slow.
-- **A rotated signing key is picked up within one unknown-`kid` refresh**, not
-  on a timer.
+- **A rotated signing key is picked up by an unknown-`kid` refresh.** Repeated
+  unknown keys cannot force an outbound request on every authentication attempt.
 - Only ES256 is accepted, and the algorithm is checked in the protected header
   before verification, not after.
 

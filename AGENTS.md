@@ -48,8 +48,9 @@ Nested `AGENTS.md` files exist where the rules differ: `cmd/`, `internal/`,
   `sub`, always. Every query is scoped by it.
 - **A GET never writes.** The readers are read-only on purpose; see
   `docs/decisions/0002-reads-never-write.md`.
-- **Errors keep the Python error codes.** The Flutter app matches on them.
-  A driver error is logged, never returned in a response body.
+- **Public errors are stable service contracts.** A driver error is logged,
+  never returned in a response body. Change an error code only with the API
+  contract and its tests.
 - **Comments explain the non-obvious why**, never what the line does. Default to
   none.
 - Every behaviour change ships a test that fails before it and passes after.
@@ -60,9 +61,9 @@ Nested `AGENTS.md` files exist where the rules differ: `cmd/`, `internal/`,
   may predate this. Only personal calendars and scratch plans are ignored now.
 - **`README.md` describes an older design** in places (an in-memory store, goose,
   chi). `docs/` is authoritative; the README is being retired into it.
-- **The Python service calls itself ReelMind internally** and the health response
-  still says `service: "ReelMind API"` with a legacy `supabase` check key. That is
-  compatibility, not a mistake. Do not tidy it.
+- **Dev and production use separate infrastructure.** They have different
+  Supabase projects, Redis instances and RabbitMQ virtual hosts. Do not add an
+  `environment` column to compensate for shared infrastructure.
 - **The real domain is `reelpin.in`.** Some code and docs still say `reelpin.app`.
 - **Reel list queries never select `transcript`.** Only `GET /reels/{id}` does.
   Adding it to the list query is a silent payload and cost regression.

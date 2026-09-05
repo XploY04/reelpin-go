@@ -4,17 +4,16 @@ The transport layer: routing, middleware, request parsing, response shapes.
 Nothing here knows what a database is.
 
 Read [`../../docs/api-contract.md`](../../docs/api-contract.md) before changing
-anything a client can see. The app in production cannot be updated to match us.
+anything a client can see. Flutter dev is updated after the backend contract is
+correct and tested.
 
 ## Rules that differ here
 
-- **`routeTable()` is the only place a route is declared.** Both the `/api/v1`
-  path and the bare alias come from that one entry, so they cannot drift apart.
-  Registering a handler anywhere else is wrong even when it works.
+- **`Routes()` is the only place a route is declared.** Public routes live under
+  `/api/v1`; bare aliases and legacy compatibility endpoints are not registered.
 - **The user id comes from the token, always.** `requestUserID(r)` reads it from
-  the context the auth middleware populated. A `user_id` in a query string or a
-  body is read past and ignored, never honoured, and never rejected either:
-  rejecting it would break a shipped client that sends it.
+  the context the auth middleware populated. A `user_id` in a query string or
+  body is never used for authorization.
 - **Every response is JSON, including errors, 404 and 405.** `writeJSON` encodes
   into a buffer before writing the status, so an encoding failure becomes a 500
   rather than a 200 with a truncated body.

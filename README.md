@@ -18,11 +18,11 @@ make check                    # what CI runs
 
 ## Where things are
 
-- **[`AGENTS.md`](AGENTS.md)** — the short map: commands, layout, rules, traps.
+- **[`AGENTS.md`](AGENTS.md)**: the short map: commands, layout, rules, traps.
   Read this first. `CLAUDE.md` is a symlink to it.
-- **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — the shape of the system, and which
+- **[`ARCHITECTURE.md`](ARCHITECTURE.md)**: the shape of the system, and which
   parts of it exist today.
-- **[`docs/`](docs/index.md)** — the detail: domain model, API contract,
+- **[`docs/`](docs/index.md)**: the detail: domain model, API contract,
   operations, decision records, plans.
 
 Nested `AGENTS.md` files under `cmd/` and `internal/` carry the rules that
@@ -30,7 +30,7 @@ differ in those directories.
 
 ## What runs today
 
-Three health endpoints and eight authenticated read endpoints over PostgreSQL,
+Two health endpoints and seven authenticated read endpoints over PostgreSQL,
 with Supabase JWTs verified locally. Nothing writes.
 [`docs/api-contract.md`](docs/api-contract.md) is the full list.
 
