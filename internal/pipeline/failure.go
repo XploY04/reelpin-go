@@ -27,6 +27,23 @@ const (
 	Internal
 )
 
+// String is the label a metric or a log carries. It never includes the error
+// text, which can quote a provider.
+func (c FailureClass) String() string {
+	switch c {
+	case Transient:
+		return "transient"
+	case ProviderExhausted:
+		return "provider_exhausted"
+	case ContentTerminal:
+		return "content_terminal"
+	case Internal:
+		return "internal"
+	default:
+		return "unknown"
+	}
+}
+
 // Failure is what a stage returns when it cannot finish.
 type Failure struct {
 	Class FailureClass

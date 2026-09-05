@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/embed"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,6 +32,8 @@ type Service struct {
 	// constant because the right cutoff depends on the embedding model, and
 	// tuning it is how the arm is calibrated against a real library.
 	MaxDistance float64
+	// Metrics is optional. Nil means searches are not measured.
+	Metrics *metrics.Metrics
 }
 
 func NewService(pool *pgxpool.Pool, embedder embed.Embedder, logger *slog.Logger, now func() time.Time) *Service {
@@ -48,6 +51,7 @@ func NewService(pool *pgxpool.Pool, embedder embed.Embedder, logger *slog.Logger
 
 // Search runs the three arms, fuses them, and returns display reels.
 func (s *Service) Search(ctx context.Context, userID, query string, filters Filters, limit int) (Response, error) {
+	started := time.Now()
 	normalized := NormalizeQuery(query)
 	if len([]rune(normalized)) < MinQueryRunes {
 		return Response{Query: normalized, SearchMode: "empty", Results: []Result{}}, nil
@@ -131,12 +135,16 @@ func (s *Service) Search(ctx context.Context, userID, query string, filters Filt
 		})
 	}
 
-	return Response{
+	response := Response{
 		Query:      normalized,
 		SearchMode: Mode(used),
 		Total:      len(results),
 		Results:    results,
-	}, nil
+	}
+	if s.Metrics != nil {
+		s.Metrics.ObserveSearch(response.SearchMode, response.Total, time.Since(started))
+	}
+	return response, nil
 }
 
 // dense ranks by cosine distance over the content document and the transcript

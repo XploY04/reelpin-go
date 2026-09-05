@@ -15,6 +15,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/cache"
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
@@ -48,11 +49,28 @@ type Deps struct {
 	AdminKey string
 	Limiter  RateLimiter
 	Cache    *cache.Cache
+	// Metrics is optional: nil means the service runs without exporting any.
+	Metrics *metrics.Metrics
+	// Redis, Queue and Workers are readiness inputs. Each is optional: a
+	// process without one is ready without it.
+	Redis   Pinger
+	Queue   Pinger
+	Workers WorkerCounter
 	// TrustedProxies are the only sources whose forwarding headers are believed.
 	TrustedProxies []netip.Prefix
 	Logger         *slog.Logger
 	Version        string
 	Now            func() time.Time
+}
+
+// Pinger is one bounded liveness check against a dependency this process owns.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// WorkerCounter reports how many workers are currently heartbeating.
+type WorkerCounter interface {
+	LiveWorkers(ctx context.Context) (int, error)
 }
 
 type Server struct {
@@ -125,6 +143,10 @@ func (s *Server) routeTable() []Route {
 		{Method: http.MethodGet, Path: "/api/v1/health/live", handler: s.handleLive, claimMethods: true},
 		{Method: http.MethodGet, Path: "/api/v1/health/ready", handler: s.handleReady, claimMethods: true},
 		{Method: http.MethodGet, Path: "/api/v1/health", handler: s.handleHealth, claimMethods: true},
+		// Prometheus scrapes this. It is not part of the app's API, and it is
+		// behind the admin key because queue depths and error rates are
+		// operational detail.
+		{Method: http.MethodGet, Path: "/metrics", handler: s.handleMetrics, claimMethods: true},
 
 		read("/reels", s.handleListReels, true),
 		read("/reels/filters", s.handlePlatformFilters, false),
@@ -330,7 +352,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("/", notFound)
 
-	return s.requestID(s.logRequest(s.recoverPanic(jsonContentType(mux))))
+	return s.requestID(s.observe(s.logRequest(s.recoverPanic(jsonContentType(mux)))))
 }
 
 func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
@@ -348,7 +370,10 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		userID, err := s.deps.Auth.Authenticate(r.Context(), token)
 		if err != nil {
 			// The verification error stays in the log; the client learns nothing.
-			s.deps.Logger.Info("token rejected", "path", r.URL.Path, "error", err)
+			s.deps.Logger.Info("token rejected",
+				"route", routeLabel(r.Pattern),
+				"request_id", w.Header().Get("X-Request-ID"),
+				"error", err)
 			writeError(w, http.StatusUnauthorized, errorResponse{
 				ErrorCode: "invalid_auth_token",
 				Message:   "Your sign-in session is invalid or expired.",
@@ -357,6 +382,11 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// The outer log middleware runs on its own copy of the request, so the
+		// hashed user is handed back through a holder rather than the context.
+		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok {
+			holder.hashedUser = metrics.Hash(userID)
+		}
 		next(w, r.WithContext(auth.WithUserID(r.Context(), userID)))
 	}
 }
@@ -453,6 +483,14 @@ func validRequestID(id string) bool {
 	return true
 }
 
+// logSubject carries the hashed user back out to the log middleware. One
+// request is handled by one goroutine, so it needs no lock.
+type logSubject struct{ hashedUser string }
+
+type logSubjectKeyType struct{}
+
+var logSubjectKey logSubjectKeyType
+
 func (s *Server) requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
@@ -460,8 +498,36 @@ func (s *Server) requestID(next http.Handler) http.Handler {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), logSubjectKey, &logSubject{})))
 	})
+}
+
+// observe records the request against the metrics registry. It sits inside the
+// request-id middleware and outside everything else, so it sees the status any
+// handler or middleware wrote.
+func (s *Server) observe(next http.Handler) http.Handler {
+	if s.deps.Metrics == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		// r.Pattern is the mux pattern, filled in during routing. The raw path
+		// carries reel and job ids and would grow a time series per id.
+		s.deps.Metrics.ObserveRequest(routeLabel(r.Pattern), r.Method, rec.status, time.Since(start))
+	})
+}
+
+// routeLabel keeps the metric label to the shape of the route, not the request.
+func routeLabel(pattern string) string {
+	if pattern == "" {
+		return "unmatched"
+	}
+	if _, path, found := strings.Cut(pattern, " "); found {
+		return path
+	}
+	return pattern
 }
 
 func (s *Server) logRequest(next http.Handler) http.Handler {
@@ -469,13 +535,20 @@ func (s *Server) logRequest(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		s.deps.Logger.Info("request",
+
+		// The user id is hashed and the path is the route pattern: a log line
+		// is for correlating, never for identifying.
+		fields := []any{
 			"method", r.Method,
-			"path", r.URL.Path,
+			"route", routeLabel(r.Pattern),
 			"status", rec.status,
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+			"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
 			"request_id", w.Header().Get("X-Request-ID"),
-		)
+		}
+		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok && holder.hashedUser != "" {
+			fields = append(fields, "user", holder.hashedUser)
+		}
+		s.deps.Logger.Info("request", fields...)
 	})
 }
 

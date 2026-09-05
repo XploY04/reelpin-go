@@ -13,6 +13,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/geo"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -35,6 +36,8 @@ type Deps struct {
 	// it on every exit, and sweeps leftovers on startup.
 	TempRoot string
 	Now      func() time.Time
+	// Metrics is optional. Nil means the pipeline measures nothing.
+	Metrics *metrics.Metrics
 }
 
 type Pipeline struct {
@@ -90,11 +93,34 @@ func (p *Pipeline) Process(ctx context.Context, message queue.Message) error {
 		if err := p.checkpoints.Progress(ctx, state.ID, stage); err != nil {
 			return err
 		}
-		if err := p.runStage(ctx, stage, state); err != nil {
+		started := time.Now()
+		err := p.runStage(ctx, stage, state)
+		p.observeStage(stage, state, err, time.Since(started))
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// observeStage records one stage attempt. The outcome is the failure class,
+// not the message, so a rising internal rate is visible next to a transient
+// one without any of the error text reaching the metric.
+func (p *Pipeline) observeStage(stage string, state *run, err error, elapsed time.Duration) {
+	if p.deps.Metrics == nil {
+		return
+	}
+	outcome := "ok"
+	if err != nil {
+		class := Classify(err).Class
+		outcome = class.String()
+		// A provider refusing is not the same as a bug, and the on-call
+		// response differs, so it is counted separately by platform.
+		if class == ProviderExhausted || class == Transient {
+			p.deps.Metrics.ProviderFailures.WithLabelValues(state.Identity.Platform, outcome).Inc()
+		}
+	}
+	p.deps.Metrics.ObserveStage(stage, state.Identity.Platform, outcome, elapsed)
 }
 
 func (p *Pipeline) runStage(ctx context.Context, stage string, state *run) error {

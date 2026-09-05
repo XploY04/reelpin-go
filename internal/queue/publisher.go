@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -24,6 +25,8 @@ type Publisher struct {
 	channel *amqp.Channel
 	returns chan amqp.Return
 	timeout time.Duration
+	// Metrics is optional. Nil means the publisher counts nothing.
+	Metrics *metrics.Metrics
 }
 
 func NewPublisher(connection *amqp.Connection, confirmTimeout time.Duration) (*Publisher, error) {
@@ -51,7 +54,17 @@ func NewPublisher(connection *amqp.Connection, confirmTimeout time.Duration) (*P
 }
 
 // Publish sends one message to a queue by name and waits for its confirm.
-func (p *Publisher) Publish(ctx context.Context, queue string, message Message) error {
+func (p *Publisher) Publish(ctx context.Context, queue string, message Message) (err error) {
+	defer func() {
+		if p.Metrics != nil {
+			outcome := "confirmed"
+			if err != nil {
+				outcome = "failed"
+			}
+			p.Metrics.QueuePublished.WithLabelValues(queue, outcome).Inc()
+		}
+	}()
+
 	body, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encoding message: %w", err)
@@ -102,7 +115,13 @@ func (p *Publisher) Publish(ctx context.Context, queue string, message Message) 
 // PublishRetry sends a message into the backoff stage for its attempt. The
 // retry queue has no consumer: its TTL expires and the broker dead-letters the
 // message back onto the work exchange with the original routing key.
-func (p *Publisher) PublishRetry(ctx context.Context, workQueue string, message Message) error {
+func (p *Publisher) PublishRetry(ctx context.Context, workQueue string, message Message) (err error) {
+	defer func() {
+		if p.Metrics != nil && err == nil {
+			p.Metrics.QueueRetried.WithLabelValues(workQueue).Inc()
+		}
+	}()
+
 	body, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encoding message: %w", err)

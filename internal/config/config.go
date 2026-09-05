@@ -12,8 +12,11 @@ import (
 const localDatabaseURL = "postgres://reelpin:reelpin@localhost:5432/reelpin"
 
 type Config struct {
-	Environment             string
-	Port                    int
+	Environment string
+	Port        int
+	// MetricsPort is where the worker exposes its Prometheus endpoint. The API
+	// serves its own on the API port instead.
+	MetricsPort             int
 	DatabaseURL             string
 	Version                 string
 	SupabaseURL             string
@@ -70,6 +73,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Environment: envOr("ENVIRONMENT", "development"),
 		Port:        8000,
+		MetricsPort: 9100,
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Version:     envOr("APP_VERSION", "dev"),
 
@@ -136,6 +140,17 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("PORT %d is outside 1..65535", port)
 		}
 		cfg.Port = port
+	}
+
+	if raw := os.Getenv("METRICS_PORT"); raw != "" {
+		port, err := strconv.Atoi(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("METRICS_PORT %q is not a number", raw)
+		}
+		if port < 1 || port > 65535 {
+			return Config{}, fmt.Errorf("METRICS_PORT %d is outside 1..65535", port)
+		}
+		cfg.MetricsPort = port
 	}
 
 	if cfg.DatabaseURL == "" {

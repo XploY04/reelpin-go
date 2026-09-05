@@ -66,20 +66,93 @@ func (s *Server) databaseCheck(ctx context.Context, checkedAt string) ServiceHea
 	return check
 }
 
+// dependencyCheck runs one ping with a bounded timeout. It never calls a paid
+// provider: readiness is about the infrastructure this process owns.
+func (s *Server) dependencyCheck(ctx context.Context, checkedAt, name string, ping func(context.Context) error) ServiceHealthCheck {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := ping(ctx)
+	latency := float64(time.Since(start).Microseconds()) / 1000
+
+	check := ServiceHealthCheck{
+		Latency:   &latency,
+		CheckedAt: checkedAt,
+		Details:   map[string]any{},
+	}
+	if err != nil {
+		// The driver error can carry credentials, so it never reaches the response.
+		check.Status = "degraded"
+		check.Message = name + " is not reachable."
+		return check
+	}
+	check.Healthy = true
+	check.Status = "ok"
+	check.Message = name + " responded."
+	return check
+}
+
+// workerCheck reports the fleet from heartbeats. No live worker means queued
+// work is not moving, which is a readiness problem for the system even though
+// the API itself is fine, so it is reported without failing the API's own
+// readiness.
+func (s *Server) workerCheck(ctx context.Context, checkedAt string) ServiceHealthCheck {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	count, err := s.deps.Workers.LiveWorkers(ctx)
+	check := ServiceHealthCheck{CheckedAt: checkedAt, Details: map[string]any{}}
+	if err != nil {
+		check.Status = "unknown"
+		check.Message = "Worker heartbeats could not be read."
+		return check
+	}
+	check.Details["live_workers"] = count
+	check.Healthy = count > 0
+	if count == 0 {
+		check.Status = "degraded"
+		check.Message = "No worker has sent a heartbeat."
+		return check
+	}
+	check.Status = "ok"
+	check.Message = "Workers are reporting."
+	return check
+}
+
 func (s *Server) readiness(ctx context.Context) HealthResponse {
 	checkedAt := nowUTC()
 	db := s.databaseCheck(ctx, checkedAt)
+	checks := map[string]ServiceHealthCheck{
+		"api": apiCheck(checkedAt),
+		// legacy key: Python called Supabase, Go talks to the same Postgres directly.
+		"supabase": db,
+	}
+
+	// Redis and RabbitMQ are only required where they are configured. A
+	// development process without them is ready, and says so honestly.
+	ready := db.Healthy
+	if s.deps.Redis != nil {
+		check := s.dependencyCheck(ctx, checkedAt, "Redis", s.deps.Redis.Ping)
+		checks["redis"] = check
+		ready = ready && check.Healthy
+	}
+	if s.deps.Queue != nil {
+		check := s.dependencyCheck(ctx, checkedAt, "RabbitMQ", s.deps.Queue.Ping)
+		checks["rabbitmq"] = check
+		ready = ready && check.Healthy
+	}
+	if s.deps.Workers != nil {
+		checks["workers"] = s.workerCheck(ctx, checkedAt)
+	}
+
 	resp := HealthResponse{
 		Status:    "ok",
-		Ready:     db.Healthy,
+		Ready:     ready,
 		Version:   s.deps.Version,
 		Service:   serviceName,
 		CheckedAt: checkedAt,
-		Checks: map[string]ServiceHealthCheck{
-			"api": apiCheck(checkedAt),
-			// legacy key: Python called Supabase, Go talks to the same Postgres directly.
-			"supabase": db,
-		},
+		Checks:    checks,
 	}
 	if !resp.Ready {
 		resp.Status = "degraded"

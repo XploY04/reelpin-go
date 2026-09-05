@@ -1,4 +1,11 @@
 {
   "note": "Routes Go serves that the Python API never had. Each needs a reason.",
-  "routes": []
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/metrics",
+      "alias": "",
+      "reason": "Prometheus exposition, behind X-Admin-Key. Python's own /api/v1/metrics is a different, in-memory thing and stays deferred to task 21."
+    }
+  ]
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/media"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
@@ -73,10 +74,13 @@ func run(logger *slog.Logger) error {
 	}
 	defer connection.Close()
 
+	registry := metrics.New()
+
 	publisher, err := queue.NewPublisher(connection, 5*time.Second)
 	if err != nil {
 		return err
 	}
+	publisher.Metrics = registry
 	defer publisher.Close()
 
 	var redisClient *redis.Client
@@ -100,6 +104,15 @@ func run(logger *slog.Logger) error {
 	started := 0
 
 	go workerhealth.New(redisClient, pool, cfg.WorkerPrefix(), workerID, queue.WorkQueues).Run(ctx)
+
+	// The worker exports its own metrics on its own port: it serves no API, so
+	// there is nothing else to mount them on.
+	go metrics.Sample(ctx, registry, pool, func(ctx context.Context) (int, error) {
+		return workerhealth.Live(ctx, redisClient, cfg.WorkerPrefix())
+	})
+	go metrics.SampleTempDisk(ctx, registry, cfg.WorkerTempRoot)
+	started++
+	go func() { done <- serveMetrics(ctx, registry, cfg.MetricsPort, cfg.AdminKey, logger) }()
 
 	// Housekeeping the queue cannot do for itself: runs whose worker vanished
 	// come back, and published events stop accumulating.
@@ -181,11 +194,13 @@ func run(logger *slog.Logger) error {
 		Geocoder:    geo.NewCached(pool, geo.NewGoogle(cfg.GoogleMapsAPIKey, 0)),
 		Logger:      logger,
 		TempRoot:    cfg.WorkerTempRoot,
+		Metrics:     registry,
 	})
 
 	collectionService := collections.New(pool, cfg.CollectionShareBaseURL, time.Now)
 	notifier := notify.NewService(pool,
 		notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now)
+	notifier.Metrics = registry
 	indexer := embed.NewIndexer(pool, embed.NewGemini(cfg.GeminiAPIKey, 0), logger)
 	handler := dispatch(pool, logger, workerID, processor, collectionService, notifier, indexer)
 	for _, name := range queue.WorkQueues {
@@ -197,6 +212,7 @@ func run(logger *slog.Logger) error {
 				Global:      global,
 				Logger:      logger,
 				ConsumerTag: workerID + ":" + name,
+				Metrics:     registry,
 			}, publisher, handler)
 		}(name)
 	}

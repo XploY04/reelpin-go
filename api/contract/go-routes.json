@@ -1,6 +1,6 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 48,
+  "route_count": 49,
   "routes": [
     {
       "method": "DELETE",
@@ -263,6 +263,11 @@
       "path": "/api/v1/share/resolve",
       "alias": "/share/resolve",
       "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics",
+      "authenticated": false
     }
   ]
 }

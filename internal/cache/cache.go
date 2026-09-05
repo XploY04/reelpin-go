@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
@@ -26,6 +27,14 @@ type Cache struct {
 	client *redis.Client
 	prefix string
 	group  singleflight.Group
+	// Metrics is optional. Nil means the cache counts nothing.
+	Metrics *metrics.Metrics
+}
+
+func (c *Cache) count(name, event string) {
+	if c != nil && c.Metrics != nil {
+		c.Metrics.CacheEvents.WithLabelValues(name, event).Inc()
+	}
 }
 
 func New(client *redis.Client, prefix string) *Cache {
@@ -52,12 +61,14 @@ func GetOrLoad[T any](
 	key, err := c.key(ctx, userID, name, variant)
 	if err != nil {
 		// Without the user's cache version the key is unsafe to reuse.
+		c.count(name, "error")
 		return load(ctx)
 	}
 
 	if cached, err := c.client.Get(ctx, key).Bytes(); err == nil {
 		var value T
 		if err := json.Unmarshal(cached, &value); err == nil {
+			c.count(name, "hit")
 			return value, nil
 		}
 		// A value that no longer decodes is stale by definition.
@@ -65,6 +76,8 @@ func GetOrLoad[T any](
 	} else if !errors.Is(err, redis.Nil) && ctx.Err() != nil {
 		return zero, ctx.Err()
 	}
+
+	c.count(name, "miss")
 
 	// One loader per key: a cold cache under load must not become a stampede
 	// of identical queries.

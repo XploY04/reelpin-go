@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -39,6 +40,14 @@ type ConsumerConfig struct {
 	Global      chan struct{}
 	Logger      *slog.Logger
 	ConsumerTag string
+	// Metrics is optional. Nil means the consumer counts nothing.
+	Metrics *metrics.Metrics
+}
+
+func (c ConsumerConfig) count(outcome string) {
+	if c.Metrics != nil {
+		c.Metrics.QueueConsumed.WithLabelValues(c.Queue, outcome).Inc()
+	}
 }
 
 // Consume runs until ctx is cancelled, then stops taking new deliveries and
@@ -109,6 +118,10 @@ func handleDelivery(ctx context.Context, config ConsumerConfig, publisher *Publi
 	if err != nil {
 		// An undecodable message will never decode. Requeueing it would spin.
 		config.Logger.Error("rejecting an undecodable message", "queue", config.Queue, "error", err)
+		config.count("undecodable")
+		if config.Metrics != nil {
+			config.Metrics.DeadLettered.WithLabelValues(config.Queue).Inc()
+		}
 		_ = delivery.Nack(false, false)
 		return
 	}
@@ -128,6 +141,7 @@ func handleDelivery(ctx context.Context, config ConsumerConfig, publisher *Publi
 		if err != nil {
 			logger.Error("handler reported done with an error", "error", err)
 		}
+		config.count("done")
 		if ackErr := delivery.Ack(false); ackErr != nil {
 			logger.Error("acknowledging failed", "error", ackErr)
 		}
@@ -139,13 +153,19 @@ func handleDelivery(ctx context.Context, config ConsumerConfig, publisher *Publi
 			// The retry could not be scheduled, so the message must stay on the
 			// broker: reject it back onto the queue.
 			logger.Error("scheduling the retry failed, requeueing", "error", publishErr)
+			config.count("requeued")
 			_ = delivery.Nack(false, true)
 			return
 		}
+		config.count("retried")
 		_ = delivery.Ack(false)
 
 	case DeadLetter:
 		logger.Error("dead lettering", "error", err)
+		config.count("dead_lettered")
+		if config.Metrics != nil {
+			config.Metrics.DeadLettered.WithLabelValues(config.Queue).Inc()
+		}
 		_ = delivery.Nack(false, false)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/platform/social"
 	"github.com/XploY04/reelpin-go/internal/postgres"
@@ -29,6 +30,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -40,6 +42,24 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// workerCounter keeps a nil counter from becoming a non-nil interface holding
+// nil, which would look configured and then report an error on every readiness
+// check.
+func workerCounter(count metrics.WorkerCount) httpapi.WorkerCounter {
+	if count == nil {
+		return nil
+	}
+	return workerCountFunc(count)
+}
+
+type pingFunc func(ctx context.Context) error
+
+func (f pingFunc) Ping(ctx context.Context) error { return f(ctx) }
+
+type workerCountFunc metrics.WorkerCount
+
+func (f workerCountFunc) LiveWorkers(ctx context.Context) (int, error) { return f(ctx) }
 
 // limiterOrNil keeps a nil *ratelimit.Limiter from becoming a non-nil
 // interface holding nil, which would look configured and then panic.
@@ -58,6 +78,8 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	registry := metrics.New()
 
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -81,6 +103,8 @@ func run(logger *slog.Logger) error {
 	var (
 		limiter       *ratelimit.Limiter
 		responseCache *cache.Cache
+		redisPinger   httpapi.Pinger
+		liveWorkers   metrics.WorkerCount
 	)
 	if cfg.RedisURL != "" {
 		options, err := redis.ParseURL(cfg.RedisURL)
@@ -95,6 +119,11 @@ func run(logger *slog.Logger) error {
 		}
 		limiter = ratelimit.New(client, cfg.RateLimitPrefix())
 		responseCache = cache.New(client, cfg.CachePrefix())
+		responseCache.Metrics = registry
+		redisPinger = pingFunc(func(ctx context.Context) error { return client.Ping(ctx).Err() })
+		liveWorkers = func(ctx context.Context) (int, error) {
+			return workerhealth.Live(ctx, client, cfg.WorkerPrefix())
+		}
 	} else {
 		logger.Warn("no REDIS_URL configured: rate limits and caches are disabled",
 			"environment", cfg.Environment)
@@ -110,6 +139,11 @@ func run(logger *slog.Logger) error {
 		Reddit: social.NewRedditClient(
 			cfg.RedditClientID, cfg.RedditClientSecret, cfg.RedditUserAgent, safeClient),
 	}
+
+	searchService := search.NewService(pool, embed.NewGemini(cfg.GeminiAPIKey, 0), logger, time.Now)
+	searchService.Metrics = registry
+
+	go metrics.Sample(ctx, registry, pool, liveWorkers)
 
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
@@ -131,8 +165,10 @@ func run(logger *slog.Logger) error {
 			Lifecycle: lifecycle.New(pool, nil, responseCache, logger),
 			Map: mapview.NewService(pool,
 				mapview.NewGooglePlaces(cfg.GooglePlacesAPIKey, 0), time.Now),
-			Search: search.NewService(pool,
-				embed.NewGemini(cfg.GeminiAPIKey, 0), logger, time.Now),
+			Search:         searchService,
+			Metrics:        registry,
+			Redis:          redisPinger,
+			Workers:        workerCounter(liveWorkers),
 			Limiter:        limiterOrNil(limiter),
 			Cache:          responseCache,
 			TrustedProxies: cfg.TrustedProxyCIDRs,
