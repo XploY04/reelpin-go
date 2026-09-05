@@ -50,8 +50,17 @@ func NewService(pool *pgxpool.Pool, embedder embed.Embedder, logger *slog.Logger
 }
 
 // Search runs the three arms, fuses them, and returns display reels.
-func (s *Service) Search(ctx context.Context, userID, query string, filters Filters, limit int) (Response, error) {
+func (s *Service) Search(ctx context.Context, userID, query string, filters Filters, limit int) (response Response, err error) {
 	started := time.Now()
+	// Every path that returns a response is observed, including the two that
+	// return nothing. An empty result is the outcome the relevance alert
+	// watches for, so skipping it would make that alert unfireable.
+	defer func() {
+		if err == nil && s.Metrics != nil {
+			s.Metrics.ObserveSearch(response.SearchMode, response.Total, time.Since(started))
+		}
+	}()
+
 	normalized := NormalizeQuery(query)
 	if len([]rune(normalized)) < MinQueryRunes {
 		return Response{Query: normalized, SearchMode: "empty", Results: []Result{}}, nil
@@ -135,16 +144,12 @@ func (s *Service) Search(ctx context.Context, userID, query string, filters Filt
 		})
 	}
 
-	response := Response{
+	return Response{
 		Query:      normalized,
 		SearchMode: Mode(used),
 		Total:      len(results),
 		Results:    results,
-	}
-	if s.Metrics != nil {
-		s.Metrics.ObserveSearch(response.SearchMode, response.Total, time.Since(started))
-	}
-	return response, nil
+	}, nil
 }
 
 // dense ranks by cosine distance over the content document and the transcript

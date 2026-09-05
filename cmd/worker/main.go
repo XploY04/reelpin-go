@@ -224,13 +224,20 @@ func run(logger *slog.Logger) error {
 		"global_concurrency", cfg.WorkerGlobalConcurrency,
 	)
 
-	<-ctx.Done()
-	logger.Info("worker draining", "budget", queue.DrainTimeout.String())
+	firstErr, componentDied := awaitShutdown(ctx, done)
+	if componentDied {
+		started--
+		logger.Error("a worker component exited, shutting the worker down", "error", firstErr)
+		// Stop the heartbeat and every sibling before draining, so nothing
+		// reports this process as healthy on the way out.
+		stop()
+	} else {
+		logger.Info("worker draining", "budget", queue.DrainTimeout.String())
+	}
 
 	drain := time.NewTimer(queue.DrainTimeout)
 	defer drain.Stop()
 
-	var firstErr error
 	for finished := 0; finished < started; {
 		select {
 		case err := <-done:
@@ -244,6 +251,23 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	return firstErr
+}
+
+// awaitShutdown blocks until either a signal arrives or one of the worker's
+// components exits. A component exiting is fatal: the process would otherwise
+// keep heartbeating as a healthy worker while nothing consumes its queues.
+// A clean early exit is fatal too, because exiting zero would let a supervisor
+// treat it as a normal stop.
+func awaitShutdown(ctx context.Context, done <-chan error) (err error, componentDied bool) {
+	select {
+	case <-ctx.Done():
+		return nil, false
+	case err := <-done:
+		if err == nil {
+			err = errors.New("a worker component exited before shutdown")
+		}
+		return err, true
+	}
 }
 
 // maintenanceInterval is how often the housekeeping sweep runs. It is slow on

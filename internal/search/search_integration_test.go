@@ -8,14 +8,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/embed"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -451,5 +454,36 @@ func TestCoverageRefusesALibraryTheSetCannotMeasure(t *testing.T) {
 	// Another user holding the reel does not count for this one.
 	if other, _, err := service.Coverage(ctx, userB, set); err != nil || other != 0 {
 		t.Fatalf("coverage for another user = %d (%v), want none", other, err)
+	}
+}
+
+func TestEveryOutcomeIsMeasured(t *testing.T) {
+	service, pool, embedder := testService(t)
+	registry := metrics.New()
+	service.Metrics = registry
+	ctx := context.Background()
+
+	seedReel(t, pool, seed{userID: userA, title: "Artjuna cafe", summary: "Coffee", vectorAxis: 3})
+	embedder.vectors["artjuna cafe"] = axis(3)
+
+	// A query that finds something, a query that finds nothing, and a query
+	// too short to run. All three are outcomes the dashboard needs.
+	for _, query := range []string{"artjuna cafe", "scuba diving in switzerland", "a"} {
+		if _, err := service.Search(ctx, userA, query, Filters{}, 10); err != nil {
+			t.Fatalf("searching %q: %v", query, err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+
+	found := regexp.MustCompile(`reelpin_search_results_total\{outcome="results"\} (\d+)`).FindStringSubmatch(body)
+	empty := regexp.MustCompile(`reelpin_search_results_total\{outcome="empty"\} (\d+)`).FindStringSubmatch(body)
+	if found == nil || found[1] != "1" {
+		t.Errorf("searches with results = %v, want 1\n%s", found, body)
+	}
+	if empty == nil || empty[1] != "2" {
+		t.Errorf("empty searches = %v, want 2: the gated query and the short one\n%s", empty, body)
 	}
 }

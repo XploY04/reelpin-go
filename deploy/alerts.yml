@@ -35,9 +35,11 @@ groups:
             acquired at max means requests are queueing for a connection.
 
       - alert: DatabasePoolExhausted
+        # The state label has to be aggregated away, or the two series never
+        # match and the rule can never fire.
         expr: |
-          reelpin_db_pool_connections{state="acquired"}
-            >= reelpin_db_pool_connections{state="max"}
+          sum(reelpin_db_pool_connections{state="acquired"})
+            >= sum(reelpin_db_pool_connections{state="max"})
         for: 5m
         labels:
           severity: page
@@ -99,7 +101,7 @@ groups:
         labels:
           severity: warn
         annotations:
-          summary: "{{ $labels.platform }} has been in cooldown for 30 minutes"
+          summary: "{{ $labels.provider }} has been in cooldown for 30 minutes"
           description: >-
             Every share from this platform is being deferred. A cooldown that
             does not clear usually means credentials or cookies, not rate limits.
