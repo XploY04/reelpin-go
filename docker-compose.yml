@@ -19,5 +19,15 @@ services:
     ports:
       - "6379:6379"
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: reelpin-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - reelpin_rabbitdata:/var/lib/rabbitmq
+
 volumes:
   reelpin_pgdata:
+  reelpin_rabbitdata:

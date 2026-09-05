@@ -11,14 +11,19 @@ import (
 const localDatabaseURL = "postgres://reelpin:reelpin@localhost:5432/reelpin"
 
 type Config struct {
-	Environment         string
-	Port                int
-	DatabaseURL         string
-	Version             string
-	SupabaseURL         string
-	SupabaseJWTAudience string
-	RedisURL            string
-	RedisKeyPrefix      string
+	Environment             string
+	Port                    int
+	DatabaseURL             string
+	Version                 string
+	SupabaseURL             string
+	SupabaseJWTAudience     string
+	RedisURL                string
+	RedisKeyPrefix          string
+	RabbitMQURL             string
+	WorkerID                string
+	WorkerQueueConcurrency  int
+	WorkerGlobalConcurrency int
+	OutboxBatchSize         int
 	// TrustedProxyCIDRs are the only sources whose forwarding headers are
 	// believed. Empty means every client is identified by its socket address.
 	TrustedProxyCIDRs []netip.Prefix
@@ -47,6 +52,26 @@ func Load() (Config, error) {
 		SupabaseJWTAudience: envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
 		RedisURL:            strings.TrimSpace(os.Getenv("REDIS_URL")),
 		RedisKeyPrefix:      envOr("REDIS_KEY_PREFIX", "reelpin"),
+		RabbitMQURL:         strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+		WorkerID:            envOr("WORKER_ID", defaultWorkerID()),
+	}
+
+	for _, setting := range []struct {
+		key      string
+		fallback int
+		minimum  int
+		maximum  int
+		target   *int
+	}{
+		{"WORKER_QUEUE_CONCURRENCY", 4, 1, 256, &cfg.WorkerQueueConcurrency},
+		{"WORKER_GLOBAL_CONCURRENCY", 16, 1, 1024, &cfg.WorkerGlobalConcurrency},
+		{"OUTBOX_BATCH_SIZE", 100, 1, 1000, &cfg.OutboxBatchSize},
+	} {
+		value, err := intEnv(setting.key, setting.fallback, setting.minimum, setting.maximum)
+		if err != nil {
+			return Config{}, err
+		}
+		*setting.target = value
 	}
 
 	if !validEnvironments[cfg.Environment] {
@@ -89,6 +114,31 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// defaultWorkerID identifies one process in logs and heartbeats. The hostname
+// is what a container orchestrator already makes unique.
+func defaultWorkerID() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "worker"
+	}
+	return host
+}
+
+func intEnv(key string, fallback, minimum, maximum int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a number", key, raw)
+	}
+	if value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s %d is outside %d..%d", key, value, minimum, maximum)
+	}
+	return value, nil
 }
 
 // parseCIDRs reads the proxy allowlist. A malformed entry stops startup rather

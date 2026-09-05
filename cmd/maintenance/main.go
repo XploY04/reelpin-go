@@ -73,7 +73,7 @@ func runBackfill(ctx context.Context, logger *slog.Logger, cfg config.Config, ar
 
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|backfill-content> [flags]")
+		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|backfill-content|replay-dead-letters> [flags]")
 	}
 
 	cfg, err := config.Load()
@@ -118,6 +118,9 @@ func run(logger *slog.Logger, args []string) error {
 
 	case "backfill-content":
 		return runBackfill(ctx, logger, cfg, args[1:])
+
+	case "replay-dead-letters":
+		return runReplay(ctx, logger, cfg, args[1:])
 
 	default:
 		return fmt.Errorf("unknown command %q", command)
