@@ -278,3 +278,22 @@ func TestUnknownKeyIDRefreshesOnce(t *testing.T) {
 		t.Errorf("fetches during rotation = %d, want 1", got)
 	}
 }
+
+func TestUnknownKeyIDRefreshIsThrottled(t *testing.T) {
+	trusted := newSigningKey(t, "trusted")
+	server := newJWKSServer(t, trusted)
+	verifier := newVerifier(t, server)
+
+	unknown := newSigningKey(t, "unknown")
+	token := validClaims(server).sign(t, unknown, jwa.ES256(), unknown.private)
+	before := server.fetches.Load()
+
+	for range 3 {
+		if _, err := verifier.Authenticate(context.Background(), token); err == nil {
+			t.Fatal("Authenticate() accepted an unknown signing key")
+		}
+	}
+	if got := server.fetches.Load() - before; got != 1 {
+		t.Errorf("fetches for repeated unknown kid = %d, want 1", got)
+	}
+}

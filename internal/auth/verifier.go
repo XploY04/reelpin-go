@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 const (
 	jwksFetchTimeout = 5 * time.Second
 	jwksMaxCacheAge  = 10 * time.Minute
+	jwksRefreshDelay = 5 * time.Second
 	clockSkew        = 30 * time.Second
 	requiredRole     = "authenticated"
 )
@@ -28,6 +30,9 @@ type Verifier struct {
 	jwksURL  string
 	issuer   string
 	audience string
+
+	refreshMu   sync.Mutex
+	lastRefresh time.Time
 }
 
 func NewVerifier(ctx context.Context, supabaseURL, audience string) (*Verifier, error) {
@@ -68,17 +73,9 @@ func (v *Verifier) Authenticate(ctx context.Context, raw string) (string, error)
 		return "", err
 	}
 
-	set, err := v.cache.Lookup(ctx, v.jwksURL)
+	set, err := v.keySet(ctx, keyID)
 	if err != nil {
-		return "", fmt.Errorf("%w: jwks unavailable: %v", ErrUnauthenticated, err)
-	}
-	if _, found := set.LookupKeyID(keyID); !found {
-		// A rotated key is the one case worth a live fetch.
-		refreshed, err := v.cache.Refresh(ctx, v.jwksURL)
-		if err != nil {
-			return "", fmt.Errorf("%w: jwks refresh failed: %v", ErrUnauthenticated, err)
-		}
-		set = refreshed
+		return "", err
 	}
 
 	token, err := jwt.Parse([]byte(raw),
@@ -105,6 +102,39 @@ func (v *Verifier) Authenticate(ctx context.Context, raw string) (string, error)
 		return "", fmt.Errorf("%w: subject is not a uuid", ErrUnauthenticated)
 	}
 	return subject, nil
+}
+
+func (v *Verifier) keySet(ctx context.Context, keyID string) (jwk.Set, error) {
+	set, err := v.cache.Lookup(ctx, v.jwksURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: jwks unavailable: %v", ErrUnauthenticated, err)
+	}
+	if _, found := set.LookupKeyID(keyID); found {
+		return set, nil
+	}
+
+	v.refreshMu.Lock()
+	defer v.refreshMu.Unlock()
+
+	set, err = v.cache.Lookup(ctx, v.jwksURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: jwks unavailable: %v", ErrUnauthenticated, err)
+	}
+	if _, found := set.LookupKeyID(keyID); found {
+		return set, nil
+	}
+
+	now := time.Now()
+	if !v.lastRefresh.IsZero() && now.Sub(v.lastRefresh) < jwksRefreshDelay {
+		return set, nil
+	}
+	v.lastRefresh = now
+
+	set, err = v.cache.Refresh(ctx, v.jwksURL)
+	if err != nil {
+		return nil, fmt.Errorf("%w: jwks refresh failed: %v", ErrUnauthenticated, err)
+	}
+	return set, nil
 }
 
 // es256KeyID reads the protected header, rejecting anything but a single
