@@ -342,4 +342,104 @@ must be supplied.
 ## Answer status
 
 - Confirmed: Q1 through Q4.
-- Pending: Q5 through Q100.
+- Answered and recorded: Q8-Q14, Q17, Q19-Q28 except Q27's option label was
+  corrected to A, Q30, Q32-Q36, Q38-Q39, Q41-Q49, Q51-Q52, Q56-Q61, Q63-Q79,
+  Q81-Q99.
+- Needs clarification: Q5-Q7, Q15-Q16, Q18, Q29, Q31, Q37, Q40, Q50,
+  Q53-Q55, Q62, Q66, Q80, Q88 and Q100.
+
+## 11. Clarifications from the first complete answer batch
+
+Q101. Naming across layers: A UI and API say `library item`, database uses
+`contents` and `user_saves`; B Flutter and API keep `reel`, database uses
+`contents` and `user_saves`; C use `reel` everywhere. Recommendation: B if
+minimizing Flutter changes is the deciding condition; A if clean domain language
+is more important. Never use C because a place or generic URL is not a reel.
+
+Q102. Public ID after introducing `user_saves`: A expose `user_saves.id` and keep
+`contents.id` internal; B expose `contents.id` and resolve the current user's save
+on every operation; C expose both. Recommendation: A. Existing production reel
+IDs become user-save IDs, collection membership stays user-specific, and global
+content identity cannot leak through the public contract.
+
+Q103. Pagination: A cursor only; B offset only; C cursor and offset permanently.
+Recommendation: A. Cursor pagination remains stable while new items arrive;
+supporting both doubles contract and test behavior. Flutter can be changed once.
+
+Q104. Submission response and loading card: A return `202 Accepted` with a job;
+the web and Flutter render that job as a loading card; B return `200` with an
+incomplete content object; C block until complete. Recommendation: A. The loading
+card is a UI decision and does not require pretending unfinished content exists.
+
+Q105. Versions and reprocessing: A keep immutable `content_versions`; reprocess
+only deliberately when prompt, schema or model version changes; B overwrite one
+result row; C never reprocess for any reason. Recommendation: A. A failed new
+version leaves the previous version live and makes AI changes auditable.
+
+Q106. Category evolution: A inject active global categories into the prompt;
+Gemini selects one or returns `Other` plus a proposed category, which stays
+pending until a human approves it; B immediately make every AI suggestion a
+global category; C let each user have an automatically evolving taxonomy.
+Recommendation: A. Tags remain flexible multi-value descriptors. Example:
+category `Food`, subcategory `Recipes`, tags `vegan`, `high-protein`, `20-minute`.
+
+Q107. New email registration: A require email verification before product use; B
+allow unverified accounts to submit provider-costing work; C allow browsing but
+block submission until verification. Recommendation: A. It gives reliable
+ownership, recovery and an abuse boundary.
+
+Q108. Sensitive-action revocation: A verify JWTs locally normally, but ask
+Supabase to validate the user for account deletion, credential changes and admin
+operations; B trust local JWT validity until expiry for every action; C call
+Supabase on every request. Recommendation: A.
+
+Q109. Three attempts means: A at most three executions of the failed stage;
+completed checkpoints are reused; B three complete pipeline executions; C three
+HTTP attempts inside every provider call plus three pipeline attempts.
+Recommendation: A. It bounds cost without repeating successful stages.
+
+Q110. Low-cost worker topology: A one worker process with two consumers and total
+concurrency two: one media queue and one light-web queue; routing keys select a
+platform handler inside the process; B one always-running process per platform;
+C one queue and one serial consumer for everything. Recommendation: A.
+
+The media queue binds Instagram, YouTube, TikTok and Pinterest. The light-web
+queue binds X, LinkedIn, Reddit, place and generic-web jobs. A shared limit keeps
+only two jobs active, and the media limit stays one. More processes can run the
+same binary later without changing messages or handlers.
+
+Q111. Single-node RabbitMQ queue type: A durable classic queues, durable exchange,
+persistent messages, publisher confirms, manual acknowledgements and a persistent
+volume; B quorum queues on one node; C transient queues. Recommendation: A.
+Quorum queues become the choice only with a multi-node RabbitMQ cluster.
+
+Q112. Provider protection: A rate limits, timeouts, per-provider concurrency caps
+and cooldown after 429 or credential failures, without a generic circuit-breaker
+framework initially; B rate limits and timeouts only; C add a full circuit breaker
+for every provider now. Recommendation: A. A rate limit controls request volume;
+it does not stop simultaneous downloads or repeated calls during an outage.
+
+Q113. Redis response cache at launch: A no product response cache initially;
+Redis still owns rate limits, provider cooldowns and worker heartbeats; add
+cache-aside only after metrics show a slow repeated read; B cache filter facets
+for 60 seconds and invalidate after a save; C cache library pages and details.
+Recommendation: A at fewer than 1,000 users. If B is selected, PostgreSQL remains
+the truth, every entry has a TTL, and writes delete the affected cache key.
+
+Q114. Production compute: A defer the exact instance until load and memory tests,
+but require it in `ap-northeast-1` before production; B select one Tokyo EC2
+instance now; C use ECS/Fargate now. Recommendation: A. This defers capacity, not
+architecture, and blocks only production deployment.
+
+Q115. Recovery objectives: A RPO one hour and RTO four hours; B RPO 24 hours and
+RTO eight hours; C provide custom values. Recommendation: A. RPO is the maximum
+acceptable data loss; RTO is the maximum acceptable restoration time.
+
+Q116. Monthly cost guardrail: A alert at INR 5,000 and stop new provider-costing
+submissions at INR 10,000 while reads continue; B monitor cost without a hard
+limit; C provide custom alert and hard-limit amounts. Recommendation: A until real
+cost per processed item is measured.
+
+After Q101 through Q116 are resolved, one final value questionnaire will set
+exact timeouts, retention periods, rate limits, queue names, health windows and
+release thresholds. Only then is the implementation plan written.

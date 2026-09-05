@@ -26,29 +26,29 @@ condition for reconsidering it.
 
 | ID | Area | What must be decided | State |
 |----|------|----------------------|-------|
-| A | Product boundary | Launch users, web MVP features, mobile scope and administration | Partly confirmed |
+| A | Product boundary | Launch users, web MVP features, mobile scope and administration | Confirmed |
 | B | Domain language | Names for global content, user saves, jobs, collections and public routes | Open |
-| C | API contract | REST shape, versioning, pagination, errors, idempotency and compatibility policy | Open |
-| D | Data model | Tables, keys, relationships, JSONB boundaries, constraints and indexes | Open |
-| E | Production migration | Baseline schema, backfill, reconciliation, dual operation, cutover and cleanup | Open |
-| F | Authentication | Supabase flows, sessions, JWT verification, revocation and account lifecycle | Open |
-| G | Authorization | Ownership, collection roles, admin access and record-not-found behavior | Open |
-| H | Processing | Pipeline stages, retries, leases, timeouts, idempotency and failure classes | Open |
-| I | Queue | RabbitMQ topology, routing, acknowledgements, prefetch, retry and dead letters | Open |
-| J | Providers | Gemini, Apify, Google, Firebase, download tools, quotas and fallback behavior | Open |
-| K | Search | Documents, embeddings, lexical search, filters, ranking, evaluation and freshness | Open |
-| L | Cache and limits | Redis responsibilities, cache invalidation, rate limits and abuse controls | Open |
-| M | Media and storage | Temporary media, thumbnails, Supabase Storage, retention and size limits | Open |
-| N | Web architecture | Repository, routes, SSR, browser/server split, API client and state handling | Partly confirmed |
-| O | Web experience | Navigation, library views, detail, filters, search, map and accessibility | Partly confirmed |
+| C | API contract | REST shape, versioning, pagination, errors, idempotency and compatibility policy | Partly confirmed |
+| D | Data model | Tables, keys, relationships, JSONB boundaries, constraints and indexes | Partly confirmed |
+| E | Production migration | Baseline schema, backfill, reconciliation, dual operation, cutover and cleanup | Confirmed |
+| F | Authentication | Supabase flows, sessions, JWT verification, revocation and account lifecycle | Partly confirmed |
+| G | Authorization | Ownership, collection roles, admin access and record-not-found behavior | Partly confirmed |
+| H | Processing | Pipeline stages, retries, leases, timeouts, idempotency and failure classes | Partly confirmed |
+| I | Queue | RabbitMQ topology, routing, acknowledgements, prefetch, retry and dead letters | Partly confirmed |
+| J | Providers | Gemini, Apify, Google, Firebase, download tools, quotas and fallback behavior | Partly confirmed |
+| K | Search | Documents, embeddings, lexical search, filters, ranking, evaluation and freshness | Confirmed with evaluation gate open |
+| L | Cache and limits | Redis responsibilities, cache invalidation, rate limits and abuse controls | Partly confirmed |
+| M | Media and storage | Temporary media, thumbnails, Supabase Storage, retention and size limits | Partly confirmed |
+| N | Web architecture | Repository, routes, SSR, browser/server split, API client and state handling | Confirmed |
+| O | Web experience | Navigation, library views, detail, filters, search, map and accessibility | Confirmed |
 | P | Environments | Local, dev and production resources, secrets, DNS and region placement | Partly confirmed |
-| Q | Deployment | Containers, image promotion, migrations, traffic switching and rollback | Open |
-| R | Reliability | SLOs, timeouts, graceful shutdown, degradation and disaster recovery | Open |
-| S | Observability | Logs, metrics, traces, dashboards, alerts and audit events | Open |
-| T | Security and privacy | SSRF, validation, CORS, CSRF, headers, encryption, deletion and retention | Open |
-| U | Testing | Unit, integration, contract, end-to-end, load, migration and production smoke tests | Open |
-| V | Delivery workflow | Branches, PR size, CI gates, ownership, docs and release approvals | Open |
-| W | Scale and cost | Expected load, concurrency, provider budgets, database size and scaling triggers | Open |
+| Q | Deployment | Containers, image promotion, migrations, traffic switching and rollback | Partly confirmed |
+| R | Reliability | SLOs, timeouts, graceful shutdown, degradation and disaster recovery | Partly confirmed |
+| S | Observability | Logs, metrics, traces, dashboards, alerts and audit events | Confirmed |
+| T | Security and privacy | SSRF, validation, CORS, CSRF, headers, encryption, deletion and retention | Partly confirmed |
+| U | Testing | Unit, integration, contract, end-to-end, load, migration and production smoke tests | Confirmed |
+| V | Delivery workflow | Branches, PR size, CI gates, ownership, docs and release approvals | Confirmed |
+| W | Scale and cost | Expected load, concurrency, provider budgets, database size and scaling triggers | Partly confirmed |
 
 ## Proposals awaiting confirmation
 
@@ -151,12 +151,75 @@ or infrastructure.
 ## Current questions
 
 The complete numbered question bank is in
-[`architecture-questionnaire.md`](architecture-questionnaire.md). Q5 through
-Q100 remain unanswered. Answers may accept a recommended range and list only
-exceptions.
+[`architecture-questionnaire.md`](architecture-questionnaire.md). The product
+owner answered Q5 through Q100 on 2026-09-05. The clear answers are recorded
+below; the remaining choices are grouped into Q101 through Q114 so they can be
+resolved together.
+
+## Answer batch: Q5 through Q100
+
+### Confirmed without clarification
+
+| Questions | Answer |
+|-----------|--------|
+| Q8-Q14 | A |
+| Q17 | A |
+| Q19-Q23 | A |
+| Q24 | B, use UUIDv4 for new records |
+| Q25-Q26 | A |
+| Q28 | A |
+| Q30 | A |
+| Q32-Q36 | A |
+| Q38-Q39 | A |
+| Q41-Q42 | A |
+| Q43 | C, no product admin API; privileged work uses direct database access or maintenance commands |
+| Q44-Q49 | A |
+| Q51 | A |
+| Q52 | B, no job cancellation in the initial system |
+| Q56-Q57 | A |
+| Q58 | B, migrate every currently supported Python platform |
+| Q59 | Preserve each tested Python provider fallback, then add explicit timeouts, failure classes and cost tests |
+| Q60-Q61 | A |
+| Q63-Q64 | A; search remains blocked until the real-embedding evaluation passes |
+| Q65 | Embed title, summary, tags and facts; do not embed transcript chunks initially |
+| Q67-Q79 | A |
+| Q81-Q82 | B, self-host RabbitMQ and Redis at initial production scale |
+| Q83-Q98 | A |
+| Q99 | Fewer than 1,000 users and 100 submissions per day |
+
+### Confirmed interpretations
+
+- Q10: deleting removes only the user's save. Global processed content remains
+  reusable even with no current saves, subject to a later retention decision.
+- Q27: the described design is option A, not C. `user_saves` references both
+  `auth.users.id` and `contents.id`; `UNIQUE (user_id, content_id)` creates one
+  private save per user for one global content row.
+- Q50: maximum three attempts was selected; whether this is per failed stage or
+  per whole run remains open.
+- Q55: a queue is still required. On one RabbitMQ node, use durable classic
+  queues, persistent messages, publisher confirms and persistent disk. Quorum
+  queues add useful replication only after multiple nodes exist.
+
+### Pending clarification
+
+- Q5-Q7 and Q15: public/internal naming and which ID the API exposes.
+- Q16: permanent cursor plus offset pagination.
+- Q18: `200` with a loading item versus `202` with a job.
+- Q29 and Q53: immutable content versions versus never reprocessing.
+- Q31: governance for AI-created categories and the role of tags.
+- Q37: permitting unverified email accounts.
+- Q40: no immediate revocation check for sensitive actions.
+- Q50: attempt scope.
+- Q54-Q55: exact low-cost RabbitMQ topology and concurrency.
+- Q62: rate limits without provider cooldown or concurrency protection.
+- Q66: which Redis caches exist at launch.
+- Q80: production compute.
+- Q88: numeric recovery targets.
+- Q100: cost controls and budget.
 
 ## Decision log
 
 | Date | Decisions |
 |------|-----------|
 | 2026-09-05 | D1 through D4 confirmed by the product owner. |
+| 2026-09-05 | Q5 through Q100 answered; unambiguous choices recorded and fourteen clarification groups opened. |
