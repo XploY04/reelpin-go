@@ -129,6 +129,70 @@ jobs:
           push: false
           load: true
           tags: reelpin-api:ci
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
+
+      - name: the image runs as a non-root user
+        run: |
+          user=$(docker run --rm --entrypoint id reelpin-api:ci -u)
+          if [ "$user" != "10001" ]; then
+            echo "the image runs as uid $user, want 10001"
+            exit 1
+          fi
+
+      - name: the media tools are present and executable
+        run: |
+          docker run --rm --entrypoint yt-dlp reelpin-api:ci --version
+          docker run --rm --entrypoint ffmpeg reelpin-api:ci -version | head -n1
+
+      - name: no package manager or compiler is left in the image
+        run: |
+          for binary in apt apt-get dpkg gcc go; do
+            if docker run --rm --entrypoint sh reelpin-api:ci -c "command -v $binary" >/dev/null 2>&1; then
+              echo "$binary is still in the runtime image"
+              exit 1
+            fi
+          done
+
+      - name: the image works with a read-only root filesystem
+        env:
+          SUPABASE_URL: http://127.0.0.1:9
+          DATABASE_URL: postgres://127.0.0.1:1/unreachable
+        run: |
+          # Read-only root plus a bounded tmpfs is how this runs in production,
+          # so the startup path must not write anywhere else.
+          set +e
+          output=$(docker run --rm --read-only \
+            --tmpfs /var/tmp/reelpin-runs:size=64m \
+            -e ENVIRONMENT=test -e SUPABASE_URL="$SUPABASE_URL" \
+            -e DATABASE_URL="$DATABASE_URL" reelpin-api:ci 2>&1)
+          set -e
+          echo "$output"
+          if echo "$output" | grep -q "read-only file system"; then
+            echo "the container tried to write to its root filesystem"
+            exit 1
+          fi
+          echo "$output" | grep -q '"startup failed"' || {
+            echo "expected a structured startup failure log"
+            exit 1
+          }
+
+      - name: sbom
+        uses: anchore/sbom-action@v0
+        with:
+          image: reelpin-api:ci
+          format: spdx-json
+          artifact-name: reelpin-sbom.spdx.json
+
+      - name: vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: reelpin-api:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
 
       - name: liveness smoke test
         env:

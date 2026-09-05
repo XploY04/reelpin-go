@@ -73,16 +73,22 @@ func runBackfill(ctx context.Context, logger *slog.Logger, cfg config.Config, ar
 
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|backfill-content|replay-dead-letters|retention|backfill-embeddings|search-eval> [flags]")
+		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|backfill-content|replay-dead-letters|retention|backfill-embeddings|search-eval|healthcheck> [flags]")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// The container healthcheck runs before anything is configured and must not
+	// need a database URL to say whether the process is alive.
+	if args[0] == "healthcheck" {
+		return runHealthcheck(ctx, args[1:])
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	switch command := args[0]; command {
 	case "migrate":
