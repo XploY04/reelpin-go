@@ -451,12 +451,21 @@ func TestMigrationStatusAndDown(t *testing.T) {
 		t.Fatal("status returned nothing")
 	}
 
-	rolledBack, err := Down(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("Down: %v", err)
+	// Down takes one migration at a time, newest first, so the loop also proves
+	// every down section works.
+	rolledBack := 0
+	for {
+		name, err := Down(ctx, databaseURL)
+		if err != nil {
+			t.Fatalf("Down: %v", err)
+		}
+		if name == "" {
+			break
+		}
+		rolledBack++
 	}
-	if rolledBack == "" {
-		t.Fatal("Down rolled back nothing, so it never saw the applied migration")
+	if rolledBack != len(lines) {
+		t.Fatalf("rolled back %d migrations, want %d", rolledBack, len(lines))
 	}
 	var exists bool
 	if err := pool.QueryRow(ctx,
