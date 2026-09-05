@@ -31,13 +31,15 @@ type DatabasePinger interface {
 
 // Deps is everything the API needs from the outside world.
 type Deps struct {
-	DB      DatabasePinger
-	Auth    auth.Authenticator
-	Reels   reels.ReelReader
-	Jobs    jobs.JobReader
-	Share   ShareResolver
-	Limiter RateLimiter
-	Cache   *cache.Cache
+	DB          DatabasePinger
+	Auth        auth.Authenticator
+	Reels       reels.ReelReader
+	Jobs        jobs.JobReader
+	Share       ShareResolver
+	Enqueue     Enqueuer
+	ShareTokens ShareTokens
+	Limiter     RateLimiter
+	Cache       *cache.Cache
 	// TrustedProxies are the only sources whose forwarding headers are believed.
 	TrustedProxies []netip.Prefix
 	Logger         *slog.Logger
@@ -113,6 +115,41 @@ func (s *Server) routeTable() []Route {
 
 		// Share resolution is a read that calls no provider, so its limit
 		// fails open: a Redis outage must not stop people sharing.
+		// The native share path may present a device token instead of a session,
+		// and only here.
+		{
+			Method:        http.MethodPost,
+			Path:          "/api/v1/processing-jobs/reels",
+			Alias:         "/processing-jobs/reels",
+			Authenticated: true,
+			handler: s.shareTokenOrJWT(s.rateLimited(routeLimit{
+				User: &ratelimit.Enqueue,
+				IP:   &ratelimit.EnqueueIP,
+			}, s.handleEnqueueReel)),
+			limit: routeLimit{User: &ratelimit.Enqueue, IP: &ratelimit.EnqueueIP},
+		},
+		// The older alias the shipped app still calls for the same service.
+		{
+			Method:        http.MethodPost,
+			Path:          "/api/v1/process-reel",
+			Alias:         "/process-reel",
+			Authenticated: true,
+			handler: s.shareTokenOrJWT(s.rateLimited(routeLimit{
+				User: &ratelimit.Enqueue,
+				IP:   &ratelimit.EnqueueIP,
+			}, s.handleEnqueueReel)),
+			limit: routeLimit{User: &ratelimit.Enqueue, IP: &ratelimit.EnqueueIP},
+		},
+
+		guarded(http.MethodPost, "/share-tokens", s.handleMintShareToken, routeLimit{
+			User: &ratelimit.ShareTokenMint,
+			IP:   &ratelimit.ShareTokenMintIP,
+		}, false),
+		guarded(http.MethodDelete, "/share-tokens", s.handleRevokeShareTokens, routeLimit{
+			User: &ratelimit.ShareTokenMint,
+			IP:   &ratelimit.ShareTokenMintIP,
+		}, false),
+
 		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, routeLimit{
 			User:     &ratelimit.ShareResolve,
 			IP:       &ratelimit.ShareResolveIP,

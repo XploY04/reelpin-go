@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/uuid"
 )
@@ -128,9 +130,14 @@ func testDeps(pinger DatabasePinger) Deps {
 		Reels:   &fakeReels{},
 		Jobs:    &fakeJobs{},
 		Share:   &sourceidentity.Resolver{},
-		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Version: "test",
-		Now:     func() time.Time { return testNow },
+		Enqueue: &fakeEnqueuer{},
+		// Paid routes fail closed without a limiter, so tests that are not
+		// about limiting get a permissive one.
+		Limiter:     &fakeLimiter{allow: true},
+		ShareTokens: &fakeShareTokens{},
+		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Version:     "test",
+		Now:         func() time.Time { return testNow },
 	}
 }
 
@@ -169,4 +176,62 @@ func sampleReel(id, userID string) reels.ReelRecord {
 		},
 		CreatedAt: timePtr(testNow.AddDate(0, 0, -2)),
 	}
+}
+
+type fakeEnqueuer struct {
+	result enqueue.Result
+	err    error
+	last   enqueue.Request
+	calls  int
+}
+
+func (f *fakeEnqueuer) Enqueue(_ context.Context, request enqueue.Request) (enqueue.Result, error) {
+	f.calls++
+	f.last = request
+	if f.err != nil {
+		return enqueue.Result{}, f.err
+	}
+	result := f.result
+	if result.Job.ID == "" {
+		result.Job = jobs.JobRecord{
+			ID:     testJobID,
+			UserID: request.UserID,
+			URL:    "https://www.instagram.com/reel/C8abc123/",
+			Status: jobs.StatusQueued,
+		}
+	}
+	return result, nil
+}
+
+type fakeShareTokens struct {
+	token   string
+	userID  string
+	err     error
+	revoked int
+	lastRaw string
+}
+
+func (f *fakeShareTokens) Mint(context.Context, string, string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.token == "" {
+		return "minted-token", nil
+	}
+	return f.token, nil
+}
+
+func (f *fakeShareTokens) UserID(_ context.Context, raw string) (string, error) {
+	f.lastRaw = raw
+	if f.userID == "" {
+		return "", sharetoken.ErrUnknownToken
+	}
+	return f.userID, nil
+}
+
+func (f *fakeShareTokens) RevokeAll(context.Context, string) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.revoked, nil
 }

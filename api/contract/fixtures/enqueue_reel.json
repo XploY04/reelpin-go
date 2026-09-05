@@ -1,0 +1,47 @@
+{
+  "request": {
+    "body": {
+      "url": "https://www.instagram.com/reel/C8abc123/",
+      "collection_ids": [
+        "fedcba98-0000-4000-8000-000000000001"
+      ]
+    },
+    "method": "POST",
+    "target": "/api/v1/processing-jobs/reels"
+  },
+  "response": {
+    "attempt_count": 0,
+    "collection_ids": [],
+    "completed_at": null,
+    "created_at": null,
+    "current_step": null,
+    "error_message": null,
+    "failure_code": null,
+    "id": "33333333-3333-4333-8333-333333333333",
+    "ingestion_method": null,
+    "max_attempts": 0,
+    "next_retry_at": null,
+    "normalized_url": null,
+    "processing_version": null,
+    "progress_percent": 0,
+    "recommended_poll_after_seconds": 3,
+    "reel": null,
+    "result_reel_id": null,
+    "retry_scheduled": false,
+    "retryable": true,
+    "source_content_id": null,
+    "source_content_type": null,
+    "source_platform": null,
+    "started_at": null,
+    "status": "queued",
+    "status_label": "Queued",
+    "status_message": "Queued for processing.",
+    "step_durations": {},
+    "terminal": false,
+    "transcript_source": null,
+    "updated_at": null,
+    "url": "https://www.instagram.com/reel/C8abc123/",
+    "user_id": "11111111-1111-4111-8111-111111111111"
+  },
+  "status": 200
+}

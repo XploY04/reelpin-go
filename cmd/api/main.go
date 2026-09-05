@@ -15,10 +15,12 @@ import (
 	"github.com/XploY04/reelpin-go/internal/cache"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/redis/go-redis/v9"
 )
@@ -91,6 +93,10 @@ func run(logger *slog.Logger) error {
 			"environment", cfg.Environment)
 	}
 
+	// One resolver serves both share resolution and enqueue, so a link that
+	// resolves in the app resolves identically when it is shared.
+	shareResolver := &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})}
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
@@ -98,7 +104,9 @@ func run(logger *slog.Logger) error {
 			Auth:           verifier,
 			Reels:          postgres.NewReels(pool),
 			Jobs:           postgres.NewJobs(pool),
-			Share:          &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})},
+			Share:          shareResolver,
+			Enqueue:        enqueue.New(pool, shareResolver, enqueue.DefaultLimits),
+			ShareTokens:    sharetoken.NewStore(pool),
 			Limiter:        limiterOrNil(limiter),
 			Cache:          responseCache,
 			TrustedProxies: cfg.TrustedProxyCIDRs,

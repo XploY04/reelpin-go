@@ -122,6 +122,16 @@ func TestResponseContract(t *testing.T) {
 			body: `{"raw_payload_text":"no link at all"}`,
 		},
 
+		{
+			name: "enqueue_reel", method: "POST", target: "/api/v1/processing-jobs/reels",
+			token: "Bearer good.token", wantStatus: 200,
+			body: `{"url":"https://www.instagram.com/reel/C8abc123/","collection_ids":["fedcba98-0000-4000-8000-000000000001"]}`,
+		},
+		{
+			name: "share_token_minted", method: "POST", target: "/api/v1/share-tokens",
+			token: "Bearer good.token", wantStatus: 200, body: `{}`,
+		},
+
 		{name: "error_authentication_required", target: "/api/v1/reels", wantStatus: 401},
 		{
 			name: "error_invalid_auth_token", target: "/api/v1/reels", token: "Bearer bad.token", wantStatus: 401,

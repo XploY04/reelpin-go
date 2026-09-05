@@ -1,6 +1,6 @@
 {
   "note": "Python routes Go does not serve yet. Every entry names the task that owns it. A route leaves this file only when Go implements it or a removal is approved.",
-  "deferred_route_count": 53,
+  "deferred_route_count": 49,
   "routes": [
     {
       "method": "DELETE",
@@ -298,24 +298,10 @@
     },
     {
       "method": "POST",
-      "path": "/api/v1/process-reel",
-      "alias": "/process-reel",
-      "owner": "task-09",
-      "reason": "Enqueue, share tokens, and global deduplication."
-    },
-    {
-      "method": "POST",
       "path": "/api/v1/process-video",
       "alias": "/process-video",
       "owner": "task-21",
       "reason": "Retired: the Python route already returns 501 and the pipeline is test-only."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/processing-jobs/reels",
-      "alias": "/processing-jobs/reels",
-      "owner": "task-09",
-      "reason": "Enqueue, share tokens, and global deduplication."
     },
     {
       "method": "POST",
@@ -358,20 +344,6 @@
       "alias": "/search",
       "owner": "task-19",
       "reason": "Hybrid search."
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/share-tokens",
-      "alias": "/share-tokens",
-      "owner": "task-09",
-      "reason": "Enqueue, share tokens, and global deduplication."
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/share-tokens",
-      "alias": "/share-tokens",
-      "owner": "task-09",
-      "reason": "Enqueue, share tokens, and global deduplication."
     }
   ]
 }

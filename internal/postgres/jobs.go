@@ -9,7 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const jobColumns = `id, user_id, url, normalized_url, source_platform, source_content_type,
+// JobColumns is the shared column list, so anything that reads a job row reads
+// the same shape.
+const JobColumns = `id, user_id, url, normalized_url, source_platform, source_content_type,
 	source_content_id, processing_version, ingestion_method, transcript_source, status,
 	current_step, progress_percent, failure_code, error_message, result_reel_id,
 	attempt_count, max_attempts, next_retry_at, step_durations, collection_ids, created_at,
@@ -27,7 +29,7 @@ func (j *Jobs) List(ctx context.Context, userID string, activeOnly bool, limit i
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
 
-	query := "SELECT " + jobColumns + " FROM processing_jobs WHERE user_id = $1"
+	query := "SELECT " + JobColumns + " FROM processing_jobs WHERE user_id = $1"
 	args := []any{userID}
 	if activeOnly {
 		args = append(args, []string{jobs.StatusQueued, jobs.StatusProcessing})
@@ -44,7 +46,7 @@ func (j *Jobs) List(ctx context.Context, userID string, activeOnly bool, limit i
 
 	records := []jobs.JobRecord{}
 	for rows.Next() {
-		record, err := scanJob(rows)
+		record, err := ScanJob(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -58,7 +60,7 @@ func (j *Jobs) Get(ctx context.Context, userID string, id uuid.UUID) (jobs.JobRe
 	defer cancel()
 
 	rows, err := j.db.Query(ctx,
-		"SELECT "+jobColumns+" FROM processing_jobs WHERE id = $1 AND user_id = $2",
+		"SELECT "+JobColumns+" FROM processing_jobs WHERE id = $1 AND user_id = $2",
 		id.String(), userID,
 	)
 	if err != nil {
@@ -72,14 +74,15 @@ func (j *Jobs) Get(ctx context.Context, userID string, id uuid.UUID) (jobs.JobRe
 		}
 		return jobs.JobRecord{}, jobs.ErrNotFound
 	}
-	record, err := scanJob(rows)
+	record, err := ScanJob(rows)
 	if err != nil {
 		return jobs.JobRecord{}, err
 	}
 	return record, rows.Err()
 }
 
-func scanJob(rows pgx.Rows) (jobs.JobRecord, error) {
+// ScanJob reads one row selected with JobColumns.
+func ScanJob(rows pgx.Rows) (jobs.JobRecord, error) {
 	var (
 		record         jobs.JobRecord
 		status         *string

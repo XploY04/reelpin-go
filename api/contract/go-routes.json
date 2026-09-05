@@ -1,6 +1,6 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 12,
+  "route_count": 16,
   "routes": [
     {
       "method": "GET",
@@ -30,9 +30,21 @@
       "authenticated": false
     },
     {
+      "method": "POST",
+      "path": "/api/v1/process-reel",
+      "alias": "/process-reel",
+      "authenticated": true
+    },
+    {
       "method": "GET",
       "path": "/api/v1/processing-jobs",
       "alias": "/processing-jobs",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/processing-jobs/reels",
+      "alias": "/processing-jobs/reels",
       "authenticated": true
     },
     {
@@ -63,6 +75,18 @@
       "method": "GET",
       "path": "/api/v1/reels/{reel_id}",
       "alias": "/reels/{reel_id}",
+      "authenticated": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/share-tokens",
+      "alias": "/share-tokens",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/share-tokens",
+      "alias": "/share-tokens",
       "authenticated": true
     },
     {

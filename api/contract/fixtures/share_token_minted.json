@@ -1,0 +1,11 @@
+{
+  "request": {
+    "body": {},
+    "method": "POST",
+    "target": "/api/v1/share-tokens"
+  },
+  "response": {
+    "share_token": "minted-token"
+  },
+  "status": 200
+}
