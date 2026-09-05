@@ -109,3 +109,7 @@ func (c *Client) Run(ctx context.Context, platform string, input any) ([]json.Ra
 	}
 	return items, nil
 }
+
+// SetBaseURLForTest points the client at a local server. It exists only so a
+// handler test can exercise the actor path without reaching Apify.
+func SetBaseURLForTest(url string) { baseURL = url }

@@ -25,6 +25,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/platform/instagram"
+	"github.com/XploY04/reelpin-go/internal/platform/web"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/storage"
@@ -120,6 +121,16 @@ func run(logger *slog.Logger) error {
 	actors := apify.New(apify.Config{Token: cfg.ApifyToken, Actors: cfg.ApifyActors})
 	thumbnails := storage.NewSupabase(cfg.SupabaseURL, cfg.StorageBucket, cfg.SupabaseServiceKey, 0)
 
+	webHandler := web.New(web.Deps{
+		HTTP:       safeClient,
+		Downloader: media.NewYTDLP(runner),
+		Audio:      media.NewFFmpeg(runner),
+		Apify:      actors,
+		Cookies:    cookieJar,
+		Storage:    thumbnails,
+		Logger:     logger,
+	})
+
 	instagramHandler := instagram.New(instagram.Deps{
 		HTTP:       safeClient,
 		Downloader: media.NewYTDLP(runner),
@@ -134,7 +145,9 @@ func run(logger *slog.Logger) error {
 		// The remaining platforms arrive with their own tasks; until then a
 		// share of an unhandled source fails as unsupported rather than
 		// silently.
-		Handlers:    platform.NewRegistry(instagramHandler),
+		// Registration order is priority order: the dedicated handlers first,
+		// then the web handler as the fallback for every other link.
+		Handlers:    platform.NewRegistry(instagramHandler, webHandler),
 		Transcriber: gemini,
 		ImageReader: gemini,
 		Extractor:   gemini,
