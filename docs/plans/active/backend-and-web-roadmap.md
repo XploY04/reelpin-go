@@ -41,7 +41,8 @@ track and changes two assumptions:
 | Queue | RabbitMQ with durable queues, publisher confirms, manual acknowledgements and dead letters | Processing is long-running, retryable and observable | A managed workflow engine becomes cheaper than operating the queue |
 | Delivery | At-least-once messages with idempotent stages and a transactional outbox | Exactly-once delivery is not available across the database and broker | Do not claim exactly-once behavior |
 | Content identity | Global `content` and versioned extraction, separate from each user's save | The same public source should be downloaded and processed once | Private or credential-scoped content uses a separate access scope |
-| Public resource name | `/api/v1/library-items`, not `/reels` | Saved content includes videos, posts, places and generic links | Decide before generating the web client; do not add an alias afterward |
+| API version | Go owns `/api/v2`; Python `/api/v1` remains during mobile migration | Cursor, error and job changes are breaking, and installed apps cannot update together | Retire v1 only after its measured support window |
+| Public resource name | Keep `/api/v2/reels`; use `contents` and `user_saves` internally | This minimizes Flutter naming change while the database keeps correct broad domain names | Rename only in a coordinated future API version |
 | Search | pgvector, PostgreSQL full-text search and trigram matching fused with RRF | Semantic, exact and typo-tolerant retrieval stay beside the source data | Measured scale or relevance justifies a separate search service |
 | Web repository | Extend `reelpin-web` | It already owns `reelpin.in`, Next.js, Vercel, Supabase JavaScript and deep links | Split only if deployment or ownership becomes independent |
 | Web auth | `@supabase/ssr`, PKCE and cookie sessions | Next.js server components and browser components share one refreshed session | Follow Supabase changes while the package remains beta |
@@ -85,10 +86,13 @@ The production path is additive:
 2. Add global content tables and nullable links from existing rows.
 3. Backfill source identity and content versions in batches.
 4. Verify row counts, unmapped rows and duplicate identities.
-5. Serve old and newly processed saves through one `library-items` reader.
-6. Keep writing the user-facing save record expected by existing production
-   data while the global pipeline owns the extraction.
-7. Remove no table or column during the initial web launch.
+5. Serve production web reads through the legacy adapter while Python v1 still
+   accepts writes. Synchronize legacy mutations into canonical tables.
+6. Write canonical and legacy save records atomically from Go while both client
+   generations are active.
+7. Fence Python writes, run final reconciliation, then switch Go reads to
+   `user_saves` and `contents`.
+8. Remove no table or column during the initial web launch.
 
 An old user proves the migration: sign in on the web with an existing account,
 compare the library count with the production database, open several old items,
@@ -110,8 +114,8 @@ rebased, not merged because it already exists.
 
 1. **Redesign Task 3 contract CI.** Replace Python route coverage with an
    OpenAPI document owned by Go, a generated route manifest, JSON fixtures and
-   TypeScript client generation. Rename the saved-content routes to
-   `/api/v1/library-items` before a web client is generated.
+   TypeScript client generation. Use `/api/v2/reels` at the client boundary;
+   use `contents` and `user_saves` inside the service.
 2. **Keep Task 4 safe ingress.** Normalize URLs, permit HTTP and HTTPS only,
    block private and link-local targets, recheck DNS after redirects, cap
    response sizes and verify media signatures.
@@ -149,14 +153,15 @@ rebased, not merged because it already exists.
     hidden pins, PostGIS queries and provider-backed place search.
 12. **Keep Task 16 notifications.** Device tokens, completion notifications and
     campaigns with clear admin authorization.
-13. **Keep Task 17 lifecycle.** Library-item deletion, account deletion,
-    retention and Supabase identity deletion. Shared global content is deleted
-    only after its final user reference disappears.
+13. **Keep Task 17 lifecycle.** Reel deletion, account deletion, retention and
+    Supabase identity deletion. Public global content remains reusable after its
+    final user reference unless a privacy, legal or source-removal purge applies.
 
 ### Wave D: search and operations
 
-14. **Keep Task 18 embeddings.** Versioned embedding documents and transcript
-    chunks using `gemini-embedding-001` at 768 dimensions.
+14. **Keep Task 18 embeddings.** Versioned embedding documents over title,
+    summary, tags and facts using `gemini-embedding-2` at 768 dimensions.
+    Transcript chunks are not embedded initially.
 15. **Keep Task 19 hybrid search.** Dense, full-text and trigram arms, SQL-level
     user filters, RRF fusion, relevance gating and a labeled evaluation set
     measured with real Gemini embeddings.
@@ -337,8 +342,8 @@ revisit condition. The decision records in `docs/decisions/` are the source.
 1. Close PR #23 and mark its environment-column design superseded.
 2. Rebase Task 3 onto `dev` and replace Python compatibility coverage with the
    Go-owned contract.
-3. Rename the public saved-content resource to `library-items` before client
-   generation.
+3. Keep `/api/v2/reels` in the generated client while mapping it to the
+   `contents` and `user_saves` domain.
 4. Rework the schema migration so an empty dev project and current production
    both reach the same target schema.
 5. Turn the temporary EC2 PR #2 container into a versioned dev deployment.

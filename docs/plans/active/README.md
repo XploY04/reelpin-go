@@ -17,7 +17,9 @@ Files matching `*.local.md` here are gitignored, for whoever is holding the pen.
 
 - [`backend-and-web-roadmap.md`](backend-and-web-roadmap.md): Go backend,
   authenticated ReelPin web, production-data migration and cutover.
+- [`implementation-plan.md`](implementation-plan.md): exact ordered tasks,
+  files, behavior, tests and stop conditions for that roadmap.
 - [`architecture-decisions.md`](architecture-decisions.md): the decision gate
-  that must be completed before more implementation.
-- [`architecture-questionnaire.md`](architecture-questionnaire.md): the complete
-  numbered question bank used to finish that decision gate.
+  completed before more implementation.
+- [`architecture-questionnaire.md`](architecture-questionnaire.md): the resolved
+  question record and deferred public-write cost gate.

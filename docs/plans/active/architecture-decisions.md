@@ -1,6 +1,6 @@
 # Architecture decision register
 
-**Status:** discovery in progress
+**Status:** decisions complete; one launch value deferred
 
 This file is the gate before further backend or web implementation. A decision
 is confirmed only after the product owner answers it explicitly. Each confirmed
@@ -27,39 +27,40 @@ condition for reconsidering it.
 | ID | Area | What must be decided | State |
 |----|------|----------------------|-------|
 | A | Product boundary | Launch users, web MVP features, mobile scope and administration | Confirmed |
-| B | Domain language | Names for global content, user saves, jobs, collections and public routes | Open |
-| C | API contract | REST shape, versioning, pagination, errors, idempotency and compatibility policy | Partly confirmed |
-| D | Data model | Tables, keys, relationships, JSONB boundaries, constraints and indexes | Partly confirmed |
+| B | Domain language | Names for global content, user saves, jobs, collections and public routes | Confirmed |
+| C | API contract | REST shape, versioning, pagination, errors, idempotency and compatibility policy | Confirmed |
+| D | Data model | Tables, keys, relationships, JSONB boundaries, constraints and indexes | Confirmed |
 | E | Production migration | Baseline schema, backfill, reconciliation, dual operation, cutover and cleanup | Confirmed |
-| F | Authentication | Supabase flows, sessions, JWT verification, revocation and account lifecycle | Partly confirmed |
-| G | Authorization | Ownership, collection roles, admin access and record-not-found behavior | Partly confirmed |
-| H | Processing | Pipeline stages, retries, leases, timeouts, idempotency and failure classes | Partly confirmed |
-| I | Queue | RabbitMQ topology, routing, acknowledgements, prefetch, retry and dead letters | Partly confirmed |
-| J | Providers | Gemini, Apify, Google, Firebase, download tools, quotas and fallback behavior | Partly confirmed |
+| F | Authentication | Supabase flows, sessions, JWT verification, revocation and account lifecycle | Confirmed |
+| G | Authorization | Ownership, collection roles, admin access and record-not-found behavior | Confirmed |
+| H | Processing | Pipeline stages, retries, leases, timeouts, idempotency and failure classes | Confirmed |
+| I | Queue | RabbitMQ topology, routing, acknowledgements, prefetch, retry and dead letters | Confirmed |
+| J | Providers | Gemini, Apify, Google, Firebase, download tools, quotas and fallback behavior | Confirmed |
 | K | Search | Documents, embeddings, lexical search, filters, ranking, evaluation and freshness | Confirmed with evaluation gate open |
-| L | Cache and limits | Redis responsibilities, cache invalidation, rate limits and abuse controls | Partly confirmed |
-| M | Media and storage | Temporary media, thumbnails, Supabase Storage, retention and size limits | Partly confirmed |
+| L | Cache and limits | Redis responsibilities, cache invalidation, rate limits and abuse controls | Confirmed |
+| M | Media and storage | Temporary media, thumbnails, Supabase Storage, retention and size limits | Confirmed |
 | N | Web architecture | Repository, routes, SSR, browser/server split, API client and state handling | Confirmed |
 | O | Web experience | Navigation, library views, detail, filters, search, map and accessibility | Confirmed |
-| P | Environments | Local, dev and production resources, secrets, DNS and region placement | Partly confirmed |
-| Q | Deployment | Containers, image promotion, migrations, traffic switching and rollback | Partly confirmed |
-| R | Reliability | SLOs, timeouts, graceful shutdown, degradation and disaster recovery | Partly confirmed |
+| P | Environments | Local, dev and production resources, secrets, DNS and region placement | Confirmed |
+| Q | Deployment | Containers, image promotion, migrations, traffic switching and rollback | Confirmed |
+| R | Reliability | SLOs, timeouts, graceful shutdown, degradation and disaster recovery | Confirmed |
 | S | Observability | Logs, metrics, traces, dashboards, alerts and audit events | Confirmed |
-| T | Security and privacy | SSRF, validation, CORS, CSRF, headers, encryption, deletion and retention | Partly confirmed |
+| T | Security and privacy | SSRF, validation, CORS, CSRF, headers, encryption, deletion and retention | Confirmed |
 | U | Testing | Unit, integration, contract, end-to-end, load, migration and production smoke tests | Confirmed |
 | V | Delivery workflow | Branches, PR size, CI gates, ownership, docs and release approvals | Confirmed |
-| W | Scale and cost | Expected load, concurrency, provider budgets, database size and scaling triggers | Partly confirmed |
+| W | Scale and cost | Expected load, concurrency, provider budgets, database size and scaling triggers | Confirmed except launch cost amount |
 
-## Proposals awaiting confirmation
+## Accepted architecture
 
-These are recommendations from the current roadmap, not confirmed decisions.
+These recommendations are accepted. The implementation plan turns them into
+bounded tasks and test gates.
 
 | ID | Proposal |
 |----|----------|
 | P1 | Use PostgreSQL in Supabase as the system of record. |
 | P2 | Use one Go modular monolith with API, worker and maintenance binaries. |
 | P3 | Use Supabase Auth for Flutter and web; verify access tokens locally in Go with JWKS. |
-| P4 | Use `content` for a global source, `user_save` for ownership, and `library item` in the public API and UI. |
+| P4 | Use `content` for a global source and `user_save` for ownership; keep `reel` in the public API and Flutter. |
 | P5 | Let web and Flutter access product data through Go rather than direct Supabase table queries. |
 | P6 | Extend `reelpin-web`, keeping marketing at `/` and placing the product at `/library`. |
 | P7 | Use `@supabase/ssr`, PKCE and cookie sessions in Next.js. |
@@ -67,7 +68,7 @@ These are recommendations from the current roadmap, not confirmed decisions.
 | P9 | Use Redis only for disposable cache, rate-limit and ephemeral worker state. |
 | P10 | Use pgvector, PostgreSQL full-text search and trigram matching with RRF fusion. |
 | P11 | Preserve production IDs through expand, backfill, verify and switch migrations. |
-| P12 | Run production Go compute near the Tokyo Supabase region. |
+| P12 | Run production Go compute on the provided Mumbai EC2 and measure its latency to Tokyo Supabase. |
 
 ## Decision sequence
 
@@ -149,13 +150,11 @@ caches.
 **Revisit when:** Product and marketing need independent teams, release cadence
 or infrastructure.
 
-## Current questions
+## Question status
 
-The complete numbered question bank is in
-[`architecture-questionnaire.md`](architecture-questionnaire.md). The product
-owner answered Q5 through Q100 on 2026-09-05. The clear answers are recorded
-below; the remaining choices are grouped into Q101 through Q114 so they can be
-resolved together.
+The complete numbered questionnaire has been resolved. Its former file now
+records only the deferred launch gate. No question blocks planning or
+development.
 
 ## Answer batch: Q5 through Q100
 
@@ -195,16 +194,16 @@ resolved together.
 - Q27: the described design is option A, not C. `user_saves` references both
   `auth.users.id` and `contents.id`; `UNIQUE (user_id, content_id)` creates one
   private save per user for one global content row.
-- Q50: maximum three attempts was selected; whether this is per failed stage or
-  per whole run remains open.
+- Q50: maximum three executions applies to each failed stage. Completed stages
+  are reused and are not executed again.
 - Q55: a queue is still required. On one RabbitMQ node, use durable classic
   queues, persistent messages, publisher confirms and persistent disk. Quorum
   queues add useful replication only after multiple nodes exist.
 
 ### Pending clarification
 
-- Q110: exact low-cost RabbitMQ routing and concurrency.
-- Q116: cost controls remain deliberately deferred and block public write launch.
+- No question blocks planning or development.
+- Cost controls remain deliberately deferred and block public write launch.
 
 ## Clarification batch: Q101 through Q116
 
@@ -223,8 +222,8 @@ resolved together.
   reprocessing.
 - Q106 custom: active global categories are injected into the prompt. Gemini may
   propose a new category. A weekly scheduled curator uses a lightweight Gemini
-  model and structured output to approve, merge or reject proposals. Exact
-  thresholds, limits and rollback rules remain part of the final value batch.
+  model and structured output to approve, merge or reject proposals. The
+  inferred value batch below sets its thresholds, limits and rollback rules.
 - Q107 B: new email accounts may use the product without verifying email.
   Stronger sign-up, IP and submission abuse controls are therefore required.
 - Q108 A: normal requests use local JWT verification; sensitive identity and
@@ -244,7 +243,7 @@ resolved together.
 - Q116 deferred: there is no cost alert or hard stop yet. This must be decided
   before public provider-costing submissions are enabled.
 
-### Q110 evidence and recommendation
+### Q110 confirmed worker design
 
 The Python development worker has one process and two effective Dramatiq worker
 threads. It consumes `processing_jobs` and `notifications` from Redis. All
@@ -256,7 +255,7 @@ threads and make a short HTML job wait.
 The EC2 development host is a `t3.micro` with two vCPUs, 911 MB RAM and about
 306 MB currently available. Two concurrent heavy media jobs are not safe there.
 
-Recommended Go design:
+Confirmed Go design:
 
 - One worker binary and one OS process initially. Concurrency uses goroutines,
   not a process per platform.
@@ -280,10 +279,105 @@ Gemini is not used for queue routing. The current GA Flash-Lite model is useful
 for the weekly taxonomy curator, where an occasional failure can wait until the
 next scheduled run.
 
+## Inferred implementation values
+
+The product owner asked to accept the engineering recommendation wherever prior
+answers already determine the result. These values are now confirmed:
+
+- Submission accepts `url` and optional `collection_ids`; native share text is
+  resolved and enqueued atomically by a share-token endpoint.
+- Go owns `/api/v2`. Python keeps serving installed `/api/v1` mobile clients
+  through the measured support window because the new cursor, error and job
+  contracts are breaking changes.
+- Only completed saves appear as reels. Active jobs are separate loading cards.
+- Cursors order by `(saved_at DESC, user_save_id DESC)` and are opaque.
+- Idempotency request records live 24 hours; content uniqueness is permanent.
+- Clients poll after 2 seconds, back off to 10 seconds, and stop on a terminal
+  state or after 30 minutes.
+- HTTP limits remain 5s header, 15s read, 15s write, 60s idle and 1 MiB headers.
+- Each API instance uses a PostgreSQL pool with minimum 2, maximum 10,
+  30-minute connection lifetime and 5-minute idle lifetime.
+- Normal database queries time out after 5 seconds; readiness after 2 seconds.
+- Submission limits are 5 per user per hour, 20 per IP per hour and 2 active
+  jobs per user. Search limits are 30 per user and 90 per IP per minute.
+- Unverified-email abuse uses IP/device limits and CAPTCHA only after suspicious
+  behavior, not on every request.
+- URLs are at most 2,048 characters, HTTP/S only, with at most 5 redirects and
+  DNS safety checked before each connection.
+- Fetch limits are HTML 5 MiB, images 20 MiB each, media 500 MiB total and video
+  duration 30 minutes.
+- Temporary storage is 1 GiB per job. Media admission stops at 80% disk and all
+  temporary files are removed after every terminal outcome.
+- Unreferenced public global content and all immutable content versions are
+  retained for deduplication. Privacy, legal, private-source and blocklist purge
+  paths override retention.
+- Taxonomy has one global category, optional subcategory and many tags. The
+  curator runs Sunday at 02:00 UTC, requires 3 distinct-content proposals and
+  confidence at least 0.90, adds at most 5 categories, and records rollback data.
+- The weekly taxonomy curator uses stable model `gemini-3.5-flash-lite`.
+- Search starts its measured evaluation with stable model
+  `gemini-embedding-2` at 768 output dimensions. It becomes active only if the
+  recorded quality gate passes.
+- RabbitMQ uses exchange `reelpin.processing`, durable queues
+  `reelpin.processing.media`, `reelpin.processing.light`, retry queues, a
+  notifications queue and class-specific dead-letter queues for poison
+  messages. Expected terminal business failures are acknowledged after their
+  database state is committed.
+- Failed-stage retries wait 30 seconds and then 5 minutes; the third failed
+  execution is terminal.
+- Stage timeouts are prepare 30s, download 180s, transcribe 300s, extract 90s,
+  categorize 45s, persist 30s and index 60s. Whole-run timeout is 30 minutes.
+- Workers heartbeat every 15 seconds and become stale after 90 seconds.
+- Development concurrency is media 1 and light 1. Gemini permits 2 concurrent
+  calls, each Apify actor/account 1, and light HTTP 4 within those worker limits.
+- Notifications use a separate durable queue and one light consumer in the same
+  worker binary.
+- Search launch requires at least 50 real labeled queries, Recall@10 at least
+  0.85, nDCG@10 at least 0.75, explicit zero-result tests and p95 below 1.5s.
+  Completed saves become searchable within 60 seconds.
+- API launch target is 99.5% monthly availability and read p95 below 800ms.
+  Processing SLOs are set only after every platform is measured.
+- Alerts fire for 5xx above 2% for 5 minutes, oldest ready job above 10 minutes,
+  any dead letter, worker stale at 90 seconds, disk above 80% and 5 provider
+  failures in the alert window.
+- Send OpenTelemetry signals to Grafana Cloud Free rather than self-hosting an
+  observability database on EC2. Raw metrics, logs and traces use its 14-day
+  retention. Store small daily SLO summaries for 90 days. Trace sampling is 10%
+  normally and 100% for errors, with sensitive fields removed.
+- Backups/PITR must support RPO one hour and RTO four hours. A restore drill runs
+  monthly.
+- Production migration proof includes exact counts, every failed row, duplicate
+  and foreign-key reports, and 100 deterministic old-record comparisons through
+  Python and Go.
+- Account deletion removes user saves, collections, tokens and profile
+  immediately. It retains globally reusable public content without a user link.
+- Browsers call Next.js, so Go exposes no browser CORS allowlist initially.
+- Application secrets rotate every 90 days and immediately after suspected
+  exposure.
+- `dev` deploys automatically after checks. Production manually promotes the
+  exact tested digest.
+- Production launch runs internal smoke tests, automatic rollback thresholds
+  and a 24-hour close-watch period before normal operation.
+- Mumbai compute is reconsidered if read p95 exceeds 800ms or database network
+  time exceeds 150ms for 15 minutes.
+- RabbitMQ uses persistent disk, but PostgreSQL run/outbox state is the disaster
+  recovery source. Redis is disposable. A new broker replays unfinished work
+  instead of restoring a live broker filesystem snapshot.
+- Global content supports blocklist and maintenance purge by source identity,
+  including derived text, embeddings and media.
+- Unknown or authenticated sources start in a user-specific access scope. They
+  become globally reusable only after a worker proves the source is public
+  without user credentials.
+- Support the current and previous two Flutter releases. During cutover, keep
+  Python writes for at least 90 days and until older clients are below 1% of
+  active devices for 30 consecutive days, whichever is later.
+- Development proceeds without a cost budget. Public link submission remains
+  disabled until a measured alert and hard limit replace the deferred choice.
+
 ## Decision log
 
 | Date | Decisions |
 |------|-----------|
 | 2026-09-05 | D1 through D4 confirmed by the product owner. |
 | 2026-09-05 | Q5 through Q100 answered; unambiguous choices recorded and fourteen clarification groups opened. |
-| 2026-09-06 | Q101-Q109 and Q111-Q115 confirmed; Q110 remains under discussion and Q116 is deferred until before public writes. |
+| 2026-09-06 | Q101-Q115 confirmed, including the media/light worker design. Remaining engineering defaults were inferred from accepted recommendations. Only the cost amount is deferred until before public writes. |

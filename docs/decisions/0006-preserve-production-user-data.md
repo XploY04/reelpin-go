@@ -15,8 +15,9 @@ Keep the current Supabase project as production. Preserve every Auth user ID,
 nullable links, backfill in bounded batches, verify the result, then switch
 reads and writes separately.
 
-The public product calls these records library items. The legacy table name is
-an adapter detail during migration and does not define the new domain model.
+The public API and Flutter keep calling these records reels. The database uses
+`contents` and `user_saves`; the legacy table name does not define the new
+domain model.
 
 ## Consequences
 
