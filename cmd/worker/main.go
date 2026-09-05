@@ -20,6 +20,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/cookies"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/media"
@@ -185,7 +186,8 @@ func run(logger *slog.Logger) error {
 	collectionService := collections.New(pool, cfg.CollectionShareBaseURL, time.Now)
 	notifier := notify.NewService(pool,
 		notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now)
-	handler := dispatch(pool, logger, workerID, processor, collectionService, notifier)
+	indexer := embed.NewIndexer(pool, embed.NewGemini(cfg.GeminiAPIKey, 0), logger)
+	handler := dispatch(pool, logger, workerID, processor, collectionService, notifier, indexer)
 	for _, name := range queue.WorkQueues {
 		started++
 		go func(name string) {
@@ -270,6 +272,7 @@ func dispatch(
 	processor *pipeline.Pipeline,
 	collectionService *collections.Service,
 	notifier *notify.Service,
+	indexer *embed.Indexer,
 ) queue.Handler {
 	processRun := leasedHandler(pool, logger, workerID, processor)
 
@@ -280,10 +283,7 @@ func dispatch(
 		case "collection.items_added":
 			return notifyCollection(ctx, pool, logger, notifier, message)
 		case "content.index":
-			// Task 18 gives indexing a real consumer. Until then it is
-			// acknowledged rather than retried forever.
-			logger.Info("indexing event acknowledged without a consumer yet", "event_id", message.EventID)
-			return queue.Done, nil
+			return indexContent(ctx, pool, logger, indexer, message)
 		default:
 			return processRun(ctx, message)
 		}
@@ -393,6 +393,37 @@ func notifyCollection(
 			return queue.Retry, err
 		}
 	}
+	return queue.Done, nil
+}
+
+// indexContent embeds a finished content version so it can be searched.
+// Indexing is deliberately separate from saving: a reel is worth keeping even
+// if the search index is behind, and retrying this must never repeat a
+// download.
+func indexContent(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	logger *slog.Logger,
+	indexer *embed.Indexer,
+	message queue.Message,
+) (queue.Outcome, error) {
+	var payload struct {
+		ContentVersionID string `json:"content_version_id"`
+	}
+	if err := readEventPayload(ctx, pool, message.EventID, &payload); err != nil {
+		logger.Error("reading an index event failed", "event_id", message.EventID, "error", err)
+		return queue.Retry, err
+	}
+	if payload.ContentVersionID == "" {
+		return queue.Done, nil
+	}
+
+	indexed, chunks, err := indexer.IndexVersion(ctx, payload.ContentVersionID)
+	if err != nil {
+		return queue.Retry, err
+	}
+	logger.Info("indexed content for search",
+		"content_version_id", payload.ContentVersionID, "reindexed", indexed, "chunks", chunks)
 	return queue.Done, nil
 }
 
