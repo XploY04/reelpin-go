@@ -21,6 +21,9 @@ Startup fails loudly and immediately on a missing required variable. A service
 that starts and then answers 500 is harder to diagnose than one that refuses to
 start.
 
+Copy the variable names from [`.env.example`](../.env.example) into an ignored
+`.env.dev`. Store real values only in that local file and the EC2 secret store.
+
 ## Running locally
 
 ```sh
