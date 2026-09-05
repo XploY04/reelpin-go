@@ -12,3 +12,14 @@ outlives the work, and the next person doing something similar starts from it
 rather than from nothing.
 
 Files matching `*.local.md` here are gitignored, for whoever is holding the pen.
+
+## Current
+
+- [`backend-and-web-roadmap.md`](backend-and-web-roadmap.md): Go backend,
+  authenticated ReelPin web, production-data migration and cutover.
+- [`implementation-plan.md`](implementation-plan.md): exact ordered tasks,
+  files, behavior, tests and stop conditions for that roadmap.
+- [`architecture-decisions.md`](architecture-decisions.md): the decision gate
+  completed before more implementation.
+- [`architecture-questionnaire.md`](architecture-questionnaire.md): the resolved
+  question record and deferred public-write cost gate.
