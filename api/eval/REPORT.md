@@ -31,6 +31,13 @@ maintenance search-eval --user <uuid> --out report.json
 maintenance search-eval --user <uuid> --max-distance 0.5   # a tuning run
 ```
 
+**The set judges specific reels by URL**, so it only measures anything against a
+library that holds them. Either seed `internal/search/testdata/corpus-v1.json`
+into a dedicated evaluation user, or pass `--set` with a set labeled with the
+chosen user's own reel URLs. The command checks coverage first and refuses below
+80% (`--min-coverage`), because a library missing the judged reels scores zero
+everywhere and reads as a search regression when it is nothing of the kind.
+
 ## What the offline run measured
 
 Both rows are the same set, same corpus, same database. The only difference is

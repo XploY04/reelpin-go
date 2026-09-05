@@ -408,3 +408,48 @@ func TestTheDenseGateCanBeOpened(t *testing.T) {
 		t.Fatalf("results = %d, want the gate to be what held it back", len(response.Results))
 	}
 }
+
+func TestCoverageRefusesALibraryTheSetCannotMeasure(t *testing.T) {
+	service, pool, _ := testService(t)
+	ctx := context.Background()
+
+	set := LabeledSet{Queries: []LabeledQuery{
+		{ID: "one", Query: "artjuna", Relevant: map[string]int{"https://example.com/eval/artjuna": 3}},
+		{ID: "two", Query: "trek", Relevant: map[string]int{"https://example.com/eval/trek": 3}},
+		{ID: "none", Query: "nothing", Relevant: map[string]int{}},
+	}}
+
+	if judged := set.JudgedURLs(); len(judged) != 2 {
+		t.Fatalf("judged = %v, want the two reels with opinions", judged)
+	}
+
+	// An empty library holds none of them, which is the case that would
+	// otherwise score zero everywhere and look like a search regression.
+	present, total, err := service.Coverage(ctx, userA, set)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if present != 0 || total != 2 {
+		t.Fatalf("coverage = %d of %d, want none present", present, total)
+	}
+
+	seedReel(t, pool, seed{userID: userA, title: "Artjuna cafe", vectorAxis: 1})
+	if _, err := pool.Exec(ctx,
+		`UPDATE public.reels SET url = $1, normalized_url = $1 WHERE user_id = $2`,
+		"https://example.com/eval/artjuna", userA); err != nil {
+		t.Fatalf("pointing a reel at a judged url: %v", err)
+	}
+
+	present, total, err = service.Coverage(ctx, userA, set)
+	if err != nil {
+		t.Fatalf("Coverage: %v", err)
+	}
+	if present != 1 || total != 2 {
+		t.Fatalf("coverage = %d of %d, want one of two", present, total)
+	}
+
+	// Another user holding the reel does not count for this one.
+	if other, _, err := service.Coverage(ctx, userB, set); err != nil || other != 0 {
+		t.Fatalf("coverage for another user = %d (%v), want none", other, err)
+	}
+}

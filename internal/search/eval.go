@@ -204,6 +204,42 @@ func percentile(latencies []time.Duration, percent int) time.Duration {
 	return sorted[index-1]
 }
 
+// JudgedURLs is every reel URL the set has an opinion about.
+func (set LabeledSet) JudgedURLs() []string {
+	seen := map[string]bool{}
+	urls := []string{}
+	for _, query := range set.Queries {
+		for url := range query.Relevant {
+			if !seen[url] {
+				seen[url] = true
+				urls = append(urls, url)
+			}
+		}
+	}
+	sort.Strings(urls)
+	return urls
+}
+
+// Coverage reports how many of the set's judged reels the user actually has.
+// A labeled set judges specific reels, so running it against a library that
+// does not contain them measures nothing and scores zero everywhere. The
+// caller checks this before spending a provider call per query.
+func (s *Service) Coverage(ctx context.Context, userID string, set LabeledSet) (present int, total int, err error) {
+	judged := set.JudgedURLs()
+	if len(judged) == 0 {
+		return 0, 0, nil
+	}
+
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM public.reels
+		WHERE user_id = $1 AND (url = ANY($2) OR normalized_url = ANY($2))`,
+		userID, judged).Scan(&present)
+	if err != nil {
+		return 0, len(judged), fmt.Errorf("checking the labeled set against the library: %w", err)
+	}
+	return present, len(judged), nil
+}
+
 // Evaluate runs the labeled set against one user's library and measures it.
 // The set is keyed by reel URL, so results are mapped back before
 // scoring.

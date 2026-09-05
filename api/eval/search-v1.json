@@ -1,18 +1,22 @@
 {
   "version": "search-eval-v1",
-  "note": "Hand-labeled queries over the fixture library in internal/search/testdata/corpus-v1.json. Gains: 3 is what the user meant, 2 is a good alternative, 1 is related. Keyed by reel URL so the set survives a rebuilt database. Add queries by appending; changing an existing judgment means a new version, because reports are only comparable within one version.",
+  "note": "Hand-labeled queries over the fixture library in internal/search/testdata/corpus-v1.json. Gains: 3 is what the user meant, 2 is a good alternative, 1 is related. Keyed by reel URL, so this set only measures a library that actually holds these reels: seed the corpus into a dedicated evaluation user, or write a set labeled with a real user's own reel URLs. Add queries by appending; changing an existing judgment means a new version, because reports are only comparable within one version.",
   "queries": [
     {
       "id": "exact-place-name",
       "query": "artjuna cafe",
       "intent": "The user remembers the name and wants that saved reel back.",
-      "relevant": { "https://example.com/eval/artjuna": 3 }
+      "relevant": {
+        "https://example.com/eval/artjuna": 3
+      }
     },
     {
       "id": "misspelled-place-name",
       "query": "artjunna caffe",
       "intent": "Same intent, typed badly. The fuzzy arm has to carry it.",
-      "relevant": { "https://example.com/eval/artjuna": 3 }
+      "relevant": {
+        "https://example.com/eval/artjuna": 3
+      }
     },
     {
       "id": "described-not-named",
@@ -27,7 +31,9 @@
       "id": "detail-inside-the-video",
       "query": "what time does the bakery open",
       "intent": "The answer is one line deep in a long vlog, not in its title.",
-      "relevant": { "https://example.com/eval/goa-vlog": 3 }
+      "relevant": {
+        "https://example.com/eval/goa-vlog": 3
+      }
     },
     {
       "id": "category-word",
@@ -42,14 +48,22 @@
       "id": "person-mentioned",
       "query": "recommendations from the chef",
       "intent": "Matches on people rather than place.",
-      "relevant": { "https://example.com/eval/garden-bistro": 3 }
+      "relevant": {
+        "https://example.com/eval/garden-bistro": 3
+      }
     },
     {
       "id": "filtered-by-platform",
       "query": "trek",
       "intent": "A filter must narrow before ranking, not after.",
-      "filters": { "platforms": ["youtube"] },
-      "relevant": { "https://example.com/eval/dudhsagar-trek": 3 }
+      "filters": {
+        "platforms": [
+          "youtube"
+        ]
+      },
+      "relevant": {
+        "https://example.com/eval/dudhsagar-trek": 3
+      }
     },
     {
       "id": "no-such-thing",
