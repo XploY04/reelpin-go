@@ -39,6 +39,7 @@ type Deps struct {
 	Enqueue     Enqueuer
 	ShareTokens ShareTokens
 	Collections Collections
+	Map         MapService
 	Limiter     RateLimiter
 	Cache       *cache.Cache
 	// TrustedProxies are the only sources whose forwarding headers are believed.
@@ -195,6 +196,20 @@ func (s *Server) routeTable() []Route {
 			Authenticated: true,
 			handler:       s.authenticated(s.handleCollectionSubresource),
 		},
+
+		// Map and Discover. Place search costs a provider call, so it carries
+		// the search limit and fails closed.
+		guarded(http.MethodGet, "/map", s.handleMap, routeLimit{}, true),
+		guarded(http.MethodGet, "/map/search", s.handleMapSearch, routeLimit{
+			User: &ratelimit.Search,
+			IP:   &ratelimit.SearchIP,
+		}, false),
+		guarded(http.MethodPost, "/map/pins", s.handleCreateMapPin, routeLimit{
+			User: &ratelimit.Search,
+			IP:   &ratelimit.SearchIP,
+		}, false),
+		guarded(http.MethodDelete, "/map/items/{map_item_id}", s.handleDeleteMapItem, routeLimit{}, false),
+		guarded(http.MethodGet, "/discover", s.handleDiscover, routeLimit{}, true),
 
 		guarded(http.MethodPost, "/share/resolve", s.handleResolveShare, routeLimit{
 			User:     &ratelimit.ShareResolve,

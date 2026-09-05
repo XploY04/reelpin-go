@@ -1,6 +1,6 @@
 {
   "note": "Registered Go routes. A change here is an API contract change.",
-  "route_count": 31,
+  "route_count": 36,
   "routes": [
     {
       "method": "GET",
@@ -91,6 +91,12 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/discover",
+      "alias": "/discover",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/health",
       "authenticated": false
     },
@@ -103,6 +109,30 @@
       "method": "GET",
       "path": "/api/v1/health/ready",
       "authenticated": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/map",
+      "alias": "/map",
+      "authenticated": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/map/items/{map_item_id}",
+      "alias": "/map/items/{map_item_id}",
+      "authenticated": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/map/pins",
+      "alias": "/map/pins",
+      "authenticated": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/map/search",
+      "alias": "/map/search",
+      "authenticated": true
     },
     {
       "method": "POST",

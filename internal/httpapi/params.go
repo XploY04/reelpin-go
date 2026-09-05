@@ -99,12 +99,16 @@ func boolParam(w http.ResponseWriter, query url.Values, name string, fallback bo
 // savedDateParam keeps a malformed date out of the SQL the Python API would
 // have let Supabase reject.
 func savedDateParam(w http.ResponseWriter, query url.Values) (string, bool) {
-	raw := strings.TrimSpace(query.Get("saved_date"))
+	return savedDateParamNamed(w, query, "saved_date")
+}
+
+func savedDateParamNamed(w http.ResponseWriter, query url.Values, name string) (string, bool) {
+	raw := strings.TrimSpace(query.Get(name))
 	if raw == "" {
 		return "", true
 	}
 	if _, err := time.Parse("2006-01-02", raw); err != nil {
-		validationError(w, "saved_date must be YYYY-MM-DD")
+		validationError(w, name+" must be YYYY-MM-DD")
 		return "", false
 	}
 	return raw, true

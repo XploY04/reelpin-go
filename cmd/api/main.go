@@ -18,6 +18,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/platform/social"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
@@ -109,14 +110,16 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
-			DB:             pool,
-			Auth:           verifier,
-			Reels:          postgres.NewReels(pool),
-			Jobs:           postgres.NewJobs(pool),
-			Share:          shareResolver,
-			Enqueue:        enqueue.New(pool, shareResolver, enqueue.DefaultLimits),
-			ShareTokens:    sharetoken.NewStore(pool),
-			Collections:    collections.New(pool, cfg.CollectionShareBaseURL, time.Now),
+			DB:          pool,
+			Auth:        verifier,
+			Reels:       postgres.NewReels(pool),
+			Jobs:        postgres.NewJobs(pool),
+			Share:       shareResolver,
+			Enqueue:     enqueue.New(pool, shareResolver, enqueue.DefaultLimits),
+			ShareTokens: sharetoken.NewStore(pool),
+			Collections: collections.New(pool, cfg.CollectionShareBaseURL, time.Now),
+			Map: mapview.NewService(pool,
+				mapview.NewGooglePlaces(cfg.GooglePlacesAPIKey, 0), time.Now),
 			Limiter:        limiterOrNil(limiter),
 			Cache:          responseCache,
 			TrustedProxies: cfg.TrustedProxyCIDRs,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -136,6 +137,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Limiter:     &fakeLimiter{allow: true},
 		ShareTokens: &fakeShareTokens{},
 		Collections: newFakeCollections(),
+		Map:         &fakeMap{},
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:     "test",
 		Now:         func() time.Time { return testNow },
@@ -235,4 +237,39 @@ func (f *fakeShareTokens) RevokeAll(context.Context, string) (int, error) {
 		return 0, f.err
 	}
 	return f.revoked, nil
+}
+
+type fakeMap struct {
+	response   mapview.MapResponse
+	search     mapview.SearchResponse
+	item       mapview.MapItem
+	discover   mapview.DiscoverResponse
+	err        error
+	lastUserID string
+	lastAction string
+}
+
+func (f *fakeMap) Map(_ context.Context, userID, _ string, _ []string) (mapview.MapResponse, error) {
+	f.lastUserID, f.lastAction = userID, "map"
+	return f.response, f.err
+}
+
+func (f *fakeMap) Search(_ context.Context, userID, _, _, _ string, _ int) (mapview.SearchResponse, error) {
+	f.lastUserID, f.lastAction = userID, "search"
+	return f.search, f.err
+}
+
+func (f *fakeMap) CreatePin(_ context.Context, userID, _, _ string) (mapview.MapItem, error) {
+	f.lastUserID, f.lastAction = userID, "pin"
+	return f.item, f.err
+}
+
+func (f *fakeMap) HideOrRemove(_ context.Context, userID, _ string) error {
+	f.lastUserID, f.lastAction = userID, "remove"
+	return f.err
+}
+
+func (f *fakeMap) Discover(_ context.Context, userID string, _, _ int, _ string) (mapview.DiscoverResponse, error) {
+	f.lastUserID, f.lastAction = userID, "discover"
+	return f.discover, f.err
 }

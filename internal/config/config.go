@@ -27,6 +27,7 @@ type Config struct {
 	OutboxBatchSize         int
 	GeminiAPIKey            string
 	GoogleMapsAPIKey        string
+	GooglePlacesAPIKey      string
 	// WorkerTempRoot is where a run's media lives while it is being processed.
 	WorkerTempRoot string
 	ApifyToken     string
