@@ -12,3 +12,8 @@ outlives the work, and the next person doing something similar starts from it
 rather than from nothing.
 
 Files matching `*.local.md` here are gitignored, for whoever is holding the pen.
+
+## Current
+
+- [`backend-and-web-roadmap.md`](backend-and-web-roadmap.md): Go backend,
+  authenticated ReelPin web, production-data migration and cutover.
