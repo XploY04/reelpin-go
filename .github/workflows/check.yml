@@ -1,0 +1,57 @@
+name: check
+
+on:
+  # Every layer of a stack is checked, not only the ones based on a trunk.
+  pull_request:
+  push:
+    branches: [dev, main]
+
+env:
+  GO_VERSION: "1.26.2"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # One target, the same one a person runs before pushing. When CI and the
+      # local command diverge, the local one stops being run.
+      - name: make check
+        run: make check
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: reelpin
+          POSTGRES_DB: reelpin
+          # No password at all, rather than a fake one written down. The
+          # container exists for the length of this job and is reachable only
+          # from it, and a committed password fails secret scanning however
+          # throwaway it is.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U reelpin"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: integration tests
+        run: |
+          export TEST_DATABASE_URL="postgres://reelpin@localhost:5432/reelpin"
+          make test-integration

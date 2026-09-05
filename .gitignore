@@ -5,5 +5,18 @@ reelpin-go
 # local env
 .env
 
-# personal planning docs (kept local, not published)
-docs/
+# Committed knowledge lives in docs/. Only personal and scratch material is
+# ignored: calendars, the learning curriculum, and anything under a scratch
+# folder. Everything else in docs/ is reviewed like code.
+docs/*.ics
+docs/scratch/
+docs/plans/active/*.local.md
+
+# Personal study plans and hour budgets. Their verified technical content has
+# been rewritten into the committed docs; these keep the schedule, which is not
+# repository knowledge.
+docs/ARCHITECTURE.md
+docs/CURRICULUM.md
+docs/PLAN.md
+docs/PREP.md
+docs/WEEKLY.md
