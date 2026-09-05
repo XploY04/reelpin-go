@@ -150,50 +150,10 @@ or infrastructure.
 
 ## Current questions
 
-### Q5: Public name for one saved record
-
-What should the API and UI call one saved record?
-
-- `A`: Library item. Internally, global source data is `content` and ownership is
-  `user_save`. Recommended because it works for videos, posts, places and URLs.
-- `B`: Content.
-- `C`: Reel.
-
-### Q6: ID exposed by the API
-
-Which ID should `/api/v1/library-items/{id}` expose?
-
-- `A`: The user's save ID. Recommended. It preserves existing `reels.id` values
-  and never exposes another user's relationship.
-- `B`: The global content ID shared by all users.
-- `C`: Expose both as public identifiers.
-
-### Q7: Repeated submission
-
-What happens when the same user submits the same source again?
-
-- `A`: Return the existing library item if complete; attach to the existing job
-  if processing. Recommended. Across users, keep separate saves but reuse global
-  processing.
-- `B`: Create another library item every time.
-- `C`: Reject it as a conflict.
-
-### Q8: Removing a library item
-
-What should deletion mean?
-
-- `A`: Remove only that user's save. Keep global processed content while another
-  user references it; purge unreferenced content later. Recommended.
-- `B`: Delete the global content and every user's save.
-- `C`: Never delete, only hide.
-
-### Q9: Collections
-
-Can one library item belong to multiple collections?
-
-- `A`: Yes, use a many-to-many relation. Recommended.
-- `B`: No, exactly one collection.
-- `C`: Collections are not part of the product.
+The complete numbered question bank is in
+[`architecture-questionnaire.md`](architecture-questionnaire.md). Q5 through
+Q100 remain unanswered. Answers may accept a recommended range and list only
+exceptions.
 
 ## Decision log
 

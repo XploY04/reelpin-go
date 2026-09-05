@@ -19,3 +19,5 @@ Files matching `*.local.md` here are gitignored, for whoever is holding the pen.
   authenticated ReelPin web, production-data migration and cutover.
 - [`architecture-decisions.md`](architecture-decisions.md): the decision gate
   that must be completed before more implementation.
+- [`architecture-questionnaire.md`](architecture-questionnaire.md): the complete
+  numbered question bank used to finish that decision gate.
