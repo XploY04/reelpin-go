@@ -32,6 +32,7 @@ func TestLoadDefaults(t *testing.T) {
 var configKeys = []string{
 	"ENVIRONMENT", "PORT", "DATABASE_URL", "APP_VERSION",
 	"SUPABASE_URL", "SUPABASE_JWT_AUDIENCE",
+	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
 }
 
 func TestLoad(t *testing.T) {
@@ -53,9 +54,11 @@ func TestLoad(t *testing.T) {
 		{
 			name: "production with database url",
 			env: map[string]string{
-				"ENVIRONMENT":  "production",
-				"DATABASE_URL": "postgres://user:pass@db:5432/reelpin",
-				"SUPABASE_URL": "https://project.supabase.co",
+				"ENVIRONMENT":     "production",
+				"DATABASE_URL":    "postgres://user:pass@db:5432/reelpin",
+				"SUPABASE_URL":    "https://project.supabase.co",
+				"REDIS_URL":       "redis://redis:6379/0",
+				"RATE_LIMIT_SALT": "secret",
 			},
 			check: func(t *testing.T, c Config) {
 				if c.DatabaseURL != "postgres://user:pass@db:5432/reelpin" {
@@ -92,6 +95,65 @@ func TestLoad(t *testing.T) {
 			name:    "production without database url",
 			env:     map[string]string{"ENVIRONMENT": "production", "SUPABASE_URL": "https://project.supabase.co"},
 			wantErr: true,
+		},
+		{
+			name: "production needs redis",
+			env: map[string]string{
+				"ENVIRONMENT":     "production",
+				"DATABASE_URL":    "postgres://db:5432/reelpin",
+				"SUPABASE_URL":    "https://project.supabase.co",
+				"RATE_LIMIT_SALT": "secret",
+			},
+			wantErr: true,
+		},
+		{
+			name: "production needs a rate limit salt",
+			env: map[string]string{
+				"ENVIRONMENT":  "production",
+				"DATABASE_URL": "postgres://db:5432/reelpin",
+				"SUPABASE_URL": "https://project.supabase.co",
+				"REDIS_URL":    "redis://redis:6379/0",
+			},
+			wantErr: true,
+		},
+		{
+			name: "a malformed redis url fails at startup",
+			env: map[string]string{
+				"SUPABASE_URL": "https://project.supabase.co",
+				"REDIS_URL":    "not-a-url",
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with everything",
+			env: map[string]string{
+				"ENVIRONMENT":     "production",
+				"DATABASE_URL":    "postgres://db:5432/reelpin",
+				"SUPABASE_URL":    "https://project.supabase.co",
+				"REDIS_URL":       "redis://redis:6379/0",
+				"RATE_LIMIT_SALT": "secret",
+			},
+			check: func(t *testing.T, c Config) {
+				if c.RedisURL != "redis://redis:6379/0" || c.RateLimitSalt != "secret" {
+					t.Errorf("unexpected config: %+v", c)
+				}
+				options, err := c.RedisOptions()
+				if err != nil {
+					t.Fatalf("RedisOptions: %v", err)
+				}
+				if options.DialTimeout <= 0 || options.ReadTimeout <= 0 || options.WriteTimeout <= 0 {
+					t.Errorf("redis timeouts are unset: %+v", options)
+				}
+			},
+		},
+		{
+			name: "development generates a salt",
+			env:  map[string]string{"SUPABASE_URL": "https://project.supabase.co"},
+			check: func(t *testing.T, c Config) {
+				if c.RateLimitSalt == "" {
+					t.Error("no salt was generated outside production")
+				}
+			},
 		},
 	}
 
