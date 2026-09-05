@@ -89,6 +89,22 @@ func New(config Config) *Client {
 
 // Get fetches a URL under the whole budget: 10 seconds, 5 redirects, 2 MiB.
 func (c *Client) Get(ctx context.Context, rawURL string) (Response, error) {
+	return c.do(ctx, http.MethodGet, rawURL, nil, "", nil)
+}
+
+// GetWithHeaders adds request headers, for an API that needs a token. The
+// headers are the caller's, and never anything a user supplied.
+func (c *Client) GetWithHeaders(ctx context.Context, rawURL string, headers map[string]string) (Response, error) {
+	return c.do(ctx, http.MethodGet, rawURL, nil, "", headers)
+}
+
+// PostForm submits a form body, for a token endpoint.
+func (c *Client) PostForm(ctx context.Context, rawURL, body string, headers map[string]string) (Response, error) {
+	return c.do(ctx, http.MethodPost, rawURL, strings.NewReader(body),
+		"application/x-www-form-urlencoded", headers)
+}
+
+func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader, contentType string, headers map[string]string) (Response, error) {
 	parsed, err := ParseURL(rawURL)
 	if err != nil {
 		return Response{}, err
@@ -97,11 +113,17 @@ func (c *Client) Get(ctx context.Context, rawURL string) (Response, error) {
 	ctx, cancel := context.WithTimeout(ctx, TotalRequestBudget)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, parsed.String(), body)
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: %v", ErrUnsafeURL, err)
 	}
 	req.Header.Set("User-Agent", c.config.UserAgent)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	response, err := c.http.Do(req)
 	if err != nil {
@@ -109,20 +131,20 @@ func (c *Client) Get(ctx context.Context, rawURL string) (Response, error) {
 	}
 	defer response.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(response.Body, MaxBodyBytes+1))
+	payload, err := io.ReadAll(io.LimitReader(response.Body, MaxBodyBytes+1))
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: reading body", ErrUnsafeURL)
 	}
-	trimmed := len(body) > MaxBodyBytes
+	trimmed := len(payload) > MaxBodyBytes
 	if trimmed {
-		body = body[:MaxBodyBytes]
+		payload = payload[:MaxBodyBytes]
 	}
 
 	return Response{
 		Status:      response.StatusCode,
 		FinalURL:    response.Request.URL.String(),
 		Header:      response.Header,
-		Body:        body,
+		Body:        payload,
 		BodyTrimmed: trimmed,
 	}, nil
 }

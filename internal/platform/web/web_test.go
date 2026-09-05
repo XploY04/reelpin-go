@@ -276,10 +276,18 @@ func TestGenericPageWithNothingPublishedIsTerminal(t *testing.T) {
 
 func TestMatchLeavesTheDedicatedPlatformsAlone(t *testing.T) {
 	handler := New(Deps{})
-	for _, platformName := range []string{"instagram", "x", "linkedin", "reddit"} {
+	for _, platformName := range []string{"instagram", "x", "reddit"} {
 		if handler.Match(sourceidentity.SourceIdentity{Platform: platformName}) {
 			t.Errorf("the web handler claimed %s", platformName)
 		}
+	}
+	// A LinkedIn post has its own reader; every other LinkedIn page publishes
+	// ordinary metadata and belongs here.
+	if handler.Match(sourceidentity.SourceIdentity{Platform: "linkedin", ContentType: "post"}) {
+		t.Error("the web handler claimed a linkedin post")
+	}
+	if !handler.Match(sourceidentity.SourceIdentity{Platform: "linkedin", ContentType: "profile"}) {
+		t.Error("the web handler did not claim a linkedin profile")
 	}
 	for _, platformName := range []string{"youtube", "tiktok", "pinterest", "zomato", "someblog.com"} {
 		if !handler.Match(sourceidentity.SourceIdentity{Platform: platformName}) {

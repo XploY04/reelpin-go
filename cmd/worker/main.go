@@ -25,6 +25,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/platform/instagram"
+	"github.com/XploY04/reelpin-go/internal/platform/social"
 	"github.com/XploY04/reelpin-go/internal/platform/web"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
@@ -121,6 +122,16 @@ func run(logger *slog.Logger) error {
 	actors := apify.New(apify.Config{Token: cfg.ApifyToken, Actors: cfg.ApifyActors})
 	thumbnails := storage.NewSupabase(cfg.SupabaseURL, cfg.StorageBucket, cfg.SupabaseServiceKey, 0)
 
+	redditClient := social.NewRedditClient(
+		cfg.RedditClientID, cfg.RedditClientSecret, cfg.RedditUserAgent, safeClient)
+	socialDeps := social.Deps{
+		HTTP:    safeClient,
+		Apify:   actors,
+		Storage: thumbnails,
+		Reddit:  redditClient,
+		Logger:  logger,
+	}
+
 	webHandler := web.New(web.Deps{
 		HTTP:       safeClient,
 		Downloader: media.NewYTDLP(runner),
@@ -147,7 +158,13 @@ func run(logger *slog.Logger) error {
 		// silently.
 		// Registration order is priority order: the dedicated handlers first,
 		// then the web handler as the fallback for every other link.
-		Handlers:    platform.NewRegistry(instagramHandler, webHandler),
+		Handlers: platform.NewRegistry(
+			instagramHandler,
+			social.NewX(socialDeps),
+			social.NewLinkedIn(socialDeps),
+			social.NewReddit(socialDeps),
+			webHandler,
+		),
 		Transcriber: gemini,
 		ImageReader: gemini,
 		Extractor:   gemini,

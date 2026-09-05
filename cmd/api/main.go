@@ -17,6 +17,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/platform/social"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
@@ -95,7 +96,14 @@ func run(logger *slog.Logger) error {
 
 	// One resolver serves both share resolution and enqueue, so a link that
 	// resolves in the app resolves identically when it is shared.
-	shareResolver := &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})}
+	safeClient := safehttp.New(safehttp.Config{})
+	shareResolver := &sourceidentity.Resolver{
+		Redirects: safeClient,
+		// Reddit mobile share links need the authenticated API to resolve, and
+		// the resolver only calls it for that exact link shape.
+		Reddit: social.NewRedditClient(
+			cfg.RedditClientID, cfg.RedditClientSecret, cfg.RedditUserAgent, safeClient),
+	}
 
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),

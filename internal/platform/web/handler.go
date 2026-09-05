@@ -68,8 +68,12 @@ func (h *Handler) Name() string { return "web" }
 // last, so this is the fallback for any link a user shares.
 func (h *Handler) Match(identity sourceidentity.SourceIdentity) bool {
 	switch identity.Platform {
-	case "instagram", "x", "linkedin", "reddit":
+	case "instagram", "x", "reddit":
 		return false
+	case "linkedin":
+		// Only a LinkedIn post has a dedicated reader. Profiles, companies and
+		// articles publish ordinary metadata and belong here.
+		return identity.ContentType != "post"
 	}
 	return true
 }

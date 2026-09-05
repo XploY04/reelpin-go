@@ -38,6 +38,9 @@ type Config struct {
 	InstagramCookies   map[string]string
 	SupabaseServiceKey string
 	StorageBucket      string
+	RedditClientID     string
+	RedditClientSecret string
+	RedditUserAgent    string
 	// TrustedProxyCIDRs are the only sources whose forwarding headers are
 	// believed. Empty means every client is identified by its socket address.
 	TrustedProxyCIDRs []netip.Prefix
@@ -74,6 +77,9 @@ func Load() (Config, error) {
 		ApifyToken:          strings.TrimSpace(os.Getenv("APIFY_TOKEN")),
 		SupabaseServiceKey:  strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY")),
 		StorageBucket:       envOr("SUPABASE_STORAGE_BUCKET", "reel-thumbnails"),
+		RedditClientID:      strings.TrimSpace(os.Getenv("REDDIT_CLIENT_ID")),
+		RedditClientSecret:  strings.TrimSpace(os.Getenv("REDDIT_CLIENT_SECRET")),
+		RedditUserAgent:     envOr("REDDIT_USER_AGENT", "reelpin/1.0"),
 		ApifyActors: map[string]string{
 			"instagram": strings.TrimSpace(os.Getenv("APIFY_INSTAGRAM_ACTOR")),
 			"youtube":   strings.TrimSpace(os.Getenv("APIFY_YOUTUBE_ACTOR")),
