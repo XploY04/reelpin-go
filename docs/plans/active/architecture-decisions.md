@@ -26,7 +26,7 @@ condition for reconsidering it.
 
 | ID | Area | What must be decided | State |
 |----|------|----------------------|-------|
-| A | Product boundary | Launch users, web MVP features, mobile scope and administration | Open |
+| A | Product boundary | Launch users, web MVP features, mobile scope and administration | Partly confirmed |
 | B | Domain language | Names for global content, user saves, jobs, collections and public routes | Open |
 | C | API contract | REST shape, versioning, pagination, errors, idempotency and compatibility policy | Open |
 | D | Data model | Tables, keys, relationships, JSONB boundaries, constraints and indexes | Open |
@@ -39,8 +39,8 @@ condition for reconsidering it.
 | K | Search | Documents, embeddings, lexical search, filters, ranking, evaluation and freshness | Open |
 | L | Cache and limits | Redis responsibilities, cache invalidation, rate limits and abuse controls | Open |
 | M | Media and storage | Temporary media, thumbnails, Supabase Storage, retention and size limits | Open |
-| N | Web architecture | Repository, routes, SSR, browser/server split, API client and state handling | Open |
-| O | Web experience | Navigation, library views, detail, filters, search, map and accessibility | Open |
+| N | Web architecture | Repository, routes, SSR, browser/server split, API client and state handling | Partly confirmed |
+| O | Web experience | Navigation, library views, detail, filters, search, map and accessibility | Partly confirmed |
 | P | Environments | Local, dev and production resources, secrets, DNS and region placement | Partly confirmed |
 | Q | Deployment | Containers, image promotion, migrations, traffic switching and rollback | Open |
 | R | Reliability | SLOs, timeouts, graceful shutdown, degradation and disaster recovery | Open |
@@ -85,40 +85,118 @@ ones:
 9. Observability, security, testing and delivery workflow.
 10. Scale, cost and disaster recovery.
 
+## Confirmed decisions
+
+### D1: First web release includes link submission
+
+**Choice:** Show the user's library and item details, and accept new links for
+processing.
+
+**Reason:** The web release must demonstrate the full product loop, not only an
+archive viewer.
+
+**Rejected:** A read-only first release and immediate full mobile feature parity.
+
+**Consequence:** Public web launch waits for enqueue, RabbitMQ, a worker,
+processing-job polling and at least one production-quality ingestion path.
+
+**Revisit when:** The worker launch is delayed enough that a read-only private
+preview would provide useful validation.
+
+### D2: Move web to Go before Flutter
+
+**Choice:** Production web uses Go before the production Flutter app does.
+
+**Reason:** A Vercel deployment can be rolled back immediately and does not wait
+for app-store review or installed mobile clients to update.
+
+**Rejected:** Switching both clients together and switching Flutter first.
+
+**Consequence:** Go must preserve production data while Python continues serving
+Flutter during the web observation period.
+
+**Revisit when:** Web and mobile deployments become operationally coupled.
+
+### D3: Open web to existing users and new sign-ups
+
+**Choice:** Every existing production user may sign in, and new users may create
+accounts.
+
+**Reason:** Web and mobile are two clients of one product identity.
+
+**Rejected:** Invite-only access and blocking new registrations.
+
+**Consequence:** Sign-up abuse controls, email verification, onboarding and an
+empty-library experience are launch requirements.
+
+**Revisit when:** Abuse or provider cost requires a temporary registration gate.
+
+### D4: Serve the product at reelpin.in/library
+
+**Choice:** Keep marketing at `reelpin.in/` and serve the signed-in product at
+`reelpin.in/library`.
+
+**Reason:** One Next.js deployment and cookie domain are simpler than a separate
+application subdomain.
+
+**Rejected:** `app.reelpin.in` and a new product domain.
+
+**Consequence:** Marketing, authentication and product routes need separate
+layouts inside the same repository without sharing authenticated response
+caches.
+
+**Revisit when:** Product and marketing need independent teams, release cadence
+or infrastructure.
+
 ## Current questions
 
-### Q1: First web release
+### Q5: Public name for one saved record
 
-Should the first public web release be read-only, showing the existing user's
-library and item details, or should it also accept new links for processing?
+What should the API and UI call one saved record?
 
-Recommendation: read-only first. It can launch after the read API is stable and
-does not wait for the complete worker migration.
+- `A`: Library item. Internally, global source data is `content` and ownership is
+  `user_save`. Recommended because it works for videos, posts, places and URLs.
+- `B`: Content.
+- `C`: Reel.
 
-### Q2: Client rollout order
+### Q6: ID exposed by the API
 
-Should production web move to Go reads before the production Flutter app, or
-should both clients switch together?
+Which ID should `/api/v1/library-items/{id}` expose?
 
-Recommendation: web first, then Flutter. Web can be rolled back immediately and
-does not depend on an app-store release.
+- `A`: The user's save ID. Recommended. It preserves existing `reels.id` values
+  and never exposes another user's relationship.
+- `B`: The global content ID shared by all users.
+- `C`: Expose both as public identifiers.
 
-### Q3: Who may sign in
+### Q7: Repeated submission
 
-At the first web launch, should access be open to every existing user, invite
-only, or open to existing users plus new sign-ups?
+What happens when the same user submits the same source again?
 
-Recommendation: every existing user plus new sign-ups, matching one product
-identity across web and mobile.
+- `A`: Return the existing library item if complete; attach to the existing job
+  if processing. Recommended. Across users, keep separate saves but reuse global
+  processing.
+- `B`: Create another library item every time.
+- `C`: Reject it as a conflict.
 
-### Q4: Public product URL
+### Q8: Removing a library item
 
-Should the signed-in product live at `reelpin.in/library` or on
-`app.reelpin.in`?
+What should deletion mean?
 
-Recommendation: `reelpin.in/library`. It keeps one Next.js deployment, one
-cookie domain and the existing marketing/deep-link routes.
+- `A`: Remove only that user's save. Keep global processed content while another
+  user references it; purge unreferenced content later. Recommended.
+- `B`: Delete the global content and every user's save.
+- `C`: Never delete, only hide.
+
+### Q9: Collections
+
+Can one library item belong to multiple collections?
+
+- `A`: Yes, use a many-to-many relation. Recommended.
+- `B`: No, exactly one collection.
+- `C`: Collections are not part of the product.
 
 ## Decision log
 
-No decisions have been confirmed during this questionnaire yet.
+| Date | Decisions |
+|------|-----------|
+| 2026-09-05 | D1 through D4 confirmed by the product owner. |

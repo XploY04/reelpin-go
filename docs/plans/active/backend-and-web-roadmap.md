@@ -198,13 +198,14 @@ It can proceed while the worker waves continue.
 - Never send the Supabase service-role or secret key to the browser.
 - Mark authenticated fetches private and uncached.
 
-### W3: read-only library launch slice
+### W3: library and submission launch slice
 
 - Keep the marketing page at `/`.
 - Add the product under `/library` with a separate work-focused layout.
 - Show saved content in a responsive, virtualizable grid or list.
 - Support platform, category, subcategory and saved-date filters.
 - Add `/library/[id]` with summary, facts, transcript and locations.
+- Let a signed-in user submit a new link for processing.
 - Show processing-job placeholders and poll only while work is active.
 - Add account menu, sign-out, empty, loading, retry and offline states.
 - Preserve `/privacy`, `/feedback`, `/c/*` and `/go/*` behavior.
@@ -216,9 +217,8 @@ It can proceed while the worker waves continue.
 - Add `/collections` and shared collection management after Task 14.
 - Use URL query parameters for shareable filter and search state where safe.
 
-### W5: write workflows
+### W5: remaining write workflows
 
-- Submit a URL for processing from web.
 - File a new save into collections.
 - Delete a library item and delete an account with explicit confirmation.
 - Keep mutations in Next.js server actions or route handlers with same-site
@@ -281,7 +281,8 @@ It can proceed while the worker waves continue.
 - Report mapped, skipped, duplicate and failed rows.
 - Compare a sample of old items between Python and Go.
 - Test with an existing production account before public web launch.
-- Keep the first web release read-only.
+- Test both existing production accounts and new sign-ups. Enable link
+  submission only after enqueue, RabbitMQ, worker and job polling pass together.
 
 ## Deployment order
 
@@ -289,13 +290,14 @@ It can proceed while the worker waves continue.
 2. Run RabbitMQ in its own development container and persist its volume.
 3. Publish `api-dev.reelpin.in` through Nginx with TLS after API tests pass.
 4. Configure Vercel preview auth redirect URLs and dev environment variables.
-5. Launch web auth and the read-only library against development.
+5. Launch web auth, library and link submission against development after one
+   ingestion path works end to end.
 6. Finish backend worker, platform and search waves.
 7. Rehearse production migrations against a disposable schema copy.
 8. Provision production Go compute near Supabase in `ap-northeast-1`.
 9. Deploy the tested Go image beside Python in production.
 10. Shadow and compare safe reads.
-11. Launch the read-only production web library for selected users.
+11. Launch production web for existing users and new sign-ups.
 12. Observe errors, latency and data mismatches.
 13. Switch processing writes and workers to Go.
 14. Keep Python available for rollback until the observation window ends.
@@ -340,8 +342,8 @@ revisit condition. The decision records in `docs/decisions/` are the source.
    both reach the same target schema.
 5. Turn the temporary EC2 PR #2 container into a versioned dev deployment.
 6. Add RabbitMQ dev isolation.
-7. Start web authentication and the read-only library after Task 3 and schema
-   checks pass.
+7. Start web authentication and library reads after Task 3 and schema checks;
+   launch only after enqueue, RabbitMQ, worker and one ingestion path also pass.
 
 ## Done
 
