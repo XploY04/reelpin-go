@@ -26,7 +26,7 @@ func main() {
 
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down>")
+		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|rebuild-queue>")
 	}
 
 	cfg, err := config.Load()
@@ -55,6 +55,9 @@ func run(logger *slog.Logger, args []string) error {
 			logger.Info("migration", "state", line)
 		}
 		return nil
+
+	case "rebuild-queue":
+		return runRebuildQueue(ctx, logger, cfg, args[1:])
 
 	case "migrate-down":
 		// Expand-only migrations are corrected forward in production. This is
