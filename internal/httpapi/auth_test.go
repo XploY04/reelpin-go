@@ -92,36 +92,30 @@ func TestUserIDComesFromTheTokenOnly(t *testing.T) {
 	}
 }
 
-func TestCanonicalAndBareRoutesMatch(t *testing.T) {
-	paths := []string{
+func TestBareRoutesAreNotRegistered(t *testing.T) {
+	for _, path := range []string{
 		"/reels",
 		"/reels/filters",
 		"/reels/category-filters",
+		"/reels/" + testReelID,
 		"/processing-jobs",
+		"/processing-jobs/" + testJobID,
 		"/account/library-stats",
-		"/account/entitlements",
-	}
-
-	for _, path := range paths {
+	} {
 		t.Run(path, func(t *testing.T) {
-			canonical := serve(testDeps(&fakePinger{}), "GET", "/api/v1"+path, "Bearer good.token")
-			bare := serve(testDeps(&fakePinger{}), "GET", path, "Bearer good.token")
-
-			if canonical.Code != http.StatusOK || bare.Code != http.StatusOK {
-				t.Fatalf("status canonical=%d bare=%d, want 200", canonical.Code, bare.Code)
-			}
-			if canonical.Body.String() != bare.Body.String() {
-				t.Errorf("bodies differ:\ncanonical %s\nbare      %s", canonical.Body, bare.Body)
+			rec := serve(testDeps(&fakePinger{}), "GET", path, "Bearer good.token")
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", rec.Code)
 			}
 		})
 	}
 }
 
-func TestBareRecordRoutesNeedAuthToo(t *testing.T) {
-	for _, path := range []string{"/reels/" + testReelID, "/processing-jobs/" + testJobID} {
-		rec := serve(testDeps(&fakePinger{}), "GET", path, "")
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s status = %d, want 401", path, rec.Code)
+func TestEntitlementsRouteIsNotRegistered(t *testing.T) {
+	for _, path := range []string{"/api/v1/account/entitlements", "/account/entitlements"} {
+		rec := serve(testDeps(&fakePinger{}), "GET", path, "Bearer good.token")
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404", path, rec.Code)
 		}
 	}
 }

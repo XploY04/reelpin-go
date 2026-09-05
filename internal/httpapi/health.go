@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const serviceName = "ReelMind API"
+const serviceName = "ReelPin API"
 
 type ServiceHealthCheck struct {
 	Healthy   bool           `json:"healthy"`
@@ -76,9 +76,8 @@ func (s *Server) readiness(ctx context.Context) HealthResponse {
 		Service:   serviceName,
 		CheckedAt: checkedAt,
 		Checks: map[string]ServiceHealthCheck{
-			"api": apiCheck(checkedAt),
-			// legacy key: Python called Supabase, Go talks to the same Postgres directly.
-			"supabase": db,
+			"api":      apiCheck(checkedAt),
+			"database": db,
 		},
 	}
 	if !resp.Ready {
@@ -106,9 +105,4 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, resp)
-}
-
-// handleHealth keeps the old contract: always 200, even when degraded.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.readiness(r.Context()))
 }

@@ -56,32 +56,3 @@ func TestEmptyLibraryStats(t *testing.T) {
 		t.Errorf("stats = %+v, want zeros", body)
 	}
 }
-
-func TestEntitlementsReturnUnrestrictedAccess(t *testing.T) {
-	deps := testDeps(&fakePinger{})
-	deps.Reels = &fakeReels{err: errFake}
-
-	rec := serve(deps, "GET", "/api/v1/account/entitlements", "Bearer good.token")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-
-	var body accessResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("body is not account access: %v", err)
-	}
-	if body.UserID != testUserID {
-		t.Errorf("user_id = %q, want %q", body.UserID, testUserID)
-	}
-	if body.Restricted {
-		t.Error("restricted = true")
-	}
-
-	var fields map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &fields); err != nil {
-		t.Fatalf("body is not an object: %v", err)
-	}
-	if len(fields) != 2 {
-		t.Errorf("fields = %v, want only user_id and restricted", fields)
-	}
-}

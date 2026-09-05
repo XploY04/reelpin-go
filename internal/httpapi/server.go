@@ -50,26 +50,21 @@ func (s *Server) Routes() http.Handler {
 	for path, handler := range map[string]http.HandlerFunc{
 		"/api/v1/health/live":  s.handleLive,
 		"/api/v1/health/ready": s.handleReady,
-		"/api/v1/health":       s.handleHealth,
 	} {
 		mux.HandleFunc("GET "+path, handler)
 		mux.HandleFunc(path, methodNotAllowed)
 	}
 
-	// Every read endpoint is served twice: the canonical path and the bare alias
-	// the shipped app still calls.
 	for path, handler := range map[string]http.HandlerFunc{
-		"/reels":                    s.handleListReels,
-		"/reels/filters":            s.handlePlatformFilters,
-		"/reels/category-filters":   s.handleCategoryFilters,
-		"/reels/{reel_id}":          s.handleGetReel,
-		"/processing-jobs":          s.handleListJobs,
-		"/processing-jobs/{job_id}": s.handleGetJob,
-		"/account/library-stats":    s.handleLibraryStats,
-		"/account/entitlements":     s.handleEntitlements,
+		"/api/v1/reels":                    s.handleListReels,
+		"/api/v1/reels/filters":            s.handlePlatformFilters,
+		"/api/v1/reels/category-filters":   s.handleCategoryFilters,
+		"/api/v1/reels/{reel_id}":          s.handleGetReel,
+		"/api/v1/processing-jobs":          s.handleListJobs,
+		"/api/v1/processing-jobs/{job_id}": s.handleGetJob,
+		"/api/v1/account/library-stats":    s.handleLibraryStats,
 	} {
 		guarded := s.authenticated(handler)
-		mux.HandleFunc("GET /api/v1"+path, guarded)
 		mux.HandleFunc("GET "+path, guarded)
 	}
 
@@ -78,14 +73,12 @@ func (s *Server) Routes() http.Handler {
 	// children of /reels/{reel_id} are left out: that wildcard already covers
 	// them, and claiming them again conflicts with it.
 	for _, path := range []string{
-		"/reels",
-		"/reels/{reel_id}",
-		"/processing-jobs",
-		"/processing-jobs/{job_id}",
-		"/account/library-stats",
-		"/account/entitlements",
+		"/api/v1/reels",
+		"/api/v1/reels/{reel_id}",
+		"/api/v1/processing-jobs",
+		"/api/v1/processing-jobs/{job_id}",
+		"/api/v1/account/library-stats",
 	} {
-		mux.HandleFunc("/api/v1"+path, methodNotAllowed)
 		mux.HandleFunc(path, methodNotAllowed)
 	}
 

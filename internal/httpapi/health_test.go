@@ -53,7 +53,7 @@ func TestHealthEndpoints(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantState:  "ok",
 			wantReady:  true,
-			wantChecks: []string{"api", "supabase"},
+			wantChecks: []string{"api", "database"},
 			wantCalls:  1,
 		},
 		{
@@ -63,17 +63,7 @@ func TestHealthEndpoints(t *testing.T) {
 			wantStatus: http.StatusServiceUnavailable,
 			wantState:  "degraded",
 			wantReady:  false,
-			wantChecks: []string{"api", "supabase"},
-			wantCalls:  1,
-		},
-		{
-			name:       "compatibility health stays 200 when degraded",
-			path:       "/api/v1/health",
-			pingErr:    errors.New("connection refused"),
-			wantStatus: http.StatusOK,
-			wantState:  "degraded",
-			wantReady:  false,
-			wantChecks: []string{"api", "supabase"},
+			wantChecks: []string{"api", "database"},
 			wantCalls:  1,
 		},
 	}
@@ -95,8 +85,8 @@ func TestHealthEndpoints(t *testing.T) {
 			if body.Ready != tt.wantReady {
 				t.Errorf("ready = %v, want %v", body.Ready, tt.wantReady)
 			}
-			if body.Service != "ReelMind API" {
-				t.Errorf("service = %q, want ReelMind API", body.Service)
+			if body.Service != "ReelPin API" {
+				t.Errorf("service = %q, want ReelPin API", body.Service)
 			}
 			if body.Version != "test" {
 				t.Errorf("version = %q, want test", body.Version)
@@ -287,7 +277,15 @@ func TestHealthUsesOneTimestamp(t *testing.T) {
 func TestDatabaseCheckStatusOnFailure(t *testing.T) {
 	_, body := do(t, newTestServer(&fakePinger{err: errors.New("down")}), httptest.NewRequest("GET", "/api/v1/health/ready", nil))
 
-	if got := body.Checks["supabase"].Status; got != "degraded" {
-		t.Errorf("supabase status = %q, want degraded", got)
+	if got := body.Checks["database"].Status; got != "degraded" {
+		t.Errorf("database status = %q, want degraded", got)
+	}
+}
+
+func TestCompatibilityHealthRouteIsNotRegistered(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestServer(&fakePinger{}).Routes().ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/health", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
