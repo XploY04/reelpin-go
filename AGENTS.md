@@ -9,8 +9,10 @@ Start here, then read the doc the task needs. `docs/index.md` is the map.
 ## Commands
 
 ```sh
-docker compose up -d          # postgres on :5432
+docker compose up -d          # postgres, redis and rabbitmq
 go run ./cmd/api              # :8000 unless PORT says otherwise
+go run ./cmd/worker           # consumes the processing queues
+go run ./cmd/maintenance      # one-off jobs; run it bare for the list
 make check                    # what CI runs: fmt, vet, unit, race, docs, boundaries
 make test-integration         # tagged tests; needs TEST_DATABASE_URL
 ```
@@ -23,19 +25,26 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | Path | What lives there |
 |------|------------------|
 | `cmd/api/` | Wiring only: config, pool, JWKS verifier, `http.Server`, signals. No logic. |
-| `internal/config/` | `Load()` and its validation. The only reader of the environment. |
+| `cmd/worker/` | The queue consumers: processing, indexing, notifications. |
+| `cmd/maintenance/` | Migrations, backfills, retention, purge, taxonomy curation, search eval, the container healthcheck. |
+| `cmd/load/` | Drives `internal/load`. Never runs in CI. |
 | `internal/httpapi/` | Routes, middleware, handlers, response shapes. The transport layer. |
-| `internal/auth/` | Supabase JWKS verification and the user-id context key. |
-| `internal/reels/` | Reel domain types, the `ReelReader` port, display and filter builders. |
-| `internal/jobs/` | Job domain types, the `JobReader` port, status presentation. |
-| `internal/postgres/` | pgx implementations of both reader ports. Reads only. |
-| `internal/db/` | `Connect(ctx, url)`: a pgx pool and a 5s ping. Nothing else. |
+| `internal/config/` | `Load()` and its validation. The only reader of the environment. |
+| `internal/auth/`, `internal/sharetoken/` | Who is asking: Supabase JWKS verification, and the long-lived tokens the native share extensions use. |
+| `internal/reels/`, `internal/jobs/`, `internal/collections/`, `internal/mapview/` | Domain types and their reader ports. No transport, no driver. |
+| `internal/enqueue/`, `internal/pipeline/`, `internal/queue/`, `internal/outbox/`, `internal/lease/` | Submission through to a persisted version: idempotency and dedupe, the staged run, RabbitMQ, the transactional outbox, and the fencing leases that keep two workers off one run. |
+| `internal/sourceidentity/`, `internal/platform/` | What a shared link *is*, and the per-platform handlers that read it. |
+| `internal/ai/`, `internal/embed/`, `internal/search/`, `internal/taxonomy/` | Extraction and categorization, the embedding index, the three search arms and their fusion, and the category tree the prompt is built from. |
+| `internal/lifecycle/`, `internal/backfill/` | Deletion, retention and purge; and the resumable read of the legacy Python tables. |
+| `internal/notify/` | Push tokens and FCM delivery. |
+| `internal/media/`, `internal/storage/`, `internal/providers/`, `internal/apify/`, `internal/cookies/` | Bounded downloads, the temp workspace, provider budgets and cooldowns. |
+| `internal/safehttp/`, `internal/ratelimit/` | The outbound SSRF guard and the Redis limiters. |
+| `internal/postgres/`, `internal/db/`, `internal/migrations/` | pgx implementations, the pool, and the embedded migrations. |
 | `internal/metrics/` | The only importer of the Prometheus client: every collector, the gauge sampler, and `Hash` for log redaction. |
-| `internal/load/` | The load driver's scenarios, sender and report. Driven by `cmd/load/`; never runs in CI. |
+| `internal/load/` | The load driver's scenarios, sender and report. |
 | `api/` | The OpenAPI contract, its embedded bytes, the generated route manifest and fixtures. |
-| `deploy/` | `alerts.yml`, the Prometheus rules. Checked against the real registry by `internal/metrics/alerts_test.go`. |
+| `deploy/` | `alerts.yml` (checked against the real registry by `internal/metrics/alerts_test.go`) and the host-side scripts the release workflow copies over and runs. No secrets. |
 | `docs/` | Committed knowledge. See `docs/index.md`. |
-| `deploy/` | Host-side scripts the release workflow copies over and runs. No secrets. |
 | `drills/` | Standalone Go/DSA practice programs. Unrelated to the service. |
 
 Nested `AGENTS.md` files exist where the rules differ: `cmd/`, `internal/`,
