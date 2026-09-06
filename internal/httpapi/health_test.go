@@ -11,7 +11,7 @@ import (
 )
 
 func newTestServer(p Pinger) *Server {
-	return New(testDeps(p))
+	return newServer(testDeps(p))
 }
 
 func do(t *testing.T, s *Server, req *http.Request) (*httptest.ResponseRecorder, HealthResponse) {

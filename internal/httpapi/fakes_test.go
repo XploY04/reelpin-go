@@ -15,6 +15,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"io"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -152,6 +153,19 @@ func testDeps(pinger Pinger) Deps {
 		Now:           func() time.Time { return testNow },
 	}
 }
+
+// newServer builds from deps that are expected to be complete. A test that
+// leaves a dependency out is a bug in the test, and a panic naming it points
+// straight at the line to fix.
+func newServer(deps Deps) *Server {
+	server, err := New(deps)
+	if err != nil {
+		panic(err)
+	}
+	return server
+}
+
+func routes(deps Deps) http.Handler { return newServer(deps).Routes() }
 
 const testUserID = "11111111-1111-4111-8111-111111111111"
 

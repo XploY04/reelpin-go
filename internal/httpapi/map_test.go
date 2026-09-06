@@ -76,7 +76,7 @@ func TestAManualPinIsCreatedAndDeleted(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer good.token")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	New(mapDeps(fake)).Routes().ServeHTTP(rec, req)
+	routes(mapDeps(fake)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201 (%s)", rec.Code, rec.Body.String())
@@ -102,7 +102,7 @@ func TestAnUnreachablePinIsNotFound(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer good.token")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	New(mapDeps(fake)).Routes().ServeHTTP(rec, req)
+	routes(mapDeps(fake)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: hiding must not confirm an id exists", rec.Code)

@@ -20,7 +20,7 @@ func send(deps Deps, method, target, body string) *httptest.ResponseRecorder {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer good.token")
 	rec := httptest.NewRecorder()
-	New(deps).Routes().ServeHTTP(rec, req)
+	routes(deps).ServeHTTP(rec, req)
 	return rec
 }
 
@@ -110,7 +110,7 @@ func TestNotificationRoutesRequireASession(t *testing.T) {
 	} {
 		req := httptest.NewRequest("POST", target, strings.NewReader(`{"token":"t","platform":"ios"}`))
 		rec := httptest.NewRecorder()
-		New(notifyDeps(&fakeNotifications{})).Routes().ServeHTTP(rec, req)
+		routes(notifyDeps(&fakeNotifications{})).ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s status = %d, want 401", target, rec.Code)
 		}
@@ -120,7 +120,7 @@ func TestNotificationRoutesRequireASession(t *testing.T) {
 func TestCampaignsAreNotInTheProductAPI(t *testing.T) {
 	// Campaign administration is an operator command. A route here would be a
 	// route an attacker can reach with a user's token.
-	for _, route := range New(testDeps(&fakePinger{})).RouteManifest() {
+	for _, route := range newServer(testDeps(&fakePinger{})).RouteManifest() {
 		if strings.Contains(route.Path, "campaign") {
 			t.Errorf("%s exposes campaign administration on the product API", route.Path)
 		}

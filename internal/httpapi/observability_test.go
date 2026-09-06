@@ -28,7 +28,7 @@ func scrape(t *testing.T, deps Deps) string {
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	req.Header.Set("X-Admin-Key", testAdminKey)
 	rec := httptest.NewRecorder()
-	New(deps).Routes().ServeHTTP(rec, req)
+	routes(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("scrape status = %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -37,7 +37,7 @@ func scrape(t *testing.T, deps Deps) string {
 
 func TestRequestsAreCountedByRouteNotByPath(t *testing.T) {
 	deps := observedDeps()
-	server := New(deps).Routes()
+	server := routes(deps)
 
 	// Two different reels must not become two time series.
 	for _, id := range []string{testReelID, "55555555-5555-4555-8555-555555555555"} {
@@ -57,7 +57,7 @@ func TestRequestsAreCountedByRouteNotByPath(t *testing.T) {
 
 func TestAnUnmatchedPathDoesNotGrowASeriesPerPath(t *testing.T) {
 	deps := observedDeps()
-	server := New(deps).Routes()
+	server := routes(deps)
 
 	for _, path := range []string{"/nope", "/also-nope", "/definitely/not/here"} {
 		server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))

@@ -15,7 +15,7 @@ func serve(deps Deps, method, target, authorization string) *httptest.ResponseRe
 		req.Header.Set("Authorization", authorization)
 	}
 	rec := httptest.NewRecorder()
-	New(deps).Routes().ServeHTTP(rec, req)
+	routes(deps).ServeHTTP(rec, req)
 	return rec
 }
 

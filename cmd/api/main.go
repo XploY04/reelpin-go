@@ -18,6 +18,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
@@ -166,28 +167,42 @@ func run(logger *slog.Logger) error {
 	searchService := search.NewService(pool, embedder, logger, time.Now)
 	searchService.Metrics = meters
 
+	// Without a service-role key the account deletion still removes every row
+	// and then reports that the identity is still there, which the app already
+	// handles; inventing a deletion would be the only worse answer.
+	if cfg.SupabaseServiceRoleKey == "" {
+		logger.Warn("no SUPABASE_SERVICE_ROLE_KEY: an account deletion removes the data, leaves the sign-in working, and stays pending")
+	}
+
+	api, err := httpapi.New(httpapi.Deps{
+		DB:             pool,
+		Auth:           verifier,
+		Reels:          postgres.NewReels(pool),
+		Jobs:           postgres.NewJobs(pool),
+		Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, gate),
+		ShareTokens:    shareTokens,
+		Resolver:       resolver,
+		Collections:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
+		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), nil, logger),
+		Map:            mapview.New(pool, time.Now),
+		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
+		Search:         searchService,
+		Limiter:        limiter,
+		Metrics:        meters,
+		AdminKey:       cfg.AdminKey,
+		IPBucketSecret: cfg.IPBucketSecret,
+		Redis:          redisPinger,
+		Workers:        workerCounter(liveWorkers),
+		Logger:         logger,
+		Version:        cfg.Version,
+	})
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
-		Addr: fmt.Sprintf(":%d", cfg.Port),
-		Handler: httpapi.New(httpapi.Deps{
-			DB:             pool,
-			Auth:           verifier,
-			Reels:          postgres.NewReels(pool),
-			Jobs:           postgres.NewJobs(pool),
-			Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, gate),
-			ShareTokens:    shareTokens,
-			Resolver:       resolver,
-			Map:            mapview.New(pool, time.Now),
-			Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
-			Search:         searchService,
-			Limiter:        limiter,
-			Metrics:        meters,
-			AdminKey:       cfg.AdminKey,
-			IPBucketSecret: cfg.IPBucketSecret,
-			Redis:          redisPinger,
-			Workers:        workerCounter(liveWorkers),
-			Logger:         logger,
-			Version:        cfg.Version,
-		}).Routes(),
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           api.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
