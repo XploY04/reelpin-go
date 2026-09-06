@@ -3,6 +3,8 @@
     "method": "GET",
     "target": "/api/v2/processing-jobs"
   },
-  "response": [],
+  "response": {
+    "jobs": []
+  },
   "status": 200
 }

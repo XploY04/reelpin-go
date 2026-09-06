@@ -69,13 +69,20 @@ func TestListJobsParameters(t *testing.T) {
 	}
 }
 
-func TestListJobsIsAnArray(t *testing.T) {
+func TestListJobsMatchesContract(t *testing.T) {
 	deps := testDeps(&fakePinger{})
 	deps.Jobs = &fakeJobs{}
 
 	rec := serve(deps, "GET", "/api/v2/processing-jobs", "Bearer good.token")
-	if body := rec.Body.String(); body != "[]\n" {
-		t.Fatalf("empty list body = %q, want []", body)
+	var body processingJobListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not a processing job list: %v", err)
+	}
+	if body.Jobs == nil {
+		t.Fatal("jobs = null, want []")
+	}
+	if len(body.Jobs) != 0 {
+		t.Fatalf("jobs length = %d, want 0", len(body.Jobs))
 	}
 }
 
