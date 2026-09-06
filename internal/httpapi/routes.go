@@ -65,7 +65,7 @@ func (s *Server) routeTable() []Route {
 	}
 
 	return []Route{
-		public(http.MethodGet, "/api/v2/health/live", "getHealthLive", s.handleLive, true),
+		public(http.MethodGet, "/api/v2/health/live", "getHealthLive", s.handleLive, true, "Version"),
 		public(http.MethodGet, "/api/v2/health/ready", "getHealthReady", s.handleReady, true, "DB"),
 
 		bearer(http.MethodGet, "/api/v2/reels", "listReels", s.handleListReels, true, "Reels"),
