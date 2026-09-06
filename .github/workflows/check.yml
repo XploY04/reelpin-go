@@ -60,7 +60,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # PostGIS carries the spatial types the map schema needs; pgvector is
+        # installed into the running container below, because no published
+        # image carries both.
+        image: postgis/postgis:16-3.5
         env:
           POSTGRES_USER: reelpin
           POSTGRES_DB: reelpin
@@ -81,6 +84,17 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: install pgvector into the postgres service
+        run: |
+          container=$(docker ps --filter "ancestor=postgis/postgis:16-3.5" --format "{{.ID}}" | head -n1)
+          if [ -z "$container" ]; then
+            echo "the postgres service container was not found"
+            docker ps
+            exit 1
+          fi
+          docker exec "$container" bash -c \
+            "apt-get update -qq && apt-get install -y -qq postgresql-16-pgvector"
 
       - name: integration tests
         run: |
