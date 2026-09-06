@@ -78,7 +78,7 @@ func (b *Backfiller) copyOneJob(ctx context.Context, options Options, batch int6
 			"the legacy job is still running")
 	}
 
-	identity, scopeHash, err := b.identify(ctx, row.URL, row.NormalizedURL, row.UserID)
+	identity, scopeHash, err := identify(ctx, b.resolver, row.URL, row.NormalizedURL, row.UserID)
 	if err != nil {
 		report.JobsUncertain++
 		return b.audit(ctx, options, batch, sourceJobs, row.ID, "skipped_ambiguous", nil, nil, nil,

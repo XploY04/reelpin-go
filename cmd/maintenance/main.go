@@ -27,7 +27,7 @@ func main() {
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|" +
-			"rebuild-queue|retention|purge|backfill-embeddings|backfill-legacy|" +
+			"rebuild-queue|retention|purge|backfill-embeddings|backfill-legacy|backfill-verify|" +
 			"search-eval|curate-taxonomy|rollback-taxonomy|healthcheck>")
 	}
 
@@ -69,6 +69,9 @@ func run(logger *slog.Logger, args []string) error {
 
 	case "backfill-legacy":
 		return runBackfillLegacy(ctx, logger, cfg, args[1:])
+
+	case "backfill-verify":
+		return runBackfillVerify(ctx, logger, cfg, args[1:])
 
 	case "search-eval":
 		return runSearchEval(ctx, logger, cfg, args[1:])
