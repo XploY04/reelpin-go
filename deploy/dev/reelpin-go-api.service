@@ -16,6 +16,7 @@ EnvironmentFile=/etc/reelpin/reelpin-api-dev.image
 ExecStartPre=-/usr/bin/docker rm -f reelpin-api-dev
 ExecStart=/usr/bin/docker run --rm --name reelpin-api-dev \
   --env-file /etc/reelpin/dev.env \
+  --env HEALTHCHECK_URL=http://127.0.0.1:8080/api/v2/health/live \
   --network host \
   --read-only --tmpfs /var/tmp/reelpin-runs:size=16m,uid=10001,gid=10001,mode=0700 \
   --user 10001:10001 \
