@@ -1,6 +1,6 @@
 [Unit]
 Description=ReelPin Go worker (development)
-After=docker.service network-online.target
+After=docker.service redis-server.service network-online.target
 Requires=docker.service
 
 [Service]
@@ -8,19 +8,20 @@ Type=exec
 Restart=always
 RestartSec=5
 EnvironmentFile=/etc/reelpin/dev.env
-ExecStartPre=-/usr/bin/docker rm -f reelpin-go-worker-dev
-# Not read-only: the worker downloads media to a temp root and ffmpeg writes
-# there. The tmpfs is bounded so a runaway download cannot fill the disk, and
-# it is the only writable path.
-ExecStart=/usr/bin/docker run --rm --name reelpin-go-worker-dev \
+EnvironmentFile=/etc/reelpin/reelpin-worker-dev.image
+ExecStartPre=-/usr/bin/docker rm -f reelpin-worker-dev
+# Media is disk-backed, not tmpfs: a 500 MiB admitted video must not consume
+# half of this host's RAM. The application stops admission at 80 percent disk
+# and removes each run directory on every terminal outcome.
+ExecStart=/usr/bin/docker run --rm --name reelpin-worker-dev \
   --env-file /etc/reelpin/dev.env \
   --network host \
-  --read-only --tmpfs /tmp:size=512m,mode=1777 \
+  --read-only --volume /var/lib/reelpin/work:/var/tmp/reelpin-runs \
   --user 10001:10001 \
-  --memory 320m --memory-swap 320m \
-  --entrypoint /usr/local/bin/worker \
+  --memory 640m --memory-swap 1024m --cpus 1.25 --pids-limit 256 \
+  --entrypoint /usr/local/bin/reelpin-worker \
   ${REELPIN_IMAGE}
-ExecStop=/usr/bin/docker stop reelpin-go-worker-dev
+ExecStop=/usr/bin/docker stop --timeout 30 reelpin-worker-dev
 
 [Install]
 WantedBy=multi-user.target
