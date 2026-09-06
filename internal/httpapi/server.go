@@ -23,10 +23,19 @@ type DatabasePinger interface {
 
 // Deps is everything the API needs from the outside world.
 type Deps struct {
-	DB      DatabasePinger
-	Auth    auth.Authenticator
-	Reels   reels.ReelReader
-	Jobs    jobs.JobReader
+	DB    DatabasePinger
+	Auth  auth.Authenticator
+	Reels reels.ReelReader
+	Jobs  jobs.JobReader
+	// Enqueue is the submission use case; ShareTokens authenticates and
+	// manages the native extensions' credential.
+	Enqueue     Submitter
+	ShareTokens ShareTokenStore
+	// Resolver previews shared text without processing it.
+	Resolver ShareResolver
+	// Limiter is nil outside production-shaped setups. Provider-costing
+	// endpoints fail closed without a decision; reads never consult it.
+	Limiter RateLimiter
 	Logger  *slog.Logger
 	Version string
 	Now     func() time.Time

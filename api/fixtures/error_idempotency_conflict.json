@@ -5,11 +5,11 @@
   },
   "response": {
     "error": {
-      "code": "processing_unavailable",
-      "message": "Submissions are unavailable right now.",
+      "code": "idempotency_conflict",
+      "message": "This Idempotency-Key was already used with a different request.",
       "request_id": "fixture-request-id",
-      "retryable": true
+      "retryable": false
     }
   },
-  "status": 503
+  "status": 409
 }

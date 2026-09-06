@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/sharetoken"
+	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"io"
 	"log/slog"
 	"time"
@@ -123,13 +127,16 @@ func (f *fakeJobs) Get(_ context.Context, userID string, id uuid.UUID) (jobs.Job
 
 func testDeps(pinger DatabasePinger) Deps {
 	return Deps{
-		DB:      pinger,
-		Auth:    fakeAuth{userID: testUserID},
-		Reels:   &fakeReels{},
-		Jobs:    &fakeJobs{},
-		Logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Version: "test",
-		Now:     func() time.Time { return testNow },
+		DB:          pinger,
+		Enqueue:     &fakeSubmitter{},
+		ShareTokens: &fakeShareTokens{},
+		Resolver:    &sourceidentity.Resolver{},
+		Auth:        fakeAuth{userID: testUserID},
+		Reels:       &fakeReels{},
+		Jobs:        &fakeJobs{},
+		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Version:     "test",
+		Now:         func() time.Time { return testNow },
 	}
 }
 
@@ -173,3 +180,68 @@ func sampleReel(id, userID string) reels.ReelRecord {
 // update rewrites generated artifacts instead of comparing against them:
 // `go test ./internal/httpapi -update`.
 var update = flag.Bool("update", false, "rewrite generated contract artifacts")
+
+// allowAllLimiter opens the metered path in tests that are not about limits.
+type allowAllLimiter struct{}
+
+func (allowAllLimiter) Allow(context.Context, ratelimit.Policy, string) (ratelimit.Decision, error) {
+	return ratelimit.Decision{Allowed: true, Remaining: 1}, nil
+}
+
+// fakeSubmitter answers deterministically: the key "conflict" reproduces the
+// idempotency conflict, anything else is accepted with a fixed job.
+type fakeSubmitter struct {
+	lastRequest enqueue.Request
+	result      enqueue.Result
+	err         error
+}
+
+func (f *fakeSubmitter) Submit(_ context.Context, request enqueue.Request) (enqueue.Result, error) {
+	f.lastRequest = request
+	if request.IdempotencyKey == "conflict" {
+		return enqueue.Result{}, enqueue.ErrIdempotencyMismatch
+	}
+	if f.err != nil {
+		return enqueue.Result{}, f.err
+	}
+	if f.result.Job != nil || f.result.Reel != nil {
+		return f.result, nil
+	}
+	step := "queued"
+	created := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	return enqueue.Result{Kind: enqueue.Accepted, Job: &enqueue.Job{
+		ID:            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Status:        "queued",
+		URL:           request.URL,
+		CurrentStep:   &step,
+		CollectionIDs: []string{},
+		CreatedAt:     &created,
+		UpdatedAt:     &created,
+	}}, nil
+}
+
+// fakeShareTokens is deterministic so fixtures stay byte-stable.
+type fakeShareTokens struct {
+	revoked int
+	minted  int
+	userID  string
+}
+
+func (f *fakeShareTokens) Mint(_ context.Context, userID string) (string, time.Time, error) {
+	f.minted++
+	f.userID = userID
+	return "fixture-share-token", time.Date(2027, 9, 6, 0, 0, 0, 0, time.UTC), nil
+}
+
+func (f *fakeShareTokens) Authenticate(_ context.Context, raw string) (string, error) {
+	if raw == "device.token" {
+		return testUserID, nil
+	}
+	return "", sharetoken.ErrUnknownToken
+}
+
+func (f *fakeShareTokens) RevokeAll(_ context.Context, userID string) (int, error) {
+	f.revoked++
+	f.userID = userID
+	return 2, nil
+}

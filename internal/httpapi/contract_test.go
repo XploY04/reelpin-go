@@ -190,6 +190,7 @@ func TestErrorEnvelopeIsUniform(t *testing.T) {
 		token   string
 		status  int
 		code    string
+		body    string
 		headers map[string]string
 	}{
 		{name: "unknown route", method: "GET", target: "/api/v2/nope", status: 404, code: "not_found"},
@@ -204,8 +205,12 @@ func TestErrorEnvelopeIsUniform(t *testing.T) {
 			token: "Bearer good.token", status: 400, code: "invalid_platform",
 		},
 		{
-			name: "not built yet", method: "POST", target: "/api/v2/processing-jobs/reels",
+			// A valid submission with no limiter configured fails closed: a
+			// provider call must never be unmetered.
+			name: "fails closed without a limiter", method: "POST", target: "/api/v2/processing-jobs/reels",
 			token: "Bearer good.token", status: 503, code: "processing_unavailable",
+			headers: map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
+			body:    `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
 		},
 		{
 			name: "no share token", method: "POST", target: "/api/v2/native-shares/reels",
@@ -215,9 +220,16 @@ func TestErrorEnvelopeIsUniform(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader("{}"))
+			payload := tt.body
+			if payload == "" {
+				payload = "{}"
+			}
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(payload))
 			if tt.token != "" {
 				req.Header.Set("Authorization", tt.token)
+			}
+			for name, value := range tt.headers {
+				req.Header.Set(name, value)
 			}
 			rec := httptest.NewRecorder()
 			New(testDeps(&fakePinger{})).Routes().ServeHTTP(rec, req)
@@ -270,12 +282,14 @@ func TestFixturesMatchTheContract(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		method string
-		target string
-		token  string
-		share  string
-		status int
+		name    string
+		method  string
+		target  string
+		token   string
+		share   string
+		body    string
+		headers map[string]string
+		status  int
 	}{
 		{name: "health_live", method: "GET", target: "/api/v2/health/live", status: 200},
 		{name: "reel_page", method: "GET", target: "/api/v2/reels?limit=25", token: "Bearer good.token", status: 200},
@@ -285,16 +299,48 @@ func TestFixturesMatchTheContract(t *testing.T) {
 		{name: "error_unauthorized", method: "GET", target: "/api/v2/reels", status: 401},
 		{name: "error_not_found", method: "GET", target: "/api/v2/reels/00000000-0000-4000-8000-000000000000", token: "Bearer good.token", status: 404},
 		{name: "error_validation", method: "GET", target: "/api/v2/reels?cursor=25", token: "Bearer good.token", status: 422},
-		{name: "error_processing_unavailable", method: "POST", target: "/api/v2/processing-jobs/reels", token: "Bearer good.token", status: 503},
+		{
+			name: "error_processing_unavailable", method: "POST", target: "/api/v2/processing-jobs/reels",
+			token: "Bearer good.token", status: 503,
+			headers: map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
+			body:    `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+		},
 		{name: "error_share_token_required", method: "POST", target: "/api/v2/native-shares/reels", status: 401},
+		{
+			name: "submission_accepted", method: "POST", target: "/api/v2/processing-jobs/reels",
+			token: "Bearer good.token", status: 202,
+			headers: map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
+			body:    `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+		},
+		{
+			name: "error_idempotency_conflict", method: "POST", target: "/api/v2/processing-jobs/reels",
+			token: "Bearer good.token", status: 409,
+			headers: map[string]string{"Idempotency-Key": "conflict"},
+			body:    `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+		},
+		{name: "share_token_minted", method: "POST", target: "/api/v2/share-tokens", token: "Bearer good.token", status: 200},
+		{
+			name: "share_resolved", method: "POST", target: "/api/v2/share/resolve",
+			token: "Bearer good.token", status: 200,
+			body: `{"raw_payload_text":"look at this https://www.instagram.com/reel/C8abc123/"}`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := testDeps(&fakePinger{})
 			deps.Reels = reader
+			// Fixture cases that exercise submissions need the metered path
+			// open and deterministic outcomes.
+			if tt.status != 503 {
+				deps.Limiter = allowAllLimiter{}
+			}
 
-			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader("{}"))
+			payload := tt.body
+			if payload == "" {
+				payload = "{}"
+			}
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(payload))
 			// A fixed id keeps the fixture byte-stable across runs.
 			req.Header.Set("X-Request-ID", "fixture-request-id")
 			if tt.token != "" {
@@ -302,6 +348,9 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			}
 			if tt.share != "" {
 				req.Header.Set("X-Share-Token", tt.share)
+			}
+			for name, value := range tt.headers {
+				req.Header.Set(name, value)
 			}
 			rec := httptest.NewRecorder()
 			New(deps).Routes().ServeHTTP(rec, req)
