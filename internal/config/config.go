@@ -38,6 +38,10 @@ type Config struct {
 	RabbitMQURL string
 	// WorkerID names this process in leases and consumer tags.
 	WorkerID string
+	// GeminiAPIKey is the worker's model credential. Empty means every
+	// provider call fails as unconfigured, which the pipeline surfaces as a
+	// retryable provider error rather than a crash.
+	GeminiAPIKey string
 }
 
 // RedisOptions parses RedisURL and applies the service's timeouts. One place,
@@ -74,6 +78,8 @@ func Load() (Config, error) {
 		RedisURL:       strings.TrimSpace(os.Getenv("REDIS_URL")),
 		RedisKeyPrefix: envOr("REDIS_KEY_PREFIX", "reelpin"),
 		RateLimitSalt:  strings.TrimSpace(os.Getenv("RATE_LIMIT_SALT")),
+
+		GeminiAPIKey: strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
 	}
 
 	if !validEnvironments[cfg.Environment] {
