@@ -140,6 +140,32 @@ func TestTwoUsersSharingPublicContentShareOneRun(t *testing.T) {
 	}
 }
 
+func TestAnAcceptedCanonicalJobIsImmediatelyPollable(t *testing.T) {
+	service, pool := testService(t)
+	result := submit(t, service, userA, publicReel)
+
+	id, err := uuid.Parse(result.Job.ID)
+	if err != nil {
+		t.Fatalf("job id: %v", err)
+	}
+	reader := postgres.NewCombinedJobs(pool)
+	record, err := reader.Get(context.Background(), userA, id)
+	if err != nil {
+		t.Fatalf("polling the accepted job: %v", err)
+	}
+	if record.ID != result.Job.ID || record.Status != "queued" {
+		t.Fatalf("polled job = %+v, want accepted queued job %s", record, result.Job.ID)
+	}
+
+	listed, err := reader.List(context.Background(), userA, false, 20)
+	if err != nil {
+		t.Fatalf("listing the accepted job: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != result.Job.ID {
+		t.Fatalf("listed jobs = %+v, want the accepted job", listed)
+	}
+}
+
 func TestConcurrentSubmissionsFromOneUserProduceOneOfEverything(t *testing.T) {
 	service, pool := testService(t)
 

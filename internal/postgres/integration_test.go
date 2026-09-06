@@ -381,7 +381,7 @@ func TestFacetsAndStats(t *testing.T) {
 func TestJobsAreUserScoped(t *testing.T) {
 	pool := testPool(t)
 	seed(t, pool)
-	reader := NewJobs(pool)
+	reader := newJobs(pool, "processing_jobs")
 	ctx := context.Background()
 
 	all, err := reader.List(ctx, userA, false, 20)
