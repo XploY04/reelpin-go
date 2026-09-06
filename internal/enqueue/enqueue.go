@@ -23,7 +23,7 @@ const ProcessorVersion = "go-v1"
 
 // MaxActiveJobs is enforced inside the transaction under the user's advisory
 // lock, so two concurrent submissions cannot both be the second job.
-const MaxActiveJobs = 2
+const MaxActiveJobs = 5
 
 // IdempotencyLifetime is how long a stored response answers a retried key.
 const IdempotencyLifetime = 24 * time.Hour
