@@ -216,7 +216,7 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		return nil
 	}
 
-	identity, scopeHash, err := b.identify(ctx, row.URL, row.NormalizedURL, row.UserID)
+	identity, scopeHash, err := identify(ctx, b.resolver, row.URL, row.NormalizedURL, row.UserID)
 	if err != nil {
 		report.InvalidURLs++
 		return b.audit(ctx, options, batch, sourceReels, row.ID, "skipped_invalid_url", nil, nil, nil,
@@ -324,12 +324,18 @@ func (b *Backfiller) reportOneReel(ctx context.Context, identity sourceidentity.
 // identify derives the global identity and the access scope one legacy row
 // belongs in. A generic link stays fenced to the user who saved it, exactly as
 // a fresh submission of the same link would be.
-func (b *Backfiller) identify(ctx context.Context, rawURL string, normalized *string, userID string) (sourceidentity.SourceIdentity, string, error) {
+func identify(
+	ctx context.Context,
+	resolver *sourceidentity.Resolver,
+	rawURL string,
+	normalized *string,
+	userID string,
+) (sourceidentity.SourceIdentity, string, error) {
 	sourceURL := strings.TrimSpace(rawURL)
 	if sourceURL == "" && normalized != nil {
 		sourceURL = strings.TrimSpace(*normalized)
 	}
-	identity, err := b.resolver.Resolve(ctx, sourceURL)
+	identity, err := resolver.Resolve(ctx, sourceURL)
 	if err != nil {
 		return sourceidentity.SourceIdentity{}, "", err
 	}
@@ -340,15 +346,34 @@ func (b *Backfiller) identify(ctx context.Context, rawURL string, normalized *st
 	return identity, scopeHash, nil
 }
 
+// reelColumns and scanReel are shared with the verifier, so the pass that
+// writes and the pass that checks can never read a legacy row differently.
+const reelColumns = `l.id::text, l.user_id::text, l.url, l.normalized_url, l.thumbnail_url,
+	       l.title, l.summary, l.transcript, l.category, l.subcategory,
+	       l.secondary_categories, l.key_facts, l.locations, l.people_mentioned,
+	       l.actionable_items, l.events, l.parse_status, l.created_at`
+
+func scanReel(source pgx.Row) (reelRow, error) {
+	var row reelRow
+	var title, summary, transcript *string
+	if err := source.Scan(
+		&row.ID, &row.UserID, &row.URL, &row.NormalizedURL, &row.ThumbnailURL,
+		&title, &summary, &transcript, &row.Category, &row.Subcategory,
+		&row.SecondaryCategories, &row.KeyFacts, &row.Locations, &row.PeopleMentioned,
+		&row.ActionableItems, &row.Events, &row.ParseStatus, &row.CreatedAt,
+	); err != nil {
+		return reelRow{}, err
+	}
+	row.Title, row.Summary, row.Transcript = text(title), text(summary), text(transcript)
+	return row, nil
+}
+
 func (b *Backfiller) readReels(ctx context.Context, cursor string, limit int) ([]reelRow, error) {
 	rows, err := b.pool.Query(ctx, `
-		SELECT id::text, user_id::text, url, normalized_url, thumbnail_url,
-		       title, summary, transcript, category, subcategory,
-		       secondary_categories, key_facts, locations, people_mentioned,
-		       actionable_items, events, parse_status, created_at
-		FROM public.reels
-		WHERE ($1::uuid IS NULL OR id > $1::uuid)
-		ORDER BY id
+		SELECT `+reelColumns+`
+		FROM public.reels l
+		WHERE ($1::uuid IS NULL OR l.id > $1::uuid)
+		ORDER BY l.id
 		LIMIT $2`, nullableUUID(cursor), limit)
 	if err != nil {
 		return nil, fmt.Errorf("reading legacy reels: %w", err)
@@ -357,17 +382,10 @@ func (b *Backfiller) readReels(ctx context.Context, cursor string, limit int) ([
 
 	collected := []reelRow{}
 	for rows.Next() {
-		var row reelRow
-		var title, summary, transcript *string
-		if err := rows.Scan(
-			&row.ID, &row.UserID, &row.URL, &row.NormalizedURL, &row.ThumbnailURL,
-			&title, &summary, &transcript, &row.Category, &row.Subcategory,
-			&row.SecondaryCategories, &row.KeyFacts, &row.Locations, &row.PeopleMentioned,
-			&row.ActionableItems, &row.Events, &row.ParseStatus, &row.CreatedAt,
-		); err != nil {
+		row, err := scanReel(rows)
+		if err != nil {
 			return nil, fmt.Errorf("reading legacy reels: %w", err)
 		}
-		row.Title, row.Summary, row.Transcript = text(title), text(summary), text(transcript)
 		collected = append(collected, row)
 	}
 	return collected, rows.Err()
@@ -513,37 +531,20 @@ func insertVersion(
 	extraction ai.Extraction,
 	cached *cacheRow,
 ) (string, error) {
-	transcript := row.Transcript
-	caption := ""
-	thumbnail := text(row.ThumbnailURL)
-
-	if cached != nil {
-		// The cache is the global copy Python already paid for; a reel row is
-		// one user's view of it, so the cache wins wherever it has something.
-		cachedExtraction, err := cached.extraction()
-		if err != nil {
-			return "", fmt.Errorf("reading the cached extraction: %w", err)
-		}
-		extraction = merge(extraction, cachedExtraction)
-		if strings.TrimSpace(cached.Transcript) != "" {
-			transcript = cached.Transcript
-		}
-		caption = cached.Caption
-		if cached.ThumbnailURL != nil && strings.TrimSpace(*cached.ThumbnailURL) != "" {
-			thumbnail = *cached.ThumbnailURL
-		}
+	content, err := versionFields(row, extraction, cached)
+	if err != nil {
+		return "", err
 	}
 
-	extraction = extraction.Normalize()
 	raw, err := json.Marshal(map[string]any{
-		"extraction":  extraction,
+		"extraction":  content.Extraction,
 		"category":    text(row.Category),
 		"subcategory": text(row.Subcategory),
 	})
 	if err != nil {
 		return "", fmt.Errorf("encoding the extraction: %w", err)
 	}
-	media, err := json.Marshal(map[string]any{"thumbnail_url": thumbnail})
+	media, err := json.Marshal(map[string]any{"thumbnail_url": content.Thumbnail})
 	if err != nil {
 		return "", fmt.Errorf("encoding media metadata: %w", err)
 	}
@@ -557,8 +558,9 @@ func insertVersion(
 		VALUES ($1, $2, $2, $2, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11,
 		        coalesce($12, now()))
 		RETURNING id::text`,
-		contentID, legacyVersion, extraction.Title, extraction.Summary, caption, transcript,
-		extraction.TopicalTags, extraction.KeyFacts, string(raw), string(media),
+		contentID, legacyVersion, content.Extraction.Title, content.Extraction.Summary,
+		content.Caption, content.Transcript,
+		content.Extraction.TopicalTags, content.Extraction.KeyFacts, string(raw), string(media),
 		extractionStatus(row.ParseStatus), row.CreatedAt,
 	).Scan(&versionID); err != nil {
 		return "", fmt.Errorf("inserting the content version: %w", err)
@@ -571,6 +573,46 @@ func insertVersion(
 		return "", fmt.Errorf("pointing the content at its version: %w", err)
 	}
 	return versionID, nil
+}
+
+// versionContent is what one content version carries once the legacy row and
+// the global cache have been folded together.
+type versionContent struct {
+	Extraction ai.Extraction
+	Transcript string
+	Caption    string
+	Thumbnail  string
+}
+
+// versionFields is that fold, kept out of insertVersion so the verifier can run
+// the same derivation. A check that reconstructs the expectation its own way
+// would disagree with the writer over whitespace and truncation rather than
+// over the data, which is the disagreement nobody needs.
+func versionFields(row reelRow, extraction ai.Extraction, cached *cacheRow) (versionContent, error) {
+	content := versionContent{
+		Transcript: row.Transcript,
+		Thumbnail:  text(row.ThumbnailURL),
+	}
+
+	if cached != nil {
+		// The cache is the global copy Python already paid for; a reel row is
+		// one user's view of it, so the cache wins wherever it has something.
+		cachedExtraction, err := cached.extraction()
+		if err != nil {
+			return versionContent{}, fmt.Errorf("reading the cached extraction: %w", err)
+		}
+		extraction = merge(extraction, cachedExtraction)
+		if strings.TrimSpace(cached.Transcript) != "" {
+			content.Transcript = cached.Transcript
+		}
+		content.Caption = cached.Caption
+		if cached.ThumbnailURL != nil && strings.TrimSpace(*cached.ThumbnailURL) != "" {
+			content.Thumbnail = *cached.ThumbnailURL
+		}
+	}
+
+	content.Extraction = extraction.Normalize()
+	return content, nil
 }
 
 // merge takes every field the override actually has, keeping the base's where
