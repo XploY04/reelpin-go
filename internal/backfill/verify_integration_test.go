@@ -224,3 +224,34 @@ func canonicalSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	}
 	return snapshot
 }
+
+// The owner check is the one that matters most and the easiest to leave
+// untested, because nothing else in the suite moves a save between users.
+// A wrong user_id is not a cosmetic mismatch: it is one account's saves
+// appearing in another's library, which is the failure the whole verify step
+// exists to catch before a rehearsal is called clean.
+func TestVerifyCatchesASaveThatChangedHands(t *testing.T) {
+	pool := testPool(t)
+	seed(t, pool)
+	ctx := context.Background()
+
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !verified(t, pool).OK() {
+		t.Fatal("the backfill did not verify before anything was altered")
+	}
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE reelpin.user_saves SET user_id = $2 WHERE id = $1`, linkReel, userB); err != nil {
+		t.Fatalf("moving the save: %v", err)
+	}
+
+	report := verified(t, pool)
+	if report.OK() {
+		t.Error("a save that changed owner still verified")
+	}
+	if !mismatched(report, linkReel, "user_saves.user_id") {
+		t.Errorf("the wrong owner was not reported: %+v", report.Sample.Examples)
+	}
+}
