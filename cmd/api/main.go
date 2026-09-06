@@ -139,6 +139,9 @@ func run(logger *slog.Logger) error {
 	}
 	go metrics.Sample(ctx, meters, pool, liveWorkers)
 
+	searchService := search.NewService(pool, embedder, logger, time.Now)
+	searchService.Metrics = meters
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
@@ -151,7 +154,7 @@ func run(logger *slog.Logger) error {
 			Resolver:      resolver,
 			Map:           mapview.New(pool, time.Now),
 			Notifications: notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
-			Search:        search.NewService(pool, embedder, logger, time.Now),
+			Search:        searchService,
 			Limiter:       limiter,
 			Metrics:       meters,
 			AdminKey:      cfg.AdminKey,

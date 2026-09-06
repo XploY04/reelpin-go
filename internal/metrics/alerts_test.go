@@ -36,6 +36,7 @@ func exported(t *testing.T) map[string]map[string]bool {
 	m.QueueRetried.WithLabelValues("q").Inc()
 	m.DeadLettered.WithLabelValues("q").Inc()
 	m.ProviderFailures.WithLabelValues("instagram", "transient").Inc()
+	m.ObserveSearch("hybrid", 0, 1)
 	m.PushDelivery.WithLabelValues("sent").Inc()
 	m.OutboxAgeSeconds.Set(1)
 	m.OldestQueuedJobAge.Set(1)
