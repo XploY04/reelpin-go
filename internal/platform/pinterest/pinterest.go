@@ -22,9 +22,10 @@ import (
 const PlatformName = "pinterest"
 
 type Deps struct {
-	HTTP   *safehttp.Client
-	Limit  *providers.Limits
-	Logger *slog.Logger
+	HTTP       *safehttp.Client
+	Thumbnails platform.Thumbnails
+	Limit      *providers.Limits
+	Logger     *slog.Logger
 }
 
 type Handler struct {
@@ -55,7 +56,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 	return platform.Prepared{
 		Caption:      caption,
 		PageText:     caption,
-		ThumbnailURL: metadata.ImageURL,
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 		NeedsMedia:   false,
 	}, nil
 }

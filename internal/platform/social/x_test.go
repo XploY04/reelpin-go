@@ -9,6 +9,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/apify"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 )
 
 const xPostID = "1811111111111111111"
@@ -78,13 +79,13 @@ func TestTheActorAddsRepliesAndAPreview(t *testing.T) {
 	t.Cleanup(func() { oembedEndpoint = previous })
 
 	id, rawURL := xPost()
-	uploader := &recordingUploader{}
+	uploader := &platformtest.Uploader{}
 	deps := testDeps()
 	deps.Apify = &fakeActor{
 		configured: map[string]bool{xActor: true},
 		items:      actorItems(t, "x_actor.json", server.URL),
 	}
-	deps.Storage = uploader
+	deps.Thumbnails.Storage = uploader
 
 	prepared, err := NewX(deps).Prepare(context.Background(), identity("x", "post", id, rawURL))
 	if err != nil {
@@ -101,8 +102,8 @@ func TestTheActorAddsRepliesAndAPreview(t *testing.T) {
 	if strings.Contains(prepared.PageText, "Artjuna does the best cold brew in Anjuna.\nArtjuna") {
 		t.Error("the post itself was added to its own replies")
 	}
-	if uploader.uploaded != 1 {
-		t.Errorf("uploaded %d previews, want the one the actor found", uploader.uploaded)
+	if uploader.Uploads != 1 {
+		t.Errorf("uploaded %d previews, want the one the actor found", uploader.Uploads)
 	}
 	if prepared.ThumbnailURL == "" {
 		t.Error("no thumbnail was stored")

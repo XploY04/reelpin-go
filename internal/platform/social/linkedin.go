@@ -80,7 +80,7 @@ func (h *LinkedInHandler) preparePage(ctx context.Context, identity sourceidenti
 	return platform.Prepared{
 		Caption:      metadata.Caption(),
 		PageText:     text,
-		ThumbnailURL: metadata.ImageURL,
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 		NeedsMedia:   false,
 	}, nil
 }
@@ -141,7 +141,7 @@ func (h *LinkedInHandler) preparePost(ctx context.Context, identity sourceidenti
 		return platform.Prepared{
 			Caption:      caption,
 			PageText:     strings.Join(parts, "\n\n"),
-			ThumbnailURL: h.deps.storeThumbnail(ctx, identity, row.image()),
+			ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, row.image()),
 			NeedsMedia:   false,
 		}, nil
 	}

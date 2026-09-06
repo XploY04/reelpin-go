@@ -54,6 +54,7 @@ type Deps struct {
 	Prober     Prober
 	Audio      *media.FFmpeg
 	Apify      ActorRunner
+	Thumbnails platform.Thumbnails
 	Limit      *providers.Limits
 	Logger     *slog.Logger
 	OEmbedURL  string
@@ -120,7 +121,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 
 	return platform.Prepared{
 		Caption:      metadata.Caption(),
-		ThumbnailURL: metadata.ImageURL,
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 		NeedsMedia:   true,
 	}, nil
 }
@@ -184,7 +185,7 @@ func (h *Handler) prepareFromActor(ctx context.Context, identity sourceidentity.
 		return platform.Prepared{
 			Caption:      metadata.Caption(),
 			PageText:     pageText,
-			ThumbnailURL: metadata.ImageURL,
+			ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 			NeedsMedia:   false,
 		}, true
 	}
@@ -227,7 +228,7 @@ func (h *Handler) prepareFromOEmbed(ctx context.Context, identity sourceidentity
 	}
 	return platform.Prepared{
 		Caption:      metadata.Caption(),
-		ThumbnailURL: metadata.ImageURL,
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 		NeedsMedia:   false,
 	}, true
 }

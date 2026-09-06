@@ -9,6 +9,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/apify"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 )
 
 const linkedinPostURL = "https://www.linkedin.com/feed/update/urn:li:activity:7100000000000000000/"
@@ -18,9 +19,9 @@ func TestALinkedInPostIsReadThroughTheActor(t *testing.T) {
 		return "image-bytes"
 	})
 
-	uploader := &recordingUploader{}
+	uploader := &platformtest.Uploader{}
 	deps := testDeps()
-	deps.Storage = uploader
+	deps.Thumbnails.Storage = uploader
 	actor := &fakeActor{
 		configured: map[string]bool{linkedinActor: true},
 		items:      actorItems(t, "linkedin_actor.json", server.URL),
@@ -48,8 +49,8 @@ func TestALinkedInPostIsReadThroughTheActor(t *testing.T) {
 	if strings.Contains(prepared.PageText, "\n\n\n") {
 		t.Error("a blank comment became an empty paragraph")
 	}
-	if uploader.uploaded != 1 || prepared.ThumbnailURL == "" {
-		t.Errorf("uploaded %d images, thumbnail %q", uploader.uploaded, prepared.ThumbnailURL)
+	if uploader.Uploads != 1 || prepared.ThumbnailURL == "" {
+		t.Errorf("uploaded %d images, thumbnail %q", uploader.Uploads, prepared.ThumbnailURL)
 	}
 	if actor.runs != 1 {
 		t.Errorf("the actor ran %d times for one post", actor.runs)
@@ -64,8 +65,10 @@ func TestALinkedInPageCostsNoActorRun(t *testing.T) {
 	})
 
 	actor := &fakeActor{configured: map[string]bool{linkedinActor: true}}
+	uploader := &platformtest.Uploader{}
 	deps := testDeps()
 	deps.Apify = actor
+	deps.Thumbnails.Storage = uploader
 
 	prepared, err := NewLinkedIn(deps).Prepare(context.Background(),
 		identity("linkedin", "profile", "priya-nair", server.URL))
@@ -85,8 +88,14 @@ func TestALinkedInPageCostsNoActorRun(t *testing.T) {
 	if strings.Contains(prepared.PageText, "__data") {
 		t.Error("script content reached the extractor")
 	}
-	if prepared.ThumbnailURL == "" {
-		t.Error("the page's preview image was dropped")
+	// Stored, not linked. A page's og:image is a LinkedIn CDN URL, and the web
+	// only renders images from this project's own bucket, so linking it is the
+	// same as having no thumbnail at all.
+	if !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, want a stored one", prepared.ThumbnailURL)
+	}
+	if uploader.Uploads != 1 {
+		t.Errorf("uploaded %d previews, want 1", uploader.Uploads)
 	}
 }
 

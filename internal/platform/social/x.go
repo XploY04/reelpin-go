@@ -62,7 +62,7 @@ func (h *XHandler) Prepare(ctx context.Context, identity sourceidentity.SourceId
 		if replies != "" {
 			prepared.PageText = text + "\n\nReplies:\n" + replies
 		}
-		prepared.ThumbnailURL = h.deps.storeThumbnail(ctx, identity, thumbnail)
+		prepared.ThumbnailURL = h.deps.Thumbnails.Store(ctx, identity, thumbnail)
 		h.deps.log(XPlatform).Info("x post ready",
 			"content_id", identity.ContentID, "source", "x_oembed+actor")
 		return prepared, nil

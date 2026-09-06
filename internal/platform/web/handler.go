@@ -20,8 +20,9 @@ import (
 const PlatformName = platform.Fallback
 
 type Deps struct {
-	HTTP  *safehttp.Client
-	Limit *providers.Limits
+	HTTP       *safehttp.Client
+	Thumbnails platform.Thumbnails
+	Limit      *providers.Limits
 }
 
 // Handler serves an ordinary page: an article, a blog post, a documentation
@@ -63,7 +64,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 	return platform.Prepared{
 		Caption:      metadata.Caption(),
 		PageText:     text,
-		ThumbnailURL: metadata.ImageURL,
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 		NeedsMedia:   false,
 	}, nil
 }

@@ -84,7 +84,7 @@ func (h *RedditHandler) Prepare(ctx context.Context, identity sourceidentity.Sou
 	return platform.Prepared{
 		Caption:      post.Title,
 		PageText:     strings.Join(parts, "\n\n"),
-		ThumbnailURL: h.deps.storeThumbnail(ctx, identity, imageURL),
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, imageURL),
 		NeedsMedia:   false,
 	}, nil
 }

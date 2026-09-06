@@ -14,9 +14,12 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/media"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 	"github.com/XploY04/reelpin-go/internal/providers"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/storage"
 )
 
 func fixture(t *testing.T, name string) string {
@@ -35,11 +38,20 @@ func serve(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	return server
 }
 
-func baseDeps() Deps {
+// tiktokCDN is the host the video fixture points its og:image at.
+const tiktokCDN = "https://p16.tiktokcdn.com"
+
+// baseDeps wires one set of dependencies. A nil uploader is a deployment with
+// no storage credential, and the handler is expected to survive it.
+func baseDeps(uploader storage.Uploader) Deps {
+	client := safehttp.New(safehttp.Config{AllowPrivateAddresses: true})
+	limits := providers.NewLimits()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	return Deps{
-		HTTP:   safehttp.New(safehttp.Config{AllowPrivateAddresses: true}),
-		Limit:  providers.NewLimits(),
-		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		HTTP:       client,
+		Thumbnails: platform.Thumbnails{HTTP: client, Storage: uploader, Limits: limits, Logger: logger},
+		Limit:      limits,
+		Logger:     logger,
 	}
 }
 
@@ -99,7 +111,7 @@ func TestAPostWithAudioIsMediaWork(t *testing.T) {
 		w.Write([]byte(fixture(t, "video.html")))
 	})
 
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Prober = &fakeProber{duration: 42, size: 4 << 20}
 
 	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
@@ -112,6 +124,51 @@ func TestAPostWithAudioIsMediaWork(t *testing.T) {
 	if !strings.Contains(prepared.Caption, "omelette") {
 		t.Errorf("caption = %q", prepared.Caption)
 	}
+	// No uploader is a deployment with no storage credential. The post still
+	// saves; it just saves without a preview.
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
+	}
+}
+
+func TestATikTokThumbnailIsStoredRatherThanLinked(t *testing.T) {
+	page := platformtest.Site(t, fixture(t, "video.html"), tiktokCDN)
+	uploader := &platformtest.Uploader{}
+
+	deps := baseDeps(uploader)
+	deps.Prober = &fakeProber{duration: 42, size: 4 << 20}
+
+	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if uploader.Uploads != 1 {
+		t.Fatalf("uploaded %d previews, want 1", uploader.Uploads)
+	}
+	// The reader renders images out of our own bucket and nowhere else, so a
+	// tiktokcdn.com URL saved as-is is a post with no preview at all.
+	if !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, want the stored object", prepared.ThumbnailURL)
+	}
+}
+
+func TestAFailedThumbnailUploadStillSavesThePost(t *testing.T) {
+	page := platformtest.Site(t, fixture(t, "video.html"), tiktokCDN)
+	uploader := &platformtest.Uploader{Err: errors.New("the bucket refused")}
+
+	deps := baseDeps(uploader)
+	deps.Prober = &fakeProber{duration: 42, size: 4 << 20}
+
+	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
+	if err != nil {
+		t.Fatalf("Prepare: %v: a missing preview must not fail the run", err)
+	}
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q after a failed upload, want none", prepared.ThumbnailURL)
+	}
+	if !prepared.NeedsMedia || !strings.Contains(prepared.Caption, "omelette") {
+		t.Error("the post itself was lost with the preview")
+	}
 }
 
 func TestAPostWithNoDurationStaysLight(t *testing.T) {
@@ -121,7 +178,7 @@ func TestAPostWithNoDurationStaysLight(t *testing.T) {
 		w.Write([]byte(fixture(t, "video.html")))
 	})
 
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Prober = &fakeProber{duration: 0}
 
 	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
@@ -143,7 +200,7 @@ func TestALoginWallDoesNotEndTheRun(t *testing.T) {
 		w.Write([]byte(fixture(t, "wall.html")))
 	})
 
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Prober = &fakeProber{duration: 30, size: 1 << 20}
 
 	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
@@ -160,7 +217,7 @@ func TestARemovedPostIsTerminal(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
-	_, err := New(baseDeps()).Prepare(context.Background(), identityFor(page.URL))
+	_, err := New(baseDeps(nil)).Prepare(context.Background(), identityFor(page.URL))
 	assertFailure(t, err, "content_unavailable", false)
 }
 
@@ -169,7 +226,7 @@ func TestAThrottledPageIsRetryableWhenTheProbeAlsoFails(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Prober = &fakeProber{err: media.ErrRateLimited}
 
 	_, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
@@ -181,7 +238,7 @@ func TestAnOversizedPostIsRefusedBeforeDownloading(t *testing.T) {
 		w.Write([]byte(fixture(t, "video.html")))
 	})
 
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Prober = &fakeProber{err: media.ErrTooLarge}
 
 	_, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
@@ -189,7 +246,7 @@ func TestAnOversizedPostIsRefusedBeforeDownloading(t *testing.T) {
 }
 
 func TestDownloadProducesAudio(t *testing.T) {
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Downloader = &fakeDownloader{}
 	deps.Audio = media.NewFFmpeg(fakeAudioRunner{})
 
@@ -204,7 +261,7 @@ func TestDownloadProducesAudio(t *testing.T) {
 }
 
 func TestADownloadThatIsNotAVideoIsTerminal(t *testing.T) {
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Downloader = &fakeDownloader{junk: true}
 	deps.Audio = media.NewFFmpeg(fakeAudioRunner{})
 
@@ -214,7 +271,7 @@ func TestADownloadThatIsNotAVideoIsTerminal(t *testing.T) {
 }
 
 func TestAPrivatePostIsTerminal(t *testing.T) {
-	deps := baseDeps()
+	deps := baseDeps(nil)
 	deps.Downloader = &fakeDownloader{err: media.ErrPrivate}
 
 	_, err := New(deps).Download(context.Background(),

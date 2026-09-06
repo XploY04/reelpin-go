@@ -71,10 +71,14 @@ func site(t *testing.T, handler func(w http.ResponseWriter, r *http.Request) str
 }
 
 func testDeps() Deps {
+	client := safehttp.New(safehttp.Config{AllowPrivateAddresses: true})
+	limits := providers.NewLimits()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	return Deps{
-		HTTP:   safehttp.New(safehttp.Config{AllowPrivateAddresses: true}),
-		Limit:  providers.NewLimits(),
-		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		HTTP:       client,
+		Thumbnails: platform.Thumbnails{HTTP: client, Limits: limits, Logger: logger},
+		Limit:      limits,
+		Logger:     logger,
 	}
 }
 
@@ -84,6 +88,7 @@ func logged() (Deps, *bytes.Buffer) {
 	buffer := &bytes.Buffer{}
 	deps := testDeps()
 	deps.Logger = slog.New(slog.NewJSONHandler(buffer, nil))
+	deps.Thumbnails.Logger = deps.Logger
 	return deps, buffer
 }
 
@@ -113,18 +118,6 @@ func actorItems(t *testing.T, name, serverURL string) []json.RawMessage {
 		t.Fatalf("parsing %s: %v", name, err)
 	}
 	return items
-}
-
-// recordingUploader stands in for object storage.
-type recordingUploader struct {
-	uploaded int
-	lastKey  string
-}
-
-func (r *recordingUploader) Upload(_ context.Context, key string, _ io.Reader, _ string) (string, error) {
-	r.uploaded++
-	r.lastKey = key
-	return "https://storage.example/" + key, nil
 }
 
 func failureOf(t *testing.T, err error) *pipeline.Failure {

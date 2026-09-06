@@ -12,9 +12,12 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/media"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 	"github.com/XploY04/reelpin-go/internal/providers"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/storage"
 )
 
 // Fixture reads a recorded page. Every handler test in this tree serves these
@@ -30,6 +33,9 @@ func fixture(t *testing.T, name string) string {
 
 // safeClient points the real client at a local server. Loopback is refused in
 // production, which is why the seam exists.
+// articleCDN is the host the article fixture points its og:image at.
+const articleCDN = "https://cdn.example.com"
+
 func safeClient() *safehttp.Client {
 	return safehttp.New(safehttp.Config{AllowPrivateAddresses: true})
 }
@@ -54,8 +60,16 @@ func status(code int) http.HandlerFunc {
 	}
 }
 
-func newHandler(server *httptest.Server) *Handler {
-	return New(Deps{HTTP: safeClient(), Limit: providers.NewLimits()})
+// newHandler wires one handler. A nil uploader is a deployment with no
+// storage credential, and the handler is expected to survive it.
+func newHandler(uploader storage.Uploader) *Handler {
+	client := safeClient()
+	limits := providers.NewLimits()
+	return New(Deps{
+		HTTP:       client,
+		Thumbnails: platform.Thumbnails{HTTP: client, Storage: uploader, Limits: limits},
+		Limit:      limits,
+	})
 }
 
 func identityFor(url string) sourceidentity.SourceIdentity {
@@ -146,7 +160,7 @@ func utf8Valid(value string) bool {
 func TestPrepareReadsAnArticleAsLightWork(t *testing.T) {
 	server := serve(t, page(fixture(t, "article.html")))
 
-	prepared, err := newHandler(server).Prepare(context.Background(), identityFor(server.URL))
+	prepared, err := newHandler(nil).Prepare(context.Background(), identityFor(server.URL))
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -159,15 +173,51 @@ func TestPrepareReadsAnArticleAsLightWork(t *testing.T) {
 	if !strings.Contains(prepared.PageText, "flour and water") {
 		t.Errorf("page text = %q", prepared.PageText)
 	}
-	if prepared.ThumbnailURL == "" {
-		t.Error("no thumbnail from a page that publishes og:image")
+	// No uploader is a deployment with no storage credential. The article
+	// still saves; it just saves without a preview.
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
+	}
+}
+
+func TestAnArticleThumbnailIsStoredRatherThanLinked(t *testing.T) {
+	server := platformtest.Site(t, fixture(t, "article.html"), articleCDN)
+	uploader := &platformtest.Uploader{}
+
+	prepared, err := newHandler(uploader).Prepare(context.Background(), identityFor(server.URL))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if uploader.Uploads != 1 {
+		t.Fatalf("uploaded %d previews, want 1", uploader.Uploads)
+	}
+	// The reader renders images out of our own bucket and nowhere else, so a
+	// publisher's CDN URL saved as-is is a link with no preview at all.
+	if !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, want the stored object", prepared.ThumbnailURL)
+	}
+}
+
+func TestAFailedThumbnailUploadStillSavesTheArticle(t *testing.T) {
+	server := platformtest.Site(t, fixture(t, "article.html"), articleCDN)
+	uploader := &platformtest.Uploader{Err: errors.New("the bucket refused")}
+
+	prepared, err := newHandler(uploader).Prepare(context.Background(), identityFor(server.URL))
+	if err != nil {
+		t.Fatalf("Prepare: %v: a missing preview must not fail the run", err)
+	}
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q after a failed upload, want none", prepared.ThumbnailURL)
+	}
+	if !strings.Contains(prepared.PageText, "flour and water") {
+		t.Error("the article itself was lost with the preview")
 	}
 }
 
 func TestPrepareRejectsAPageWithNothingOnIt(t *testing.T) {
 	server := serve(t, page(fixture(t, "empty.html")))
 
-	_, err := newHandler(server).Prepare(context.Background(), identityFor(server.URL))
+	_, err := newHandler(nil).Prepare(context.Background(), identityFor(server.URL))
 	if err == nil {
 		t.Fatal("an empty page prepared successfully")
 	}
@@ -191,7 +241,7 @@ func TestPrepareClassifiesTheStatusItGot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := serve(t, status(tt.status))
 
-			_, err := newHandler(server).Prepare(context.Background(), identityFor(server.URL))
+			_, err := newHandler(nil).Prepare(context.Background(), identityFor(server.URL))
 			if err == nil {
 				t.Fatalf("status %d prepared successfully", tt.status)
 			}

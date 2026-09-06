@@ -49,10 +49,13 @@ func newRegistry(cfg config.Config, usage spend.Recorder, logger *slog.Logger) (
 	// An absent uploader is how a handler skips the thumbnail entirely. A
 	// configured-looking one would fetch the image first and only then find it
 	// has nowhere to put it.
-	var thumbnails storage.Uploader
+	var uploader storage.Uploader
 	if cfg.SupabaseURL != "" && cfg.SupabaseServiceKey != "" {
-		thumbnails = storage.NewSupabase(cfg.SupabaseURL, cfg.ThumbnailBucket, cfg.SupabaseServiceKey, 0)
+		uploader = storage.NewSupabase(cfg.SupabaseURL, cfg.ThumbnailBucket, cfg.SupabaseServiceKey, 0)
 	}
+	// One value for every handler: the reader renders images out of our bucket
+	// and nowhere else, so a source's own CDN URL is never what gets saved.
+	thumbnails := platform.Thumbnails{HTTP: client, Storage: uploader, Limits: limits, Logger: logger}
 
 	// The three text-first sources share one set of dependencies; each of them
 	// reaches a different reader behind it.
@@ -60,12 +63,12 @@ func newRegistry(cfg config.Config, usage spend.Recorder, logger *slog.Logger) (
 	// client, so the handler falls back to the public JSON view instead of
 	// authenticating with nothing.
 	socialDeps := social.Deps{
-		HTTP:    client,
-		Apify:   actorRunner,
-		Storage: thumbnails,
-		Reddit:  reddit.New(cfg.RedditClientID, cfg.RedditClientSecret),
-		Limit:   limits,
-		Logger:  logger,
+		HTTP:       client,
+		Apify:      actorRunner,
+		Thumbnails: thumbnails,
+		Reddit:     reddit.New(cfg.RedditClientID, cfg.RedditClientSecret),
+		Limit:      limits,
+		Logger:     logger,
 	}
 
 	handlers := []platform.Handler{
@@ -76,7 +79,7 @@ func newRegistry(cfg config.Config, usage spend.Recorder, logger *slog.Logger) (
 			Audio:      audio,
 			Apify:      actorRunner,
 			Cookies:    cookies.New(cfg.InstagramCookies),
-			Storage:    thumbnails,
+			Thumbnails: thumbnails,
 			Limits:     limits,
 			Logger:     logger,
 		}),
@@ -86,6 +89,7 @@ func newRegistry(cfg config.Config, usage spend.Recorder, logger *slog.Logger) (
 			Prober:     downloader,
 			Audio:      audio,
 			Apify:      actorRunner,
+			Thumbnails: thumbnails,
 			Limit:      limits,
 			Logger:     logger,
 		}),
@@ -94,18 +98,19 @@ func newRegistry(cfg config.Config, usage spend.Recorder, logger *slog.Logger) (
 			Downloader: downloader,
 			Prober:     downloader,
 			Audio:      audio,
+			Thumbnails: thumbnails,
 			Limit:      limits,
 			Logger:     logger,
 		}),
-		pinterest.New(pinterest.Deps{HTTP: client, Limit: limits, Logger: logger}),
+		pinterest.New(pinterest.Deps{HTTP: client, Thumbnails: thumbnails, Limit: limits, Logger: logger}),
 		social.NewX(socialDeps),
 		social.NewLinkedIn(socialDeps),
 		social.NewReddit(socialDeps),
 		// The long tail: every link whose platform is its own hostname.
-		web.New(web.Deps{HTTP: client, Limit: limits}),
+		web.New(web.Deps{HTTP: client, Thumbnails: thumbnails, Limit: limits}),
 	}
 	handlers = append(handlers,
-		places.Handlers(places.Deps{HTTP: client, Limit: limits, Logger: logger})...)
+		places.Handlers(places.Deps{HTTP: client, Thumbnails: thumbnails, Limit: limits, Logger: logger})...)
 
 	return platform.NewRegistry(handlers...)
 }
