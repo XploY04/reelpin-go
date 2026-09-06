@@ -32,6 +32,12 @@ type Config struct {
 	// rate state is disposable. In development an absent salt is generated per
 	// process for the same reason.
 	RateLimitSalt string
+
+	// RabbitMQURL is the broker the worker consumes and the outbox publishes
+	// to. Required in production for the worker; the API never touches it.
+	RabbitMQURL string
+	// WorkerID names this process in leases and consumer tags.
+	WorkerID string
 }
 
 // RedisOptions parses RedisURL and applies the service's timeouts. One place,
@@ -61,6 +67,8 @@ func Load() (Config, error) {
 		Version:     envOr("APP_VERSION", "dev"),
 
 		SupabaseURL:         strings.TrimSpace(os.Getenv("SUPABASE_URL")),
+		RabbitMQURL:         strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+		WorkerID:            envOr("WORKER_ID", defaultWorkerID()),
 		SupabaseJWTAudience: envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
 
 		RedisURL:       strings.TrimSpace(os.Getenv("REDIS_URL")),
@@ -125,4 +133,14 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// defaultWorkerID is stable for the process and distinct across hosts, so two
+// dev workers do not claim leases under one name.
+func defaultWorkerID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "worker"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
