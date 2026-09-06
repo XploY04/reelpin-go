@@ -10,6 +10,7 @@ folder is the detail behind it. Read the page the task needs, not the folder.
 | [`api-contract.md`](api-contract.md) | You are adding, changing, or breaking an endpoint. |
 | [`operations.md`](operations.md) | You are running it, configuring it, or it is misbehaving. |
 | [`cost-gate.md`](cost-gate.md) | You need to know what a job costs a provider, or you are setting the spending limits. |
+| [`model-migration.md`](model-migration.md) | You are changing which model the pipeline calls, or you want the measurements behind the one it calls now. |
 | [`reopening-submissions.md`](reopening-submissions.md) | Submissions are answering `503 spend_limit_reached` and you have to decide what to do. |
 | [`cutover.md`](cutover.md) | You are deploying the image, or switching traffic from Python to Go. |
 | [`rehearsal.md`](rehearsal.md) | You are proving the migration on a copy of production, before any of it is real. |

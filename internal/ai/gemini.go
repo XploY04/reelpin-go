@@ -17,9 +17,11 @@ import (
 	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
-// DefaultModel is what the Python service runs today, so a migrated reel is
-// extracted the same way it was before. ModelVersion is stored with every
-// content version; changing the model is a deliberate reprocess.
+// DefaultModel is pinned to an exact version, never to a floating alias like
+// gemini-flash-lite-latest. ModelVersion is stored on every content version, so
+// an alias that moved underneath would change extraction with nothing in the
+// data recording that it had. Replacing it is a measurement, not a preference:
+// docs/model-migration.md carries the run this one came from.
 const DefaultModel = "gemini-3.5-flash-lite"
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com"
