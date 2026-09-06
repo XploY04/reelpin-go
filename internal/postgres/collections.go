@@ -221,6 +221,12 @@ func (c *Collections) AddItems(ctx context.Context, collectionID, userID string,
 // the primary key absorbs re-inserts, and only saves that exist are filed, so
 // a stale picker cannot fail a batch.
 func (c *Collections) FileSave(ctx context.Context, tx pgx.Tx, userID, collectionID string, saveIDs []string) (int, error) {
+	return fileSaves(ctx, tx, userID, collectionID, saveIDs)
+}
+
+// fileSaves is FileSave without a receiver, so the submission transaction in
+// enqueue.go files by the same rule without owning a *Collections.
+func fileSaves(ctx context.Context, tx pgx.Tx, userID, collectionID string, saveIDs []string) (int, error) {
 	cleaned := make([]string, 0, len(saveIDs))
 	seen := map[string]bool{}
 	for _, raw := range saveIDs {

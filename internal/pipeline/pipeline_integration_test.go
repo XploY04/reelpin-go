@@ -300,6 +300,63 @@ func TestOneRunCompletesEverySubscriber(t *testing.T) {
 	}
 }
 
+func TestCompletionFilesTheCollectionsTheSubmissionNamed(t *testing.T) {
+	h := newHarness(t, userA)
+	ctx := context.Background()
+
+	// Submission recorded the intent on the job: one collection that still
+	// exists, one deleted between submission and completion.
+	var collectionID string
+	if err := h.pool.QueryRow(ctx, `
+		INSERT INTO reelpin.collections (owner_id, name) VALUES ($1, 'Goa')
+		RETURNING id::text`, userA).Scan(&collectionID); err != nil {
+		t.Fatalf("seeding a collection: %v", err)
+	}
+	gone := "88888888-8888-4888-8888-888888888888"
+	if _, err := h.pool.Exec(ctx, `
+		UPDATE reelpin.processing_jobs SET collection_ids = ARRAY[$2, $3]::uuid[]
+		WHERE run_id = $1`, h.runID, collectionID, gone); err != nil {
+		t.Fatalf("recording the intent: %v", err)
+	}
+
+	if _, err := h.handle(t); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if status := h.runStatus(t); status != "completed" {
+		t.Fatalf("run status = %q: a missing collection must not fail the run", status)
+	}
+
+	// The save is filed into the collection that survived, and the one that
+	// did not is skipped rather than fatal.
+	var filed int
+	var jobStatus string
+	if err := h.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM reelpin.collection_items i
+		        JOIN reelpin.processing_jobs j ON j.user_save_id = i.save_id
+		        WHERE i.collection_id = $1 AND j.run_id = $2),
+		       (SELECT status FROM reelpin.processing_jobs WHERE run_id = $2)`,
+		collectionID, h.runID).Scan(&filed, &jobStatus); err != nil {
+		t.Fatal(err)
+	}
+	if filed != 1 || jobStatus != "completed" {
+		t.Fatalf("filed=%d job status=%q, want the save filed once and the job completed", filed, jobStatus)
+	}
+
+	// The broker is at-least-once, and filing twice must not duplicate an item.
+	if _, err := h.handle(t); err != nil {
+		t.Fatalf("redelivery: %v", err)
+	}
+	var items int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM reelpin.collection_items WHERE collection_id = $1`,
+		collectionID).Scan(&items); err != nil {
+		t.Fatal(err)
+	}
+	if items != 1 {
+		t.Fatalf("collection items = %d after redelivery, want 1", items)
+	}
+}
+
 func TestRedeliveryAfterCompletionChangesNothing(t *testing.T) {
 	h := newHarness(t, userA)
 	if _, err := h.handle(t); err != nil {

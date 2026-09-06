@@ -102,6 +102,10 @@ func (e *Enqueue) Submit(ctx context.Context, submission enqueue.Submission) (en
 }
 
 func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.Submission, hash string) (enqueue.Result, error) {
+	if err := requireFilableCollections(ctx, tx, submission.UserID, submission.CollectionIDs); err != nil {
+		return enqueue.Result{}, err
+	}
+
 	// The cap counts live jobs under the advisory lock, so the third
 	// concurrent submission is always the one refused.
 	var active int
@@ -135,6 +139,9 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 		return enqueue.Result{}, fmt.Errorf("checking for an existing save: %w", err)
 	}
 	if err == nil && hasVersion {
+		if err := fileSubmission(ctx, tx, submission, saveID); err != nil {
+			return enqueue.Result{}, err
+		}
 		return e.finish(ctx, tx, submission, hash, storedResult{Kind: enqueue.AlreadySaved, SaveID: saveID})
 	}
 
@@ -162,11 +169,16 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO reelpin.processing_jobs
 				(user_id, user_save_id, url, normalized_url, source_platform,
-				 status, current_step, progress_percent, completed_at)
-			VALUES ($1, $2, $3, $4, $5, 'completed', 'completed', 100, now())`,
+				 status, current_step, progress_percent, collection_ids, completed_at)
+			VALUES ($1, $2, $3, $4, $5, 'completed', 'completed', 100,
+			        COALESCE($6::uuid[], '{}'), now())`,
 			submission.UserID, saveID, submission.Identity.OriginalURL,
-			submission.Identity.NormalizedURL, submission.Identity.Platform); err != nil {
+			submission.Identity.NormalizedURL, submission.Identity.Platform,
+			submission.CollectionIDs); err != nil {
 			return enqueue.Result{}, fmt.Errorf("recording the reuse job: %w", err)
+		}
+		if err := fileSubmission(ctx, tx, submission, saveID); err != nil {
+			return enqueue.Result{}, err
 		}
 		return e.finish(ctx, tx, submission, hash, storedResult{Kind: enqueue.AlreadySaved, SaveID: saveID})
 	}
@@ -187,16 +199,27 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO reelpin.processing_jobs
-				(user_id, run_id, url, normalized_url, source_platform, current_step)
-			VALUES ($1, $2, $3, $4, $5, 'queued')
+				(user_id, run_id, url, normalized_url, source_platform, current_step, collection_ids)
+			VALUES ($1, $2, $3, $4, $5, 'queued', COALESCE($6::uuid[], '{}'))
 			RETURNING id::text`,
 			submission.UserID, runID, submission.Identity.OriginalURL,
 			submission.Identity.NormalizedURL, submission.Identity.Platform,
+			submission.CollectionIDs,
 		).Scan(&jobID); err != nil {
 			return enqueue.Result{}, fmt.Errorf("creating the job: %w", err)
 		}
 	} else if err != nil {
 		return enqueue.Result{}, fmt.Errorf("finding the existing job: %w", err)
+	} else if len(submission.CollectionIDs) > 0 {
+		// A second submission of the same link under a new key may name other
+		// collections. The job's intent is the union, so neither list is lost.
+		if _, err := tx.Exec(ctx, `
+			UPDATE reelpin.processing_jobs
+			SET collection_ids = ARRAY(SELECT DISTINCT unnest(collection_ids || $2::uuid[])),
+			    updated_at = now()
+			WHERE id = $1`, jobID, submission.CollectionIDs); err != nil {
+			return enqueue.Result{}, fmt.Errorf("recording the collections on the job: %w", err)
+		}
 	}
 
 	// Only the submission that created the run publishes work. Joining an
@@ -256,6 +279,44 @@ func (e *Enqueue) replay(ctx context.Context, tx pgx.Tx, userID string, stored s
 		return enqueue.Result{}, err
 	}
 	return enqueue.Result{Kind: enqueue.Accepted, Job: &job}, nil
+}
+
+// requireFilableCollections refuses the whole submission when any named id is
+// not a collection this user may add to. A collection that does not exist and
+// one that belongs to a stranger answer identically, so a submission cannot be
+// used to probe for other people's collections.
+func requireFilableCollections(ctx context.Context, tx pgx.Tx, userID string, collectionIDs []string) error {
+	if len(collectionIDs) == 0 {
+		return nil
+	}
+	var unreachable int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM unnest($1::uuid[]) AS wanted(id)
+		WHERE NOT EXISTS (
+			SELECT 1 FROM reelpin.collections c
+			WHERE c.id = wanted.id AND (c.owner_id = $2::uuid OR EXISTS (
+				SELECT 1 FROM reelpin.collection_members m
+				WHERE m.collection_id = c.id AND m.user_id = $2::uuid AND m.role = 'editor')))`,
+		collectionIDs, userID,
+	).Scan(&unreachable); err != nil {
+		return fmt.Errorf("checking the named collections: %w", err)
+	}
+	if unreachable > 0 {
+		return enqueue.ErrCollectionUnreachable
+	}
+	return nil
+}
+
+// fileSubmission files a save into the submission's collections immediately,
+// which is only right on the 200 path: there the save already exists. The 202
+// path has no save yet, so its ids ride the job until the run completes.
+func fileSubmission(ctx context.Context, tx pgx.Tx, submission enqueue.Submission, saveID string) error {
+	for _, collectionID := range submission.CollectionIDs {
+		if _, err := fileSaves(ctx, tx, submission.UserID, collectionID, []string{saveID}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func findOrCreateContent(ctx context.Context, tx pgx.Tx, submission enqueue.Submission) (string, error) {

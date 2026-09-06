@@ -70,6 +70,21 @@ v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
 - `200` = already saved, body is the reel itself (no job to poll).
 - `202` = queued or already in flight, body is the processing job to poll.
 - v1's single-status behaviour is gone; handle both.
+- **`collection_ids` files the save into those collections.** When the filing
+  becomes visible depends on which status came back. On a `200` the save
+  already exists, so it is filed inside the same transaction as the response:
+  reopen the collection straight away and the reel is there. On a `202` there
+  is no save yet, so the ids ride the job (they come back on it, and on every
+  poll) and the filing happens when the job turns `completed`. Refresh the
+  collection there, not on submit.
+- Every id must be a collection this user owns or edits. Any other id (a
+  stranger's, a deleted one, a viewer-only one, something that is not a UUID)
+  answers `422 validation_error` with `error.details.field` = `collection_ids`,
+  and **nothing is enqueued**: fix the list and submit again with a new key.
+  The reply is the same whether the collection is out of reach or does not
+  exist, so it cannot be used to probe for other people's collections.
+- A collection deleted while the job is still running is skipped at completion.
+  The save and the job still complete; the reel is simply not in it.
 
 **New error codes on this endpoint**, all matched on `error.code`:
 
@@ -157,8 +172,8 @@ existing local caches keep working. What changed beyond the envelope:
 - Request bodies reject unknown fields, so a misspelled key now fails loudly
   instead of being silently ignored.
 
-`collection_ids` on submission stays rejected until enqueue and collections
-share a trunk; this file will say when it is accepted.
+`collection_ids` on submission is accepted now. **Submission** above says which
+ids it takes and when the filing shows up.
 
 ## Notifications (built)
 
@@ -286,12 +301,6 @@ from requests when convenient, but sending it breaks nothing.
 
 ## Still to come (this file will grow)
 
-- **`collection_ids` on a submission is still rejected**, not ignored: a
-  non-empty array answers `422` naming `collection_ids`. Collections themselves
-  are built; filing *at submission time* is the one piece still open, because a
-  save does not exist until processing finishes. File after the job completes,
-  through `POST /api/v2/collections/{collection_id}/items`, until this line
-  changes.
 - Search (Task 20) is the last product contract still to land here.
 - The dev base URL becomes real at Task 22.
 - Task 30 is the app migration itself: vendor the released OpenAPI artifact,
