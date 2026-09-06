@@ -30,7 +30,7 @@ So: a light job is **2 Gemini text calls and 1 embedding**, sometimes plus one
 actor run. A media job is **3 or 4 Gemini text calls and 1 embedding**, plus an
 actor run on YouTube and on the Instagram fallback. A YouTube video whose
 subtitles the actor returns skips the download and the transcribe call, so it
-lands closer to a light job than a media one. The models are `gemini-2.0-flash-lite` for
+lands closer to a light job than a media one. The models are `gemini-3.5-flash-lite` for
 every text call (`internal/ai/gemini.go`) and `gemini-embedding-2` for the index
 (`internal/config/config.go`).
 
@@ -90,7 +90,7 @@ assembled out of defaults is a limit nobody made.
 | Embeddings per search | 1 | Verified: `internal/search/service.go` |
 | Apify runs per job | 0 or 1, by platform | Verified: `internal/platform/*` |
 | Maximum retries per stage | 3 | Verified: `maxStageExecutions` |
-| Text model | `gemini-2.0-flash-lite` | Verified: `internal/ai/gemini.go` |
+| Text model | `gemini-3.5-flash-lite` | Verified: `internal/ai/gemini.go` |
 | Embedding model | `gemini-embedding-2` | Verified: `internal/config/config.go` |
 | Gemini price per million input tokens | **unknown** | Not in this repository. Read it off the current price list and put it in `COST_GATE_PRICES`. |
 | Gemini price per million output tokens | **unknown** | Same. |

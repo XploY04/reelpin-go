@@ -17,7 +17,7 @@ func TestTheLedgerSumsOnlyTheCurrentMonth(t *testing.T) {
 	for _, entry := range []spend.Entry{
 		{
 			Usage: spend.Usage{
-				Provider: "gemini", Model: "gemini-2.0-flash-lite", Operation: "extract",
+				Provider: "gemini", Model: "gemini-3.5-flash-lite", Operation: "extract",
 				Calls: 1, InputTokens: 1_000_000, OutputTokens: 2_000, Measured: true,
 			},
 			CostMicros: 75_000, Priced: true,

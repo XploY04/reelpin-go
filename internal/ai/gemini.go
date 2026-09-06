@@ -20,7 +20,7 @@ import (
 // DefaultModel is what the Python service runs today, so a migrated reel is
 // extracted the same way it was before. ModelVersion is stored with every
 // content version; changing the model is a deliberate reprocess.
-const DefaultModel = "gemini-2.0-flash-lite"
+const DefaultModel = "gemini-3.5-flash-lite"
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com"
 
