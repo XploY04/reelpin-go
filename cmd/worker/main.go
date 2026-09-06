@@ -16,6 +16,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
@@ -47,20 +48,13 @@ func main() {
 // handlers maps event types to their processing. An unknown type is poison by
 // design — it dead-letters and waits for code that understands it, rather than
 // being acknowledged into nothing.
-func handlers(processor *pipeline.Pipeline, notifications queue.Handler, logger *slog.Logger) map[string]queue.Handler {
+func handlers(processor *pipeline.Pipeline, notifications, indexing queue.Handler, logger *slog.Logger) map[string]queue.Handler {
 	return map[string]queue.Handler{
 		queue.EventNotification: notifications,
 		queue.EventProcessMedia: processor.Handle,
 		queue.EventProcessLight: processor.Handle,
 		"run.resume":            processor.Handle,
-		// Search indexing arrives with its own task. Acknowledging with a log
-		// is deliberate: a successful save must not pollute dead letters just
-		// because indexing is not built yet, and the events replay from the
-		// outbox history when it is.
-		"content.index": func(_ context.Context, message queue.Message) (queue.Outcome, error) {
-			logger.Debug("indexing is not built yet; acknowledging", "run_id", message.RunID)
-			return queue.Outcome{Kind: queue.Done}, nil
-		},
+		"content.index":         indexing,
 	}
 }
 
@@ -136,7 +130,22 @@ func run(logger *slog.Logger) error {
 	var sender notify.Sender = notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0)
 	notifications := notify.NewService(pool, sender, logger, time.Now)
 
-	registry := handlers(processor, notificationHandler(pool, notifications, logger), logger)
+	// The index is asynchronous on purpose: a search-index failure must never
+	// turn a completed save into a failed job.
+	embedder := embed.NewGemini(embed.GeminiConfig{
+		APIKey:    cfg.GeminiAPIKey,
+		Model:     cfg.EmbeddingModel,
+		Dimension: cfg.EmbeddingDimension,
+	})
+	if err := embed.AssertConfigured(cfg.EmbeddingModel, cfg.EmbeddingDimension); err != nil {
+		return err
+	}
+	indexer := embed.NewIndexer(pool, embedder, logger)
+
+	registry := handlers(processor,
+		notificationHandler(pool, notifications, logger),
+		indexHandler(pool, indexer, logger),
+		logger)
 	handle := func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
 		handler, ok := registry[message.EventType]
 		if !ok {
