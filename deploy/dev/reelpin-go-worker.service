@@ -15,6 +15,7 @@ ExecStartPre=-/usr/bin/docker rm -f reelpin-worker-dev
 # and removes each run directory on every terminal outcome.
 ExecStart=/usr/bin/docker run --rm --name reelpin-worker-dev \
   --env-file /etc/reelpin/dev.env \
+  --no-healthcheck \
   --network host \
   --read-only --volume /var/lib/reelpin/work:/var/tmp/reelpin-runs \
   --user 10001:10001 \

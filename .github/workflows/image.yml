@@ -108,6 +108,18 @@ jobs:
             exit 1
           fi
 
+      - name: deployment healthchecks match each process
+        run: |
+          grep -Fq -- '--env HEALTHCHECK_URL=http://127.0.0.1:8080/api/v2/health/live' \
+            deploy/dev/reelpin-go-api.service || {
+              echo "the dev API healthcheck does not use its listening port"
+              exit 1
+            }
+          grep -Fq -- '--no-healthcheck' deploy/dev/reelpin-go-worker.service || {
+            echo "the worker inherits the API image healthcheck"
+            exit 1
+          }
+
       - name: sbom
         uses: anchore/sbom-action@v0.24.2
         with:
