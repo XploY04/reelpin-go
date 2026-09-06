@@ -195,6 +195,79 @@ share a trunk; this file will say when it is accepted.
 - A bad or missing coordinate is `422` with `error.details.field` naming it,
   never a silent default that moves the map to the Gulf of Guinea.
 
+## Sources and platforms (built)
+
+`source_platform` on a reel or a job is one of `instagram`, `youtube`,
+`tiktok`, `x`, `reddit`, `linkedin`, `pinterest`, or, for anything else, the
+link's **hostname** (`google_maps`, `tripadvisor`, `zomato`, `someblog.com`).
+Do not hard-code the list into a switch that throws on an unknown value: a new
+handler adds a value without a client release. Treat an unrecognised platform
+as generic and render the hostname.
+
+`source_content_type` is `reel`, `post`, `video`, `short`, `page`, `pin`,
+`profile` or `link`. Same rule: unknown means generic.
+
+The app does no host filtering today and should keep doing none. Post the link
+and let the backend decide; an unsupported link comes back as a `422` naming
+`url`, with the allowed list in `error.details.allowed`.
+
+## Share preview (built)
+
+`POST /api/v2/share/resolve` with `{"raw_payload_text": "<whatever was
+shared>"}` answers `200` in both cases:
+
+```json
+{"supported": true,  "url": "...", "source_platform": "instagram", "source_content_type": "reel"}
+{"supported": false, "url": null,  "source_platform": null,        "source_content_type": null}
+```
+
+**Unsupported is a `200`, not an error.** It is a preview answer, so the share
+sheet can say "we cannot read this link" without an error path. It also accepts
+the messy text a share sheet actually hands over (a caption with a URL buried
+in it), which is why it takes `raw_payload_text` rather than `url`.
+
+This endpoint is bearer-authenticated and is for the in-app share sheet. The
+native extensions do not need it: `POST /api/v2/native-shares/reels` resolves
+the same payload itself in one call.
+
+## Deletion (built)
+
+`DELETE /api/v2/reels/{reel_id}` returns `204`. There is no body: the reel is
+gone and the client already knows which one.
+
+`DELETE /api/v2/account` returns `200` with:
+
+```json
+{
+  "data_deleted": true,
+  "identity_deleted": false,
+  "pending": true,
+  "removed": {"saves": 42, "processing_jobs": 3, "idempotency_keys": 12, "private_content": 7}
+}
+```
+
+**`data_deleted: true` with `identity_deleted: false` and `pending: true` is a
+real, expected outcome, not a failure.** It means the rows are gone but the
+Supabase identity has not been removed yet. Sign the user out and clear local
+state either way. The two halves are reported separately on purpose: a client
+told "deleted" while the sign-in still works cannot act on the difference.
+
+Once a deletion is under way, any other request from that user answers `409`
+with code `account_deletion_pending`. Treat it as terminal for the session:
+sign out, do not retry.
+
+## Categories (built)
+
+`category` and `subcategory` come from a taxonomy that **grows on its own**.
+A weekly curator can activate a new category without an app release, so the
+list the app sees is not fixed at build time.
+
+- Drive the filter UI from `GET /api/v2/reels/category-filters`, never from a
+  hard-coded list.
+- An unknown category must render as itself, not as "Other" and not as a crash.
+- Category colours: the app's `app_theme.dart` map is keyed by category name,
+  so a new category has no colour. Fall back to a neutral rather than throwing.
+
 ## IDs and data
 
 - Reel ids do not change. `user_saves.id` keeps every existing
@@ -213,12 +286,13 @@ from requests when convenient, but sending it breaks nothing.
 
 ## Still to come (this file will grow)
 
-- **`collection_ids` is currently rejected**, not ignored: sending a non-empty
-  array answers `422` until the collections task lands. Send it only once this
-  file says collections are built.
-- Collection endpoints (Task 15), map/Discover (Task 16), notifications
-  (Task 17), account deletion (Task 18), search (Task 20): each will be recorded
-  here when its contract lands.
+- **`collection_ids` on a submission is still rejected**, not ignored: a
+  non-empty array answers `422` naming `collection_ids`. Collections themselves
+  are built; filing *at submission time* is the one piece still open, because a
+  save does not exist until processing finishes. File after the job completes,
+  through `POST /api/v2/collections/{collection_id}/items`, until this line
+  changes.
+- Search (Task 20) is the last product contract still to land here.
 - The dev base URL becomes real at Task 22.
 - Task 30 is the app migration itself: vendor the released OpenAPI artifact,
   regenerate the Dart client, and point dev + extensions at
