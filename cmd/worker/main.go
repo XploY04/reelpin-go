@@ -23,7 +23,6 @@ import (
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
-	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/spend"
@@ -126,13 +125,6 @@ func run(logger *slog.Logger) error {
 	go metrics.Sample(ctx, meters, pool, liveWorkers)
 	go metrics.SampleTempDisk(ctx, meters, tempRoot)
 
-	// No platform handlers are registered yet: any run fails cleanly as
-	// unsupported until the platform tasks land, which is honest and visible
-	// rather than silent.
-	platforms, err := platform.NewRegistry()
-	if err != nil {
-		return err
-	}
 	// The worker is where the money is spent, so it is what writes the ledger.
 	// Without configured prices the calls are still counted and stored; they
 	// are stored at zero and surfaced as unpriced rather than guessed at.
@@ -144,6 +136,11 @@ func run(logger *slog.Logger) error {
 		logger.Warn("no COST_GATE_PRICES: provider calls are counted but valued at zero")
 	}
 	ledger := spend.NewLedger(postgres.NewSpend(pool), prices, meters, logger)
+
+	platforms, err := newRegistry(cfg, ledger, logger)
+	if err != nil {
+		return err
+	}
 
 	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey, Usage: ledger})
 	processor := pipeline.New(pipeline.Deps{
