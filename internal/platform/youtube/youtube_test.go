@@ -95,8 +95,10 @@ func TestAPublishedTranscriptSkipsTheMediaHalf(t *testing.T) {
 	// The whole point of asking the actor first: no download, no audio
 	// extraction, no transcription call.
 	actor := &fakeActor{items: mustItems(t, []map[string]any{{
+		"id":           "abc123",
 		"title":        "Making a chair from one board",
 		"description":  "Twelve minutes, one board.",
+		"text":         "Unrelated recommendations from elsewhere on the page.",
 		"thumbnailUrl": "https://i.ytimg.com/vi/abc123/maxres.jpg",
 		"subtitles": []map[string]string{
 			{"srt": "1\n00:00:01,000 --> 00:00:03,000\nStart with a flat face.\n"},
@@ -122,8 +124,28 @@ func TestAPublishedTranscriptSkipsTheMediaHalf(t *testing.T) {
 	if !strings.Contains(prepared.PageText, "flat face") {
 		t.Errorf("page text = %q, want the subtitle text", prepared.PageText)
 	}
+	if strings.Contains(prepared.PageText, "Unrelated recommendations") {
+		t.Errorf("the actor's unrelated text field became the transcript: %q", prepared.PageText)
+	}
 	if probe.calls != 0 {
 		t.Errorf("the prober ran %d times on the cheap path", probe.calls)
+	}
+}
+
+func TestAnActorResultForAnotherVideoIsIgnored(t *testing.T) {
+	actor := &fakeActor{items: mustItems(t, []map[string]any{{
+		"id":    "different-video",
+		"title": "Someone else's video",
+		"subtitles": []map[string]string{
+			{"text": "Words from the wrong video."},
+		},
+	}})}
+	deps := baseDeps(nil)
+	deps.Apify = actor
+
+	if prepared, ok := New(deps).prepareFromSubtitles(
+		context.Background(), identityFor("https://youtu.be/abc123")); ok {
+		t.Fatalf("wrong-video actor result was accepted: %+v", prepared)
 	}
 }
 

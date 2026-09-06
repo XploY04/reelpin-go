@@ -67,9 +67,10 @@ func (h *Handler) Platform() string { return PlatformName }
 // handlers call different actors with different shapes; sharing one struct
 // would make every one of them wrong.
 type actorItem struct {
+	ID          string `json:"id"`
+	URL         string `json:"url"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
-	Text        string `json:"text"`
 	Thumbnail   string `json:"thumbnailUrl"`
 	Subtitles   []struct {
 		Text string `json:"text"`
@@ -133,7 +134,12 @@ func (h *Handler) prepareFromSubtitles(ctx context.Context, identity sourceident
 		if err := json.Unmarshal(raw, &item); err != nil {
 			continue
 		}
-		transcript := strings.TrimSpace(item.Text)
+		if !actorMatches(item, identity) {
+			h.deps.Logger.Info("youtube actor returned another video",
+				"content_id", identity.ContentID)
+			continue
+		}
+		transcript := ""
 		for _, subtitle := range item.Subtitles {
 			if transcript != "" {
 				break
@@ -151,6 +157,17 @@ func (h *Handler) prepareFromSubtitles(ctx context.Context, identity sourceident
 		}, true
 	}
 	return platform.Prepared{}, false
+}
+
+func actorMatches(item actorItem, identity sourceidentity.SourceIdentity) bool {
+	if strings.TrimSpace(item.ID) != "" {
+		return item.ID == identity.ContentID
+	}
+	if strings.TrimSpace(item.URL) == "" {
+		return false
+	}
+	resolved, err := sourceidentity.Resolve(item.URL)
+	return err == nil && resolved.ContentID != "" && resolved.ContentID == identity.ContentID
 }
 
 // pageMetadata reads the watch page for its caption and thumbnail. A failure
