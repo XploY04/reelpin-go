@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 	"github.com/XploY04/reelpin-go/internal/reddit"
 )
 
@@ -54,9 +55,9 @@ func serveReddit(t *testing.T, body string, status int) *[]string {
 func TestARedditPostAndItsBestCommentsAreRead(t *testing.T) {
 	asked := serveReddit(t, fixture(t, "reddit_listing.json"), http.StatusOK)
 
-	uploader := &recordingUploader{}
+	uploader := &platformtest.Uploader{}
 	deps := testDeps()
-	deps.Storage = uploader
+	deps.Thumbnails.Storage = uploader
 
 	prepared, err := NewReddit(deps).Prepare(context.Background(),
 		identity("reddit", "post", redditPostID, "https://www.reddit.com/comments/"+redditPostID+"/"))
@@ -76,8 +77,8 @@ func TestARedditPostAndItsBestCommentsAreRead(t *testing.T) {
 	if !strings.Contains(prepared.PageText, "Artjuna in Anjuna") {
 		t.Error("the comments were dropped")
 	}
-	if uploader.uploaded != 1 || prepared.ThumbnailURL == "" {
-		t.Errorf("uploaded %d previews, thumbnail %q", uploader.uploaded, prepared.ThumbnailURL)
+	if uploader.Uploads != 1 || prepared.ThumbnailURL == "" {
+		t.Errorf("uploaded %d previews, thumbnail %q", uploader.Uploads, prepared.ThumbnailURL)
 	}
 
 	// Without a credential the public endpoint answers, and no bearer token is
@@ -248,17 +249,17 @@ func TestAnImagePostKeepsItsImage(t *testing.T) {
 		`{"data":{"children":[]}}]`
 	serveReddit(t, body, http.StatusOK)
 
-	uploader := &recordingUploader{}
+	uploader := &platformtest.Uploader{}
 	deps := testDeps()
-	deps.Storage = uploader
+	deps.Thumbnails.Storage = uploader
 
 	prepared, err := NewReddit(deps).Prepare(context.Background(),
 		identity("reddit", "post", redditPostID, "https://www.reddit.com/comments/"+redditPostID+"/"))
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if uploader.uploaded != 1 {
-		t.Errorf("uploaded %d images", uploader.uploaded)
+	if uploader.Uploads != 1 {
+		t.Errorf("uploaded %d images", uploader.Uploads)
 	}
 	if prepared.Caption != "A photo" {
 		t.Errorf("caption = %q", prepared.Caption)

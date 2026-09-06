@@ -18,11 +18,10 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/apify"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/platform/web"
 	"github.com/XploY04/reelpin-go/internal/providers"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
-	"github.com/XploY04/reelpin-go/internal/sourceidentity"
-	"github.com/XploY04/reelpin-go/internal/storage"
 )
 
 // The failures these handlers tell apart. They are separate values because
@@ -61,9 +60,9 @@ type ActorRunner interface {
 // a handler that cannot reach its reader says so as a typed failure rather
 // than panicking.
 type Deps struct {
-	HTTP    *safehttp.Client
-	Apify   ActorRunner
-	Storage storage.Uploader
+	HTTP       *safehttp.Client
+	Apify      ActorRunner
+	Thumbnails platform.Thumbnails
 	// Reddit mints the API token Reddit requires from datacenter addresses.
 	// Optional: without it the public JSON endpoint is used instead.
 	Reddit TokenSource
@@ -141,32 +140,6 @@ func redact(err error) string {
 		return ""
 	}
 	return urlPattern.ReplaceAllString(err.Error(), "[url]")
-}
-
-// storeThumbnail never fails a run: a missing preview is cosmetic, and the
-// post is worth saving without one.
-func (d Deps) storeThumbnail(ctx context.Context, identity sourceidentity.SourceIdentity, thumbnailURL string) string {
-	if strings.TrimSpace(thumbnailURL) == "" || d.Storage == nil || d.HTTP == nil {
-		return ""
-	}
-
-	release, err := d.limits().AcquireLightHTTP(ctx)
-	if err != nil {
-		return ""
-	}
-	response, err := d.HTTP.Get(ctx, thumbnailURL)
-	release()
-	if err != nil || response.Status < 200 || response.Status >= 300 || len(response.Body) == 0 {
-		return ""
-	}
-
-	key := storage.Key(identity.Platform, identity.ContentType, identity.ContentID,
-		identity.NormalizedURL, ".jpg")
-	stored, err := d.Storage.Upload(ctx, key, strings.NewReader(string(response.Body)), "image/jpeg")
-	if err != nil {
-		return ""
-	}
-	return stored
 }
 
 // statusError turns an HTTP status into the error that says what it means for

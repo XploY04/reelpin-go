@@ -17,6 +17,8 @@ import (
 	"github.com/XploY04/reelpin-go/internal/cookies"
 	"github.com/XploY04/reelpin-go/internal/media"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 )
@@ -167,6 +169,9 @@ func testHandler(t *testing.T, deps Deps) *Handler {
 	}
 	if deps.Audio == nil {
 		deps.Audio = writingAudio(t)
+	}
+	if deps.Thumbnails.HTTP == nil {
+		deps.Thumbnails.HTTP = deps.HTTP
 	}
 	return New(deps)
 }
@@ -320,6 +325,49 @@ func TestPrepareAsksForMediaOnAReel(t *testing.T) {
 	}
 	if prepared.PageText != "" {
 		t.Error("a reel's text comes from its transcript, not the page")
+	}
+	// No uploader is a deployment with no storage credential. The reel still
+	// saves; it just saves without a preview.
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
+	}
+}
+
+func TestAReelThumbnailIsStoredRatherThanLinked(t *testing.T) {
+	server := newSite(t, "")
+	server.page = server.rewrite(fixture(t, "reel.html"))
+	uploader := &platformtest.Uploader{}
+	handler := testHandler(t, Deps{Thumbnails: platform.Thumbnails{Storage: uploader}})
+
+	prepared, err := handler.Prepare(context.Background(), server.identity("reel", "C8abc123"))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if uploader.Uploads != 1 {
+		t.Fatalf("uploaded %d previews, want 1", uploader.Uploads)
+	}
+	// The reader renders images out of our own bucket and nowhere else, so a
+	// scontent URL saved as-is is a reel with no preview at all.
+	if !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, want the stored object", prepared.ThumbnailURL)
+	}
+}
+
+func TestAFailedThumbnailUploadStillSavesTheReel(t *testing.T) {
+	server := newSite(t, "")
+	server.page = server.rewrite(fixture(t, "reel.html"))
+	uploader := &platformtest.Uploader{Err: errors.New("the bucket refused")}
+	handler := testHandler(t, Deps{Thumbnails: platform.Thumbnails{Storage: uploader}})
+
+	prepared, err := handler.Prepare(context.Background(), server.identity("reel", "C8abc123"))
+	if err != nil {
+		t.Fatalf("Prepare: %v: a missing preview must not fail the run", err)
+	}
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q after a failed upload, want none", prepared.ThumbnailURL)
+	}
+	if !prepared.NeedsMedia || prepared.Caption == "" {
+		t.Error("the reel itself was lost with the preview")
 	}
 }
 

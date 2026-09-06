@@ -27,7 +27,6 @@ import (
 	"github.com/XploY04/reelpin-go/internal/providers"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
-	"github.com/XploY04/reelpin-go/internal/storage"
 )
 
 // MaxSlides bounds a carousel. Reading twenty slides costs twenty times as
@@ -43,13 +42,13 @@ type Deps struct {
 	Downloader media.Downloader
 	// Probe reads duration and size before a download, so an over-long post
 	// costs a metadata call rather than a transfer. *media.YTDLP satisfies it.
-	Probe   Prober
-	Audio   *media.FFmpeg
-	Apify   *apify.Client
-	Cookies *cookies.Jar
-	Storage storage.Uploader
-	Limits  *providers.Limits
-	Logger  *slog.Logger
+	Probe      Prober
+	Audio      *media.FFmpeg
+	Apify      *apify.Client
+	Cookies    *cookies.Jar
+	Thumbnails platform.Thumbnails
+	Limits     *providers.Limits
+	Logger     *slog.Logger
 }
 
 // Prober is the metadata half of the downloader, named separately so a test
@@ -99,7 +98,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 
 	prepared := platform.Prepared{
 		Caption:      page.Caption,
-		ThumbnailURL: h.storeThumbnail(ctx, identity, page.ThumbnailURL),
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, page.ThumbnailURL),
 	}
 
 	switch {
@@ -370,33 +369,6 @@ func (h *Handler) fetchFile(ctx context.Context, url, destination string, maxByt
 		return media.ErrTooLarge
 	}
 	return os.WriteFile(destination, response.Body, 0o600)
-}
-
-// storeThumbnail never fails the run: a missing preview is cosmetic, and the
-// reel is worth saving without it.
-func (h *Handler) storeThumbnail(ctx context.Context, identity sourceidentity.SourceIdentity, thumbnailURL string) string {
-	if thumbnailURL == "" || h.deps.Storage == nil {
-		return ""
-	}
-
-	release, err := h.deps.Limits.AcquireLightHTTP(ctx)
-	if err != nil {
-		return ""
-	}
-	response, err := h.deps.HTTP.Get(ctx, thumbnailURL)
-	release()
-	if err != nil || response.Status < 200 || response.Status >= 300 || len(response.Body) == 0 {
-		return ""
-	}
-
-	key := storage.Key(identity.Platform, identity.ContentType, identity.ContentID,
-		identity.NormalizedURL, ".jpg")
-	stored, err := h.deps.Storage.Upload(ctx, key, strings.NewReader(string(response.Body)), "image/jpeg")
-	if err != nil {
-		h.log().Info("thumbnail upload failed", "content_id", identity.ContentID, "error", redact(err))
-		return ""
-	}
-	return stored
 }
 
 // terminalNow recognises the failures that will never succeed, so the ladder

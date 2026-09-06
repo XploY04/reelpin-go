@@ -13,9 +13,12 @@ import (
 	"testing"
 
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 	"github.com/XploY04/reelpin-go/internal/providers"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/storage"
 )
 
 func fixture(t *testing.T, name string) string {
@@ -34,11 +37,20 @@ func serve(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	return server
 }
 
-func deps() Deps {
+// placesCDN is the host the listing fixture points its og:image at.
+const placesCDN = "https://maps.example.com"
+
+// deps wires one set of dependencies. A nil uploader is a deployment with no
+// storage credential, and the handler is expected to survive it.
+func deps(uploader storage.Uploader) Deps {
+	client := safehttp.New(safehttp.Config{AllowPrivateAddresses: true})
+	limits := providers.NewLimits()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	return Deps{
-		HTTP:   safehttp.New(safehttp.Config{AllowPrivateAddresses: true}),
-		Limit:  providers.NewLimits(),
-		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		HTTP:       client,
+		Thumbnails: platform.Thumbnails{HTTP: client, Storage: uploader, Limits: limits, Logger: logger},
+		Limit:      limits,
+		Logger:     logger,
 	}
 }
 
@@ -56,7 +68,7 @@ func TestEveryPlacePlatformGetsItsOwnRegistration(t *testing.T) {
 	// The registry is keyed by platform, so one shared implementation still
 	// needs one handler per name. A missing name is an unsupported_platform
 	// failure at runtime, which is why this is asserted rather than assumed.
-	handlers := Handlers(deps())
+	handlers := Handlers(deps(nil))
 	if len(handlers) != len(Platforms) {
 		t.Fatalf("built %d handlers for %d platforms", len(handlers), len(Platforms))
 	}
@@ -81,7 +93,7 @@ func TestAListingIsLightWorkWithItsProse(t *testing.T) {
 		w.Write([]byte(fixture(t, "listing.html")))
 	})
 
-	prepared, err := New("google_maps", deps()).
+	prepared, err := New("google_maps", deps(nil)).
 		Prepare(context.Background(), identityFor(server.URL, "google_maps"))
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -97,6 +109,47 @@ func TestAListingIsLightWorkWithItsProse(t *testing.T) {
 	if !strings.Contains(prepared.PageText, "Monteiro Vaddo") {
 		t.Errorf("page text lost the address:\n%s", prepared.PageText)
 	}
+	// No uploader is a deployment with no storage credential. The listing
+	// still saves; it just saves without a preview.
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
+	}
+}
+
+func TestAListingThumbnailIsStoredRatherThanLinked(t *testing.T) {
+	server := platformtest.Site(t, fixture(t, "listing.html"), placesCDN)
+	uploader := &platformtest.Uploader{}
+
+	prepared, err := New("google_maps", deps(uploader)).
+		Prepare(context.Background(), identityFor(server.URL, "google_maps"))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if uploader.Uploads != 1 {
+		t.Fatalf("uploaded %d previews, want 1", uploader.Uploads)
+	}
+	// The reader renders images out of our own bucket and nowhere else, so a
+	// listing's own CDN URL saved as-is is a place with no preview at all.
+	if !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, want the stored object", prepared.ThumbnailURL)
+	}
+}
+
+func TestAFailedThumbnailUploadStillSavesTheListing(t *testing.T) {
+	server := platformtest.Site(t, fixture(t, "listing.html"), placesCDN)
+	uploader := &platformtest.Uploader{Err: errors.New("the bucket refused")}
+
+	prepared, err := New("google_maps", deps(uploader)).
+		Prepare(context.Background(), identityFor(server.URL, "google_maps"))
+	if err != nil {
+		t.Fatalf("Prepare: %v: a missing preview must not fail the run", err)
+	}
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q after a failed upload, want none", prepared.ThumbnailURL)
+	}
+	if !strings.Contains(prepared.PageText, "Monteiro Vaddo") {
+		t.Error("the listing itself was lost with the preview")
+	}
 }
 
 func TestAnEmptyListingIsTerminal(t *testing.T) {
@@ -104,7 +157,7 @@ func TestAnEmptyListingIsTerminal(t *testing.T) {
 		w.Write([]byte(`<!doctype html><html><head></head><body></body></html>`))
 	})
 
-	_, err := New("zomato", deps()).
+	_, err := New("zomato", deps(nil)).
 		Prepare(context.Background(), identityFor(server.URL, "zomato"))
 	assertFailure(t, err, "page_empty", false)
 }
@@ -127,7 +180,7 @@ func TestPlaceStatusesAreClassified(t *testing.T) {
 			server := serve(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tt.status)
 			})
-			_, err := New("tripadvisor", deps()).
+			_, err := New("tripadvisor", deps(nil)).
 				Prepare(context.Background(), identityFor(server.URL, "tripadvisor"))
 			assertFailure(t, err, tt.code, tt.retryable)
 		})
@@ -135,7 +188,7 @@ func TestPlaceStatusesAreClassified(t *testing.T) {
 }
 
 func TestDownloadIsRefusedRatherThanPanicking(t *testing.T) {
-	_, err := New("airbnb", deps()).Download(context.Background(),
+	_, err := New("airbnb", deps(nil)).Download(context.Background(),
 		identityFor("https://airbnb.com/rooms/1", "airbnb"), t.TempDir())
 	assertFailure(t, err, "source_not_supported", false)
 }

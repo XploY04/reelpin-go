@@ -34,6 +34,7 @@ type Deps struct {
 	Downloader media.Downloader
 	Prober     Prober
 	Audio      *media.FFmpeg
+	Thumbnails platform.Thumbnails
 	Limit      *providers.Limits
 	Logger     *slog.Logger
 }
@@ -66,7 +67,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 			return platform.Prepared{
 				Caption:      metadata.Caption(),
 				PageText:     metadata.Caption(),
-				ThumbnailURL: metadata.ImageURL,
+				ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 				NeedsMedia:   false,
 			}, nil
 		}
@@ -74,7 +75,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 
 	return platform.Prepared{
 		Caption:      metadata.Caption(),
-		ThumbnailURL: metadata.ImageURL,
+		ThumbnailURL: h.deps.Thumbnails.Store(ctx, identity, metadata.ImageURL),
 		NeedsMedia:   true,
 	}, nil
 }

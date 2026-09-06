@@ -15,9 +15,12 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/media"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/platform/platformtest"
 	"github.com/XploY04/reelpin-go/internal/providers"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/storage"
 )
 
 func fixture(t *testing.T, name string) string {
@@ -83,11 +86,20 @@ func identityFor(url string) sourceidentity.SourceIdentity {
 	}
 }
 
-func baseDeps(server *httptest.Server) Deps {
+// youtubeCDN is the host the watch page fixture points its og:image at.
+const youtubeCDN = "https://i.ytimg.com"
+
+// baseDeps wires one set of dependencies. A nil uploader is a deployment with
+// no storage credential, and the handler is expected to survive it.
+func baseDeps(uploader storage.Uploader) Deps {
+	client := safehttp.New(safehttp.Config{AllowPrivateAddresses: true})
+	limits := providers.NewLimits()
+	logger := quiet()
 	return Deps{
-		HTTP:   safehttp.New(safehttp.Config{AllowPrivateAddresses: true}),
-		Limit:  providers.NewLimits(),
-		Logger: quiet(),
+		HTTP:       client,
+		Thumbnails: platform.Thumbnails{HTTP: client, Storage: uploader, Limits: limits, Logger: logger},
+		Limit:      limits,
+		Logger:     logger,
 	}
 }
 
@@ -109,7 +121,7 @@ func TestAPublishedTranscriptSkipsTheMediaHalf(t *testing.T) {
 		t.Error("the watch page was fetched even though a transcript was published")
 	})
 
-	deps := baseDeps(page)
+	deps := baseDeps(nil)
 	deps.Apify = actor
 	probe := &fakeProber{duration: 600, size: 1000000}
 	deps.Prober = probe
@@ -148,9 +160,12 @@ func TestActorDescriptionIsUsedWhenSubtitlesAreMissing(t *testing.T) {
 		t.Error("a verified actor description should not fall through to HTTP or media")
 	})
 	probe := &fakeProber{err: media.ErrLoginRequired}
-	deps := baseDeps(page)
+	deps := baseDeps(nil)
 	deps.Apify = actor
 	deps.Prober = probe
+	// Every path below the actor leads to this server, so falling through is a
+	// test failure rather than a silent second fetch.
+	deps.OEmbedURL = page.URL
 
 	prepared, err := New(deps).Prepare(context.Background(), identityFor("https://youtu.be/abc123"))
 	if err != nil {
@@ -158,6 +173,11 @@ func TestActorDescriptionIsUsedWhenSubtitlesAreMissing(t *testing.T) {
 	}
 	if prepared.NeedsMedia || prepared.PageText != "The video's own published description." {
 		t.Fatalf("prepared = %+v, want the actor description without media", prepared)
+	}
+	// No uploader is a deployment with no storage credential: no preview,
+	// never the actor's own CDN URL.
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
 	}
 	if probe.calls != 0 {
 		t.Errorf("the prober ran %d times, want 0", probe.calls)
@@ -173,7 +193,7 @@ func TestOEmbedKeepsAPublicVideoSaveable(t *testing.T) {
 		w.Write([]byte(`{"title":"Making a chair","thumbnail_url":"https://i.ytimg.com/vi/abc123/hqdefault.jpg"}`))
 	})
 	probe := &fakeProber{err: media.ErrLoginRequired}
-	deps := baseDeps(server)
+	deps := baseDeps(nil)
 	deps.OEmbedURL = server.URL
 	deps.Prober = probe
 
@@ -181,8 +201,11 @@ func TestOEmbedKeepsAPublicVideoSaveable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if prepared.NeedsMedia || prepared.Caption != "Making a chair" || prepared.ThumbnailURL == "" {
+	if prepared.NeedsMedia || prepared.Caption != "Making a chair" {
 		t.Fatalf("prepared = %+v, want metadata-only content", prepared)
+	}
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
 	}
 	if probe.calls != 0 {
 		t.Errorf("the prober ran %d times, want 0", probe.calls)
@@ -211,7 +234,7 @@ func TestNoTranscriptMeansMediaWork(t *testing.T) {
 		w.Write([]byte(fixture(t, "watch.html")))
 	})
 
-	deps := baseDeps(page)
+	deps := baseDeps(nil)
 	probe := &fakeProber{duration: 600, size: 1000000}
 	deps.Prober = probe
 
@@ -225,8 +248,8 @@ func TestNoTranscriptMeansMediaWork(t *testing.T) {
 	if !strings.Contains(prepared.Caption, "Making a chair") {
 		t.Errorf("caption = %q", prepared.Caption)
 	}
-	if prepared.ThumbnailURL == "" {
-		t.Error("no thumbnail from a page that publishes og:image")
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q with no uploader configured, want none", prepared.ThumbnailURL)
 	}
 	if probe.calls != 1 {
 		t.Errorf("prober ran %d times, want one probe before committing to media", probe.calls)
@@ -238,7 +261,7 @@ func TestAnOverLongVideoIsRefusedBeforeDownloading(t *testing.T) {
 		w.Write([]byte(fixture(t, "watch.html")))
 	})
 
-	deps := baseDeps(page)
+	deps := baseDeps(nil)
 	// Probe reports a four-hour video: the cap refuses it for the price of the
 	// probe, never a download.
 	deps.Prober = &fakeProber{err: media.ErrTooLong}
@@ -252,7 +275,7 @@ func TestAThrottledSourceIsRetryable(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
-	deps := baseDeps(page)
+	deps := baseDeps(nil)
 	deps.Prober = &fakeProber{duration: 60, size: 1000}
 
 	// A throttled page is soft: the download path is still open, so Prepare
@@ -271,7 +294,7 @@ func TestARemovedVideoIsTerminal(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
-	_, err := New(baseDeps(page)).Prepare(context.Background(), identityFor(page.URL))
+	_, err := New(baseDeps(nil)).Prepare(context.Background(), identityFor(page.URL))
 	assertFailure(t, err, "content_unavailable", false)
 }
 
@@ -373,5 +396,45 @@ func assertFailure(t *testing.T, err error, wantCode string, retryable bool) {
 	}
 	if failure.Retryable() != retryable {
 		t.Errorf("retryable = %v, want %v", failure.Retryable(), retryable)
+	}
+}
+
+func TestAYouTubeThumbnailIsStoredRatherThanLinked(t *testing.T) {
+	page := platformtest.Site(t, fixture(t, "watch.html"), youtubeCDN)
+	uploader := &platformtest.Uploader{}
+
+	deps := baseDeps(uploader)
+	deps.Prober = &fakeProber{duration: 600, size: 1000000}
+
+	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if uploader.Uploads != 1 {
+		t.Fatalf("uploaded %d previews, want 1", uploader.Uploads)
+	}
+	// The reader renders images out of our own bucket and nowhere else, so an
+	// ytimg.com URL saved as-is is a video with no preview at all.
+	if !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, want the stored object", prepared.ThumbnailURL)
+	}
+}
+
+func TestAFailedThumbnailUploadStillSavesTheVideo(t *testing.T) {
+	page := platformtest.Site(t, fixture(t, "watch.html"), youtubeCDN)
+	uploader := &platformtest.Uploader{Err: errors.New("the bucket refused")}
+
+	deps := baseDeps(uploader)
+	deps.Prober = &fakeProber{duration: 600, size: 1000000}
+
+	prepared, err := New(deps).Prepare(context.Background(), identityFor(page.URL))
+	if err != nil {
+		t.Fatalf("Prepare: %v: a missing preview must not fail the run", err)
+	}
+	if prepared.ThumbnailURL != "" {
+		t.Errorf("thumbnail = %q after a failed upload, want none", prepared.ThumbnailURL)
+	}
+	if !prepared.NeedsMedia || !strings.Contains(prepared.Caption, "Making a chair") {
+		t.Error("the video itself was lost with the preview")
 	}
 }
