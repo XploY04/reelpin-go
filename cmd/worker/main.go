@@ -13,10 +13,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/outbox"
+	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,12 +43,23 @@ func main() {
 	}
 }
 
-// handlers maps event types to their processing. The pipeline task registers
-// the real ones; until then every event type is unknown, and an unknown type
-// is poison by design — it dead-letters and waits for code that understands
-// it, rather than being acknowledged into nothing.
-func handlers() map[string]queue.Handler {
-	return map[string]queue.Handler{}
+// handlers maps event types to their processing. An unknown type is poison by
+// design — it dead-letters and waits for code that understands it, rather than
+// being acknowledged into nothing.
+func handlers(processor *pipeline.Pipeline, logger *slog.Logger) map[string]queue.Handler {
+	return map[string]queue.Handler{
+		queue.EventProcessMedia: processor.Handle,
+		queue.EventProcessLight: processor.Handle,
+		"run.resume":            processor.Handle,
+		// Search indexing arrives with its own task. Acknowledging with a log
+		// is deliberate: a successful save must not pollute dead letters just
+		// because indexing is not built yet, and the events replay from the
+		// outbox history when it is.
+		"content.index": func(_ context.Context, message queue.Message) (queue.Outcome, error) {
+			logger.Debug("indexing is not built yet; acknowledging", "run_id", message.RunID)
+			return queue.Outcome{Kind: queue.Done}, nil
+		},
+	}
 }
 
 func run(logger *slog.Logger) error {
@@ -95,7 +109,27 @@ func run(logger *slog.Logger) error {
 		logger.Warn("no REDIS_URL: this worker sends no heartbeats and readiness cannot see it")
 	}
 
-	registry := handlers()
+	// No platform handlers are registered yet: any run fails cleanly as
+	// unsupported until the platform tasks land, which is honest and visible
+	// rather than silent.
+	platforms, err := platform.NewRegistry()
+	if err != nil {
+		return err
+	}
+	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey})
+	processor := pipeline.New(pipeline.Deps{
+		Pool:         pool,
+		Handlers:     platforms,
+		Transcriber:  gemini,
+		ImageReader:  gemini,
+		Extractor:    gemini,
+		Categorizer:  gemini,
+		ModelVersion: gemini.ModelVersion(),
+		Logger:       logger,
+		WorkerID:     cfg.WorkerID,
+	})
+
+	registry := handlers(processor, logger)
 	handle := func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
 		handler, ok := registry[message.EventType]
 		if !ok {
