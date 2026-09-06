@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -408,6 +409,7 @@ func (s *Server) recoverPanic(next http.Handler) http.Handler {
 					"panic", v,
 					"path", r.URL.Path,
 					"request_id", w.Header().Get("X-Request-ID"),
+					"stack", string(debug.Stack()),
 				)
 				writeJSON(w, http.StatusInternalServerError, internalErrorBody)
 			}

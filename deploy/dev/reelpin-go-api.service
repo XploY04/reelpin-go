@@ -1,0 +1,27 @@
+[Unit]
+Description=ReelPin Go API (development)
+# The container runtime, not the Python units: this stack is independent of
+# them and must not take them down or wait on them.
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=5
+# The image is deployed by digest. reelpin-deploy.sh writes this file; the
+# digest is never a tag, so a rollback is a redeploy of the previous one.
+EnvironmentFile=/etc/reelpin/dev.env
+ExecStartPre=-/usr/bin/docker rm -f reelpin-go-api-dev
+ExecStart=/usr/bin/docker run --rm --name reelpin-go-api-dev \
+  --env-file /etc/reelpin/dev.env \
+  --network host \
+  --read-only --tmpfs /tmp:size=64m,mode=1777 \
+  --user 10001:10001 \
+  --memory 96m --memory-swap 96m \
+  --entrypoint /usr/local/bin/api \
+  ${REELPIN_IMAGE}
+ExecStop=/usr/bin/docker stop reelpin-go-api-dev
+
+[Install]
+WantedBy=multi-user.target

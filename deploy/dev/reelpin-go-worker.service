@@ -1,0 +1,26 @@
+[Unit]
+Description=ReelPin Go worker (development)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/reelpin/dev.env
+ExecStartPre=-/usr/bin/docker rm -f reelpin-go-worker-dev
+# Not read-only: the worker downloads media to a temp root and ffmpeg writes
+# there. The tmpfs is bounded so a runaway download cannot fill the disk, and
+# it is the only writable path.
+ExecStart=/usr/bin/docker run --rm --name reelpin-go-worker-dev \
+  --env-file /etc/reelpin/dev.env \
+  --network host \
+  --read-only --tmpfs /tmp:size=512m,mode=1777 \
+  --user 10001:10001 \
+  --memory 320m --memory-swap 320m \
+  --entrypoint /usr/local/bin/worker \
+  ${REELPIN_IMAGE}
+ExecStop=/usr/bin/docker stop reelpin-go-worker-dev
+
+[Install]
+WantedBy=multi-user.target

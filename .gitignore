@@ -22,3 +22,7 @@ docs/CURRICULUM.md
 docs/PLAN.md
 docs/PREP.md
 docs/WEEKLY.md
+
+# Agent worktrees. Each is its own checkout of this repo; committing them
+# embeds 25 nested git repositories that no clone can resolve.
+/.claude/worktrees/
