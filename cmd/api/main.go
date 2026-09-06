@@ -16,6 +16,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
@@ -86,16 +87,17 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
-			DB:          pool,
-			Auth:        verifier,
-			Reels:       postgres.NewReels(pool),
-			Jobs:        postgres.NewJobs(pool),
-			Enqueue:     enqueue.New(postgres.NewEnqueue(pool), resolver),
-			ShareTokens: shareTokens,
-			Resolver:    resolver,
-			Limiter:     limiter,
-			Logger:      logger,
-			Version:     cfg.Version,
+			DB:            pool,
+			Auth:          verifier,
+			Reels:         postgres.NewReels(pool),
+			Jobs:          postgres.NewJobs(pool),
+			Enqueue:       enqueue.New(postgres.NewEnqueue(pool), resolver),
+			ShareTokens:   shareTokens,
+			Resolver:      resolver,
+			Notifications: notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
+			Limiter:       limiter,
+			Logger:        logger,
+			Version:       cfg.Version,
 		}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

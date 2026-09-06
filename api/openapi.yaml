@@ -36,6 +36,8 @@ tags:
     description: Native share tokens and share-text resolution.
   - name: collections
     description: Named sets of saves, shared by membership or link.
+  - name: notifications
+    description: Device push tokens and open receipts.
 
 security:
   - supabaseBearer: []
@@ -349,6 +351,93 @@ paths:
               schema: { $ref: "#/components/schemas/RevokedShareTokens" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+
+  /api/v2/device-push-tokens:
+    post:
+      operationId: registerDeviceToken
+      tags: [notifications]
+      summary: Register this device for push
+      description: |
+        Records the device's push token for the signed-in user. Sending the same
+        token again moves it to this user and refreshes it: a shared phone is a
+        real thing, and the newest sign-in owns the device.
+
+        The token is a credential. It is never returned by any endpoint and
+        never appears in a log or an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceTokenRequest" }
+      responses:
+        "200":
+          description: The device is registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registered]
+                properties:
+                  registered: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    delete:
+      operationId: deleteDeviceToken
+      tags: [notifications]
+      summary: Remove this device
+      description: |
+        Removes one of this user's devices, on sign-out or when push is turned
+        off. Another user's token answers 404, the same as one that does not
+        exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceTokenRequest" }
+      responses:
+        "200":
+          description: The device is removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/notifications/{notification_id}/opened:
+    post:
+      operationId: markNotificationOpened
+      tags: [notifications]
+      summary: Record that a notification was opened
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [opened]
+                properties:
+                  opened: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: |
+            No such notification for this user, or it was already recorded as
+            opened.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
   /api/v2/account/library-stats:
     get:
@@ -1074,6 +1163,18 @@ components:
       required: [revoked]
       properties:
         revoked: { type: integer }
+
+    DeviceTokenRequest:
+      type: object
+      required: [token]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: The FCM registration token. Write-only; never returned.
+        platform:
+          type: string
+          enum: [ios, android, web]
 
     LibraryStats:
       type: object

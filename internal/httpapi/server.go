@@ -35,6 +35,9 @@ type Deps struct {
 	Resolver ShareResolver
 	// Collections owns a user's arrangement of their own saves.
 	Collections Collections
+	// Notifications owns device tokens and open receipts. Campaigns are an
+	// operator command, not part of this surface.
+	Notifications Notifications
 	// Limiter is nil outside production-shaped setups. Provider-costing
 	// endpoints fail closed without a decision; reads never consult it.
 	Limiter RateLimiter
