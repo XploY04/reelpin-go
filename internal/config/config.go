@@ -44,6 +44,12 @@ type Config struct {
 	// send, rather than failing the job.
 	FirebaseCredentialsJSON string
 	FirebaseProjectID       string
+
+	// EmbeddingModel and EmbeddingDimension are validated here rather than
+	// spread as string literals: the index holds exactly one dimension, and a
+	// mismatch is a corrupt vector set rather than a slow query.
+	EmbeddingModel     string
+	EmbeddingDimension int
 	// GeminiAPIKey is the worker's model credential. Empty means every
 	// provider call fails as unconfigured, which the pipeline surfaces as a
 	// retryable provider error rather than a crash.
@@ -82,7 +88,13 @@ func Load() (Config, error) {
 
 		FirebaseCredentialsJSON: strings.TrimSpace(os.Getenv("FIREBASE_CREDENTIALS_JSON")),
 		FirebaseProjectID:       strings.TrimSpace(os.Getenv("FIREBASE_PROJECT_ID")),
-		SupabaseJWTAudience:     envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
+
+		// The default is repeated here rather than imported: config depends on
+		// nothing internal, and embed.AssertConfigured catches any drift at
+		// startup.
+		EmbeddingModel:      envOr("EMBEDDING_MODEL", "gemini-embedding-2"),
+		EmbeddingDimension:  768,
+		SupabaseJWTAudience: envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
 
 		RedisURL:       strings.TrimSpace(os.Getenv("REDIS_URL")),
 		RedisKeyPrefix: envOr("REDIS_KEY_PREFIX", "reelpin"),

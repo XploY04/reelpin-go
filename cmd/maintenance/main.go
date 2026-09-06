@@ -26,7 +26,8 @@ func main() {
 
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|rebuild-queue|retention|purge>")
+		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|" +
+			"rebuild-queue|retention|purge|backfill-embeddings>")
 	}
 
 	cfg, err := config.Load()
@@ -55,6 +56,9 @@ func run(logger *slog.Logger, args []string) error {
 			logger.Info("migration", "state", line)
 		}
 		return nil
+
+	case "backfill-embeddings":
+		return runBackfillEmbeddings(ctx, logger, cfg, args[1:])
 
 	case "rebuild-queue":
 		return runRebuildQueue(ctx, logger, cfg, args[1:])
