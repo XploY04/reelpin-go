@@ -32,6 +32,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/db/` | `Connect(ctx, url)`: a pgx pool and a 5s ping. Nothing else. |
 | `api/` | The OpenAPI contract, its embedded bytes, the generated route manifest and fixtures. |
 | `docs/` | Committed knowledge. See `docs/index.md`. |
+| `deploy/` | Host-side scripts the release workflow copies over and runs. No secrets. |
 | `drills/` | Standalone Go/DSA practice programs. Unrelated to the service. |
 
 Nested `AGENTS.md` files exist where the rules differ: `cmd/`, `internal/`,

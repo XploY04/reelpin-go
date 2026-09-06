@@ -28,16 +28,22 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|" +
 			"rebuild-queue|retention|purge|backfill-embeddings|backfill-legacy|" +
-			"curate-taxonomy|rollback-taxonomy>")
+			"curate-taxonomy|rollback-taxonomy|healthcheck>")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// The container healthcheck runs before anything is configured and must not
+	// need a database URL to say whether the process is alive.
+	if args[0] == "healthcheck" {
+		return runHealthcheck(ctx, args[1:])
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	switch command := args[0]; command {
 	case "migrate":
