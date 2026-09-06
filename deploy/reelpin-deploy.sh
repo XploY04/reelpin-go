@@ -35,19 +35,19 @@ state="/etc/reelpin/${unit}.image"
 
 previous=""
 if [[ -r "$state" ]]; then
-  previous=$(cat "$state")
+  previous=$(sed -n 's/^REELPIN_IMAGE=//p' "$state")
 fi
 
 echo "pulling $image"
 docker pull "$image"
 
-echo "$image" > "$state"
+printf 'REELPIN_IMAGE=%s\n' "$image" > "$state"
 echo "restarting $unit"
 if ! systemctl restart "$unit"; then
   echo "restart failed" >&2
   if [[ -n "$previous" ]]; then
     echo "rolling back to $previous" >&2
-    echo "$previous" > "$state"
+    printf 'REELPIN_IMAGE=%s\n' "$previous" > "$state"
     systemctl restart "$unit" || true
   fi
   exit 1
@@ -61,7 +61,7 @@ if ! systemctl is-active --quiet "$unit"; then
   journalctl -u "$unit" -n 50 --no-pager >&2
   if [[ -n "$previous" ]]; then
     echo "rolling back to $previous" >&2
-    echo "$previous" > "$state"
+    printf 'REELPIN_IMAGE=%s\n' "$previous" > "$state"
     systemctl restart "$unit" || true
   fi
   exit 1

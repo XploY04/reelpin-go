@@ -1,8 +1,8 @@
 [Unit]
 Description=ReelPin Go API (development)
-# The container runtime, not the Python units: this stack is independent of
-# them and must not take them down or wait on them.
-After=docker.service network-online.target
+# Python is stopped on this constrained host. The Go API reuses its localhost
+# Redis with a different key prefix.
+After=docker.service redis-server.service network-online.target
 Requires=docker.service
 
 [Service]
@@ -12,16 +12,17 @@ RestartSec=5
 # The image is deployed by digest. reelpin-deploy.sh writes this file; the
 # digest is never a tag, so a rollback is a redeploy of the previous one.
 EnvironmentFile=/etc/reelpin/dev.env
-ExecStartPre=-/usr/bin/docker rm -f reelpin-go-api-dev
-ExecStart=/usr/bin/docker run --rm --name reelpin-go-api-dev \
+EnvironmentFile=/etc/reelpin/reelpin-api-dev.image
+ExecStartPre=-/usr/bin/docker rm -f reelpin-api-dev
+ExecStart=/usr/bin/docker run --rm --name reelpin-api-dev \
   --env-file /etc/reelpin/dev.env \
   --network host \
-  --read-only --tmpfs /tmp:size=64m,mode=1777 \
+  --read-only --tmpfs /var/tmp/reelpin-runs:size=16m,uid=10001,gid=10001,mode=0700 \
   --user 10001:10001 \
-  --memory 96m --memory-swap 96m \
-  --entrypoint /usr/local/bin/api \
+  --memory 192m --memory-swap 256m --cpus 0.30 --pids-limit 128 \
+  --entrypoint /usr/local/bin/reelpin-api \
   ${REELPIN_IMAGE}
-ExecStop=/usr/bin/docker stop reelpin-go-api-dev
+ExecStop=/usr/bin/docker stop --timeout 15 reelpin-api-dev
 
 [Install]
 WantedBy=multi-user.target

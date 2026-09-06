@@ -1,4 +1,5 @@
-# The development host's own Redis and RabbitMQ, beside the Python stack.
+# RabbitMQ for the development Go worker. The stopped Python stack's existing
+# localhost Redis is reused under the separate `reelpin-go-dev` key prefix.
 #
 # This host has 911 MiB of RAM and is already into swap with Python idle, so
 # both services are capped rather than left to their defaults. RabbitMQ's
@@ -14,42 +15,26 @@
 # these caps are the difference between a clean refusal and a thrash.
 
 services:
-  redis-go:
-    image: redis:7-alpine
-    container_name: reelpin-redis-go
-    restart: unless-stopped
-    # No persistence: everything here is rate-limit counters, worker heartbeats
-    # and cooldowns, all of which are correct to lose on restart.
-    command:
-      - redis-server
-      - --save
-      - ""
-      - --appendonly
-      - "no"
-      - --maxmemory
-      - 48mb
-      - --maxmemory-policy
-      - allkeys-lru
-    ports:
-      - "127.0.0.1:6380:6379"
-    mem_limit: 64m
-
   rabbitmq-go:
     image: rabbitmq:3-management-alpine
-    container_name: reelpin-rabbitmq-go
+    container_name: reelpin-rabbitmq-dev
     restart: unless-stopped
+    env_file: /etc/reelpin/rabbitmq-dev.env
     environment:
-      # Absolute, not a fraction of available. See the note above.
-      RABBITMQ_VM_MEMORY_HIGH_WATERMARK: 180MiB
-      RABBITMQ_DISK_FREE_LIMIT: 1GB
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
+        -rabbit vm_memory_high_watermark {absolute,201326592}
+        disk_free_limit 1073741824
     ports:
       # Loopback only. Nginx never proxies these and they must not be reachable
       # from outside the host.
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
     volumes:
-      - reelpin_rabbit_dev:/var/lib/rabbitmq
+      - reelpin_rabbitdata_dev:/var/lib/rabbitmq
     mem_limit: 256m
+    memswap_limit: 384m
+    cpus: 0.40
+    pids_limit: 256
 
 volumes:
-  reelpin_rabbit_dev:
+  reelpin_rabbitdata_dev:
