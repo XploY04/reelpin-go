@@ -144,4 +144,8 @@ jobs:
 
       - name: smoke test
         run: |
-          $SSH "/tmp/reelpin-smoke.sh http://127.0.0.1:8000"
+          port=8000
+          if [ "${{ inputs.environment }}" = "dev" ]; then
+            port=8080
+          fi
+          $SSH "/tmp/reelpin-smoke.sh http://127.0.0.1:$port"
