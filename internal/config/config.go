@@ -97,10 +97,10 @@ type Config struct {
 	ApifyToken  string
 	ApifyActors string
 
-	// Reddit's application credentials. They are read so a deployment can be
-	// complete, but the client that mints a token from them is not in this
-	// repository yet: until it is, the Reddit handler reads the public JSON
-	// view, which Reddit throttles hard from datacenter addresses.
+	// Reddit's application credentials. internal/reddit mints an application
+	// token from them; either one empty means no minter at all, and the Reddit
+	// handler reads the public JSON view instead, which Reddit throttles hard
+	// from datacenter addresses.
 	RedditClientID     string
 	RedditClientSecret string
 

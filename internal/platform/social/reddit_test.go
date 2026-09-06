@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/reddit"
 )
 
 const redditPostID = "1abcxyz"
@@ -150,6 +151,31 @@ func TestAMissingTokenFallsBackToThePublicEndpoint(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "http") {
 		t.Errorf("the token endpoint URL reached the log: %s", logs.String())
+	}
+}
+
+func TestUnconfiguredCredentialsReadThePublicEndpoint(t *testing.T) {
+	asked := serveReddit(t, fixture(t, "reddit_listing.json"), http.StatusOK)
+
+	deps := testDeps()
+	deps.Reddit = reddit.New("", "")
+
+	// A typed nil inside a non-nil interface passes this check and then panics
+	// on the call, so the minter returns a plain nil when it has no credential.
+	if deps.Reddit != nil {
+		t.Fatalf("an unconfigured minter reached the handler as %#v", deps.Reddit)
+	}
+
+	prepared, err := NewReddit(deps).Prepare(context.Background(),
+		identity("reddit", "post", redditPostID, "https://www.reddit.com/comments/"+redditPostID+"/"))
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if prepared.Caption == "" {
+		t.Error("nothing was read on the public path")
+	}
+	if len(*asked) != 1 || strings.Contains((*asked)[0], "Bearer") {
+		t.Fatalf("requests = %v, want one unauthenticated read", *asked)
 	}
 }
 
