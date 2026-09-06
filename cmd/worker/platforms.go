@@ -17,6 +17,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/platform/web"
 	"github.com/XploY04/reelpin-go/internal/platform/youtube"
 	"github.com/XploY04/reelpin-go/internal/providers"
+	"github.com/XploY04/reelpin-go/internal/reddit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/XploY04/reelpin-go/internal/storage"
@@ -55,10 +56,14 @@ func newRegistry(cfg config.Config, usage spend.Recorder, logger *slog.Logger) (
 
 	// The three text-first sources share one set of dependencies; each of them
 	// reaches a different reader behind it.
+	// An unconfigured Reddit credential is a plain nil rather than an empty
+	// client, so the handler falls back to the public JSON view instead of
+	// authenticating with nothing.
 	socialDeps := social.Deps{
 		HTTP:    client,
 		Apify:   actorRunner,
 		Storage: thumbnails,
+		Reddit:  reddit.New(cfg.RedditClientID, cfg.RedditClientSecret),
 		Limit:   limits,
 		Logger:  logger,
 	}
