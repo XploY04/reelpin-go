@@ -14,6 +14,7 @@ folder is the detail behind it. Read the page the task needs, not the folder.
 | [`reopening-submissions.md`](reopening-submissions.md) | Submissions are answering `503 spend_limit_reached` and you have to decide what to do. |
 | [`cutover.md`](cutover.md) | You are deploying the image, or switching traffic from Python to Go. |
 | [`rehearsal.md`](rehearsal.md) | You are proving the migration on a copy of production, before any of it is real. |
+| [`dev-host.md`](dev-host.md) | You are provisioning the development host, or wondering whether it is big enough. |
 | [`decisions/`](decisions/) | You want to know why something is the way it is before changing it. |
 | [`plans/`](plans/) | You are picking up work someone else scoped. |
 
