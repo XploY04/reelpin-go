@@ -89,7 +89,7 @@ func (s *Server) allowSearch(w http.ResponseWriter, r *http.Request, userID stri
 		subject string
 	}{
 		{ratelimit.Search, userID},
-		{ratelimit.SearchIP, clientIP(r)},
+		{ratelimit.SearchIP, s.limitSubject(r)},
 	} {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {

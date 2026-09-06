@@ -346,3 +346,96 @@ func (denyingLimiter) Allow(context.Context, ratelimit.Policy, string) (ratelimi
 }
 
 var _ = reels.ErrNotFound
+
+// recordingLimiter keeps the subject each policy was counted against, which is
+// the only way to see which bucket a request landed in.
+type recordingLimiter struct {
+	subjects map[string]string
+}
+
+func (l *recordingLimiter) Allow(_ context.Context, policy ratelimit.Policy, subject string) (ratelimit.Decision, error) {
+	if l.subjects == nil {
+		l.subjects = map[string]string{}
+	}
+	l.subjects[policy.Name] = subject
+	return ratelimit.Decision{Allowed: true, Remaining: 1}, nil
+}
+
+// submitFrom posts one submission from a given socket, optionally claiming a
+// bucket, and reports the subject the per-IP policy counted against.
+func submitFrom(deps Deps, limiter *recordingLimiter, remoteAddr, bucketHeader string) string {
+	req := httptest.NewRequest("POST", "/api/v2/processing-jobs/reels",
+		strings.NewReader(`{"url":"https://www.instagram.com/reel/C8abc123/"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer good.token")
+	req.Header.Set("Idempotency-Key", validKey)
+	if bucketHeader != "" {
+		req.Header.Set(ratelimit.IPBucketHeader, bucketHeader)
+	}
+	req.RemoteAddr = remoteAddr
+
+	New(deps).Routes().ServeHTTP(httptest.NewRecorder(), req)
+	return limiter.subjects[ratelimit.SubmissionIP.Name]
+}
+
+func bucketDeps(secret string, limiter *recordingLimiter) Deps {
+	deps := submitDeps(&fakeSubmitter{})
+	deps.Limiter = limiter
+	deps.IPBucketSecret = secret
+	return deps
+}
+
+// The whole point of the signed bucket: two visitors behind one web boundary
+// arrive on one socket and must still be counted apart.
+func TestASignedBucketSeparatesTwoVisitorsOnOneSocket(t *testing.T) {
+	const secret = "shared-with-the-web-boundary"
+
+	subjects := []string{}
+	for _, bucket := range []string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	} {
+		limiter := &recordingLimiter{}
+		subjects = append(subjects, submitFrom(bucketDeps(secret, limiter), limiter,
+			"10.0.0.1:44444", signedBucketHeader(secret, bucket, testNow)))
+	}
+
+	if subjects[0] == subjects[1] {
+		t.Fatalf("both visitors counted against %q", subjects[0])
+	}
+	if subjects[0] == "10.0.0.1" || subjects[1] == "10.0.0.1" {
+		t.Fatalf("fell back to the socket peer despite a valid bucket: %v", subjects)
+	}
+}
+
+// A header anyone could have written must buy nothing.
+func TestAForgedBucketFallsBackToTheSocketPeer(t *testing.T) {
+	const secret = "shared-with-the-web-boundary"
+
+	cases := map[string]string{
+		"signed with another secret": signedBucketHeader("not-the-secret", "cccccccccccccccccccccccccccccccc", testNow),
+		"invented":                   "v1.1780000000.ffffffffffffffffffffffffffffffff.00",
+		"absent":                     "",
+	}
+	for name, header := range cases {
+		t.Run(name, func(t *testing.T) {
+			limiter := &recordingLimiter{}
+			got := submitFrom(bucketDeps(secret, limiter), limiter, "10.0.0.1:44444", header)
+			if got != "10.0.0.1" {
+				t.Fatalf("subject = %q, want the socket peer", got)
+			}
+		})
+	}
+}
+
+// Without a secret configured this service cannot check anything, so even a
+// genuinely signed bucket must not be believed.
+func TestAnUnconfiguredServiceBelievesNoBucket(t *testing.T) {
+	limiter := &recordingLimiter{}
+	got := submitFrom(bucketDeps("", limiter), limiter, "10.0.0.1:44444",
+		signedBucketHeader("shared-with-the-web-boundary", "dddddddddddddddddddddddddddddddd", testNow))
+
+	if got != "10.0.0.1" {
+		t.Fatalf("subject = %q, want the socket peer", got)
+	}
+}
