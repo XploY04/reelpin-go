@@ -71,7 +71,7 @@ func specOperations(t *testing.T) map[string]specOperation {
 func TestEveryRouteIsInTheContract(t *testing.T) {
 	operations := specOperations(t)
 
-	for _, route := range New(testDeps(&fakePinger{})).RouteManifest() {
+	for _, route := range newServer(testDeps(&fakePinger{})).RouteManifest() {
 		key := specKey(route.Method, route.Path)
 		operation, ok := operations[key]
 		if !ok {
@@ -87,7 +87,7 @@ func TestEveryRouteIsInTheContract(t *testing.T) {
 
 func TestEveryContractOperationIsRegistered(t *testing.T) {
 	registered := map[string]Route{}
-	for _, route := range New(testDeps(&fakePinger{})).RouteManifest() {
+	for _, route := range newServer(testDeps(&fakePinger{})).RouteManifest() {
 		key := specKey(route.Method, route.Path)
 		if _, duplicate := registered[key]; duplicate {
 			t.Fatalf("%s is registered twice", key)
@@ -145,7 +145,7 @@ func TestAuthModeMatchesTheContract(t *testing.T) {
 	}
 
 	operations := specOperations(t)
-	for _, route := range New(testDeps(&fakePinger{})).RouteManifest() {
+	for _, route := range newServer(testDeps(&fakePinger{})).RouteManifest() {
 		operation, ok := operations[specKey(route.Method, route.Path)]
 		if !ok {
 			continue // the missing-operation test reports this
@@ -170,7 +170,7 @@ func TestDeclaredSecuritySchemesExist(t *testing.T) {
 // owns v1. A stray v1 route here would be served by whichever upstream the
 // proxy happened to pick.
 func TestNoV1RoutesRemain(t *testing.T) {
-	for _, route := range New(testDeps(&fakePinger{})).RouteManifest() {
+	for _, route := range newServer(testDeps(&fakePinger{})).RouteManifest() {
 		if strings.HasPrefix(route.Path, "/api/v1") {
 			t.Errorf("%s belongs to the Python service", route.Path)
 		}
@@ -233,7 +233,7 @@ func TestErrorEnvelopeIsUniform(t *testing.T) {
 				req.Header.Set(name, value)
 			}
 			rec := httptest.NewRecorder()
-			New(testDeps(&fakePinger{})).Routes().ServeHTTP(rec, req)
+			newServer(testDeps(&fakePinger{})).Routes().ServeHTTP(rec, req)
 
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.status, rec.Body.String())
@@ -384,7 +384,7 @@ func TestFixturesMatchTheContract(t *testing.T) {
 				req.Header.Set(name, value)
 			}
 			rec := httptest.NewRecorder()
-			New(deps).Routes().ServeHTTP(rec, req)
+			routes(deps).ServeHTTP(rec, req)
 
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.status, rec.Body.String())
@@ -445,7 +445,7 @@ func blankVolatile(value any) any {
 // TestRouteManifestIsStable writes the manifest the Python contract check and
 // the web client read. Regenerate with `go test ./internal/httpapi -update`.
 func TestRouteManifestIsStable(t *testing.T) {
-	manifest := New(testDeps(&fakePinger{})).RouteManifest()
+	manifest := newServer(testDeps(&fakePinger{})).RouteManifest()
 	sort.Slice(manifest, func(i, j int) bool {
 		if manifest[i].Path != manifest[j].Path {
 			return manifest[i].Path < manifest[j].Path

@@ -25,6 +25,16 @@ type Config struct {
 	SupabaseURL         string
 	SupabaseJWTAudience string
 
+	// SupabaseServiceRoleKey deletes an identity through the Supabase Admin
+	// API. That key bypasses row-level security, so nothing else may use it.
+	// Empty means no identity deleter is wired: an account deletion still
+	// removes every row, and the request stays pending until a key is set.
+	SupabaseServiceRoleKey string
+
+	// ShareBaseURL is the origin a collection share or invite link is built
+	// on. It is the web boundary's domain, not this service's.
+	ShareBaseURL string
+
 	// AdminKey guards the Prometheus endpoints. Empty means neither process
 	// exposes one: queue depths and failure rates are operational detail, and
 	// an unauthenticated scrape target is worse than none.
@@ -108,9 +118,11 @@ func Load() (Config, error) {
 		AdminKey:       strings.TrimSpace(os.Getenv("ADMIN_KEY")),
 		IPBucketSecret: strings.TrimSpace(os.Getenv("REELPIN_IP_BUCKET_SECRET")),
 
-		SupabaseURL: strings.TrimSpace(os.Getenv("SUPABASE_URL")),
-		RabbitMQURL: strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
-		WorkerID:    envOr("WORKER_ID", defaultWorkerID()),
+		SupabaseURL:            strings.TrimSpace(os.Getenv("SUPABASE_URL")),
+		SupabaseServiceRoleKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
+		ShareBaseURL:           envOr("SHARE_BASE_URL", "https://reelpin.in"),
+		RabbitMQURL:            strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+		WorkerID:               envOr("WORKER_ID", defaultWorkerID()),
 
 		FirebaseCredentialsJSON: strings.TrimSpace(os.Getenv("FIREBASE_CREDENTIALS_JSON")),
 		FirebaseProjectID:       strings.TrimSpace(os.Getenv("FIREBASE_PROJECT_ID")),

@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -76,11 +78,87 @@ type Server struct {
 	deps Deps
 }
 
-func New(deps Deps) *Server {
+func New(deps Deps) (*Server, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &Server{deps: deps}
+	server := &Server{deps: deps}
+	if err := checkDependencies(deps, server.routeTable()); err != nil {
+		return nil, err
+	}
+	return server, nil
+}
+
+// checkDependencies refuses to build a server whose routes are registered
+// against something nil. Such a route panics on its first request, the
+// recovery middleware turns that into a 500, and nothing else notices: the
+// process is healthy, the contract check passes, and every client sees
+// internal_error until someone looks. Startup is the only place it can be
+// caught, so it is caught here and the process does not start.
+//
+// The names are resolved against Deps by reflection rather than against a list
+// kept beside it, so the route table stays the only thing to maintain: a
+// dependency that is renamed, removed, or misspelled in a route fails here too.
+func checkDependencies(deps Deps, table []Route) error {
+	fields := reflect.ValueOf(deps)
+
+	unset := map[string][]string{}
+	unknown := map[string][]string{}
+	undeclared := []string{}
+
+	for _, route := range table {
+		label := route.Method + " " + route.Path
+		if len(route.requires) == 0 {
+			undeclared = append(undeclared, label)
+			continue
+		}
+		for _, name := range route.requires {
+			field := fields.FieldByName(name)
+			switch {
+			case !field.IsValid():
+				unknown[name] = append(unknown[name], label)
+			case !supplied(field):
+				unset[name] = append(unset[name], label)
+			}
+		}
+	}
+
+	problems := append(describe(unset, "is nil"), describe(unknown, "is not a field of Deps")...)
+	if len(undeclared) > 0 {
+		problems = append(problems,
+			"these routes declare no dependency at all: "+strings.Join(undeclared, ", "))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the route table is registered against dependencies that cannot serve it:\n  %s",
+		strings.Join(problems, "\n  "))
+}
+
+// supplied reports whether a dependency was actually handed over. Only the
+// kinds that can be nil are judged: an empty string is a legitimate value for
+// the ones that are optional by design.
+func supplied(field reflect.Value) bool {
+	switch field.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !field.IsNil()
+	}
+	return true
+}
+
+func describe(byName map[string][]string, problem string) []string {
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, fmt.Sprintf("%s %s; needed by %s",
+			name, problem, strings.Join(byName[name], ", ")))
+	}
+	return lines
 }
 
 func (s *Server) now() time.Time { return s.deps.Now().UTC() }

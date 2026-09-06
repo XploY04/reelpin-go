@@ -11,6 +11,11 @@ correct and tested.
 
 - **`Routes()` is the only place a route is declared.** Public routes live under
   `/api/v1`; bare aliases and legacy compatibility endpoints are not registered.
+- **A route names the `Deps` fields it needs.** `New` resolves every name
+  against `Deps` and refuses to return a server when one is nil, unknown, or
+  not declared at all. A route registered against a nil dependency panics on
+  its first request, the recovery middleware turns that into a 500, and nothing
+  else notices, so startup is the only place it can be caught.
 - **The user id comes from the token, always.** `requestUserID(r)` reads it from
   the context the auth middleware populated. A `user_id` in a query string or
   body is never used for authorization.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
@@ -52,11 +53,10 @@ func runRetention(ctx context.Context, logger *slog.Logger, cfg config.Config, a
 
 	// A deletion whose identity half failed stays pending forever unless
 	// something retries it. This is that something.
-	//
-	// ponytail: no auth deleter is wired yet, so these retries record the
-	// failure and keep the request pending; wiring one is a config change here,
-	// not a code change.
-	service := lifecycle.New(pool, nil, nil, logger)
+	if cfg.SupabaseServiceRoleKey == "" {
+		logger.Warn("no SUPABASE_SERVICE_ROLE_KEY: these retries record the failure and leave each request pending")
+	}
+	service := lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), nil, logger)
 	pending, err := service.PendingRequests(ctx, 100)
 	if err != nil {
 		return err

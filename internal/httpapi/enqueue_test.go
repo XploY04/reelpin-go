@@ -31,7 +31,7 @@ func post(deps Deps, target, body string, headers map[string]string) *httptest.R
 		req.Header.Set(name, value)
 	}
 	rec := httptest.NewRecorder()
-	New(deps).Routes().ServeHTTP(rec, req)
+	routes(deps).ServeHTTP(rec, req)
 	return rec
 }
 
@@ -307,7 +307,7 @@ func TestShareTokensAreMintedAndRevoked(t *testing.T) {
 	req := httptest.NewRequest("DELETE", "/api/v2/share-tokens", nil)
 	req.Header.Set("Authorization", "Bearer good.token")
 	revokeRec := httptest.NewRecorder()
-	New(deps).Routes().ServeHTTP(revokeRec, req)
+	routes(deps).ServeHTTP(revokeRec, req)
 	if revokeRec.Code != http.StatusOK {
 		t.Fatalf("revoke status = %d", revokeRec.Code)
 	}
@@ -374,7 +374,7 @@ func submitFrom(deps Deps, limiter *recordingLimiter, remoteAddr, bucketHeader s
 	}
 	req.RemoteAddr = remoteAddr
 
-	New(deps).Routes().ServeHTTP(httptest.NewRecorder(), req)
+	routes(deps).ServeHTTP(httptest.NewRecorder(), req)
 	return limiter.subjects[ratelimit.SubmissionIP.Name]
 }
 
