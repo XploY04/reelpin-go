@@ -14,6 +14,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/mapview"
@@ -21,6 +22,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/redis/go-redis/v9"
@@ -95,6 +97,14 @@ func run(logger *slog.Logger) error {
 	resolver := &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})}
 	shareTokens := sharetoken.NewStore(pool)
 
+	// Without a key the embedder answers ErrNotConfigured, which search treats
+	// as one arm being unavailable rather than as a failure.
+	embedder := embed.NewGemini(embed.GeminiConfig{
+		APIKey:    cfg.GeminiAPIKey,
+		Model:     cfg.EmbeddingModel,
+		Dimension: cfg.EmbeddingDimension,
+	})
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
@@ -107,6 +117,7 @@ func run(logger *slog.Logger) error {
 			Resolver:      resolver,
 			Map:           mapview.New(pool, time.Now),
 			Notifications: notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
+			Search:        search.NewService(pool, embedder, logger, time.Now),
 			Limiter:       limiter,
 			Logger:        logger,
 			Version:       cfg.Version,

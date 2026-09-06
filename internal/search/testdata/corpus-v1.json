@@ -1,0 +1,84 @@
+{
+  "version": "search-corpus-v1",
+  "note": "The library the labeled queries in api/eval/search-v1.json are judged against. Invented content, no real user data. The field names match embed.Fields, because what a reel is findable by is exactly what the embedding document is built from.",
+  "reels": [
+    {
+      "url": "https://example.com/eval/artjuna",
+      "platform": "instagram",
+      "title": "Artjuna cafe",
+      "summary": "A quiet garden cafe in Anjuna with strong coffee and long tables under the trees.",
+      "caption": "the garden seating stays quiet even at noon",
+      "category": "food",
+      "subcategory": "cafes",
+      "tags": ["cafe", "coffee"],
+      "facts": ["the coffee here is the reason to come"],
+      "places": ["Artjuna", "Anjuna", "Goa"],
+      "transcript": "we came for the coffee and stayed all afternoon under the trees"
+    },
+    {
+      "url": "https://example.com/eval/garden-bistro",
+      "platform": "instagram",
+      "title": "Garden bistro tasting",
+      "summary": "A garden bistro where the chef walks you through the menu. Good coffee, slow afternoons.",
+      "caption": "quiet garden tables at the back",
+      "category": "food",
+      "subcategory": "restaurants",
+      "tags": ["bistro", "tasting menu"],
+      "facts": ["the chef recommends starting with the soup"],
+      "places": ["Assagao", "Goa"],
+      "transcript": "the chef came out between courses and told us what to order next"
+    },
+    {
+      "url": "https://example.com/eval/goa-vlog",
+      "platform": "youtube",
+      "title": "Three days in north Goa",
+      "summary": "A long vlog covering beaches, markets and a sunset stop.",
+      "caption": "three days, one scooter",
+      "category": "travel",
+      "subcategory": "itineraries",
+      "tags": ["vlog", "itinerary"],
+      "facts": ["the bakery opens at six in the morning and sells out by nine"],
+      "places": ["Goa", "Anjuna", "Vagator"],
+      "transcript": "day one we rode north, day two the markets, day three we watched the sunset from the cliff"
+    },
+    {
+      "url": "https://example.com/eval/chapora-fort",
+      "platform": "instagram",
+      "title": "Chapora fort at sunset",
+      "summary": "The best sunset viewpoint in north Goa, a ten minute walk up.",
+      "caption": "climb up before six",
+      "category": "travel",
+      "subcategory": "viewpoints",
+      "tags": ["sunset", "viewpoint"],
+      "facts": ["the climb takes ten minutes from the road"],
+      "places": ["Chapora Fort", "Goa"],
+      "transcript": "the light goes fast so start climbing well before sunset"
+    },
+    {
+      "url": "https://example.com/eval/dudhsagar-trek",
+      "platform": "youtube",
+      "title": "Dudhsagar trek guide",
+      "summary": "A full day trek to the waterfall, what to carry and when to start.",
+      "caption": "a full day on foot",
+      "category": "travel",
+      "subcategory": "treks",
+      "tags": ["trek", "waterfall"],
+      "facts": ["the trek takes about five hours each way"],
+      "places": ["Dudhsagar", "Goa"],
+      "transcript": "carry more water than you think and start before it gets hot"
+    },
+    {
+      "url": "https://example.com/eval/mumbai-street-food",
+      "platform": "instagram",
+      "title": "Mumbai street food crawl",
+      "summary": "Vada pav, pav bhaji and kulfi across five stops.",
+      "caption": "five stops, one evening",
+      "category": "food",
+      "subcategory": "street food",
+      "tags": ["street food", "crawl"],
+      "facts": ["the last stop is the kulfi place near the station"],
+      "places": ["Mumbai"],
+      "transcript": "start at the vada pav stall and work your way down the street"
+    }
+  ]
+}

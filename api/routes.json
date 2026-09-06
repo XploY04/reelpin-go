@@ -1,6 +1,6 @@
 {
   "note": "Generated from Server.routeTable(). A change here is an API change.",
-  "route_count": 39,
+  "route_count": 40,
   "routes": [
     {
       "method": "DELETE",
@@ -210,6 +210,12 @@
       "method": "GET",
       "path": "/api/v2/reels/{reel_id}",
       "operation_id": "getReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/search",
+      "operation_id": "searchReels",
       "auth": "bearer"
     },
     {

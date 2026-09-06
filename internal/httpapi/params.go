@@ -55,7 +55,12 @@ func internalError(w http.ResponseWriter, code, message string) {
 
 // parsePlatforms writes the 400 the Python API returns for an unknown value.
 func parsePlatforms(w http.ResponseWriter, query url.Values) ([]string, bool) {
-	platforms, err := reels.ParsePlatformFilter(query.Get("platform"))
+	return parsePlatformValue(w, query.Get("platform"))
+}
+
+// parsePlatformValue is the same check for a value that arrived in a body.
+func parsePlatformValue(w http.ResponseWriter, value string) ([]string, bool) {
+	platforms, err := reels.ParsePlatformFilter(value)
 	if err == nil {
 		return platforms, true
 	}
@@ -108,7 +113,12 @@ func boolParam(w http.ResponseWriter, query url.Values, name string, fallback bo
 // savedDateParam keeps a malformed date out of the SQL the Python API would
 // have let Supabase reject.
 func savedDateParam(w http.ResponseWriter, query url.Values) (string, bool) {
-	raw := strings.TrimSpace(query.Get("saved_date"))
+	return savedDateValue(w, query.Get("saved_date"))
+}
+
+// savedDateValue is the same check for a value that arrived in a body.
+func savedDateValue(w http.ResponseWriter, value string) (string, bool) {
+	raw := strings.TrimSpace(value)
 	if raw == "" {
 		return "", true
 	}

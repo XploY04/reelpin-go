@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/search"
+  },
+  "response": {
+    "query": "scuba diving in switzerland",
+    "results": [],
+    "search_mode": "empty",
+    "total": 0
+  },
+  "status": 200
+}
