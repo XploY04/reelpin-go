@@ -1288,7 +1288,14 @@ components:
         collection_ids:
           type: array
           items: { type: string, format: uuid }
-          description: File the resulting save into these collections.
+          description: |
+            File the resulting save into these collections. Every id must be
+            one this user owns or edits; any other answers 422 with
+            `error.details.field` = `collection_ids` and enqueues nothing.
+
+            On a 200 the save already exists and is filed before the response
+            is written. On a 202 there is no save yet, so the ids ride the job
+            and are filed when it completes.
 
     NativeShareRequest:
       type: object
@@ -1302,6 +1309,7 @@ components:
         collection_ids:
           type: array
           items: { type: string, format: uuid }
+          description: As on submitReel.
 
     ResolveShareRequest:
       type: object

@@ -129,17 +129,20 @@ func (p *Pipeline) insertVersion(ctx context.Context, tx pgx.Tx, state *run) (st
 // this one run.
 func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *run) error {
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, user_id::text FROM reelpin.processing_jobs
+		SELECT id::text, user_id::text, collection_ids::text[] FROM reelpin.processing_jobs
 		WHERE run_id = $1 AND status IN ('queued', 'processing')
 		FOR UPDATE`, state.ID)
 	if err != nil {
 		return fmt.Errorf("finding subscriber jobs: %w", err)
 	}
-	type subscriber struct{ jobID, userID string }
+	type subscriber struct {
+		jobID, userID string
+		collectionIDs []string
+	}
 	subscribers := []subscriber{}
 	for rows.Next() {
 		var s subscriber
-		if err := rows.Scan(&s.jobID, &s.userID); err != nil {
+		if err := rows.Scan(&s.jobID, &s.userID, &s.collectionIDs); err != nil {
 			rows.Close()
 			return fmt.Errorf("reading a subscriber: %w", err)
 		}
@@ -171,6 +174,10 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 			return fmt.Errorf("completing job %s: %w", s.jobID, err)
 		}
 
+		if err := fileIntoCollections(ctx, tx, s.userID, saveID, s.collectionIDs); err != nil {
+			return fmt.Errorf("filing job %s into its collections: %w", s.jobID, err)
+		}
+
 		notifyID := uuid.NewSHA1(persistNamespace, []byte("notify:"+s.jobID)).String()
 		payload := fmt.Sprintf(`{"run_id":%q,"dispatch_generation":%d}`, state.ID, state.Lease.Generation)
 		if _, err := tx.Exec(ctx, `
@@ -180,6 +187,37 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 			notifyID, queue.EventNotification, queue.QueueNotify, payload); err != nil {
 			return fmt.Errorf("writing the notification event for job %s: %w", s.jobID, err)
 		}
+	}
+	return nil
+}
+
+// fileIntoCollections honours the filing intent the submission recorded on the
+// job, now that the save it named exists. It runs in the persist transaction,
+// so a save and its filing commit together. A collection deleted, or a
+// membership dropped, between submission and completion files nothing rather
+// than failing: a finished save must never become a failed job over a
+// collection that is gone. The item primary key absorbs a redelivery.
+func fileIntoCollections(ctx context.Context, tx pgx.Tx, userID, saveID string, collectionIDs []string) error {
+	if len(collectionIDs) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		WITH filed AS (
+			INSERT INTO reelpin.collection_items (collection_id, save_id, added_by)
+			SELECT c.id, $2::uuid, $3::uuid
+			FROM reelpin.collections c
+			WHERE c.id = ANY($1::uuid[])
+			  AND (c.owner_id = $3::uuid OR EXISTS (
+				SELECT 1 FROM reelpin.collection_members m
+				WHERE m.collection_id = c.id AND m.user_id = $3::uuid AND m.role = 'editor'))
+			ON CONFLICT (collection_id, save_id) DO NOTHING
+			RETURNING collection_id
+		)
+		UPDATE reelpin.collections SET updated_at = now()
+		WHERE id IN (SELECT collection_id FROM filed)`,
+		collectionIDs, saveID, userID)
+	if err != nil {
+		return fmt.Errorf("filing the save into its collections: %w", err)
 	}
 	return nil
 }

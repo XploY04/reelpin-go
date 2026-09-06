@@ -34,9 +34,11 @@ var (
 	ErrIdempotencyMismatch = errors.New("idempotency key was used with a different request")
 	// ErrUnsupported maps to 422: the URL or text resolves to nothing we ingest.
 	ErrUnsupported = errors.New("unsupported source")
-	// ErrCollectionsUnsupported maps to 422 until the collections service is
-	// wired into this transaction. Rejecting is honest; dropping is not.
-	ErrCollectionsUnsupported = errors.New("collection filing is not available yet")
+	// ErrCollectionUnreachable maps to 422 naming collection_ids: one of the
+	// ids is not a collection this user may file into. It is deliberately not
+	// a 403, which would tell a stranger the collection exists, and never a
+	// silent drop, which would promise a filing that never happens.
+	ErrCollectionUnreachable = errors.New("collection cannot be filed into")
 )
 
 // Request is one submission attempt. Exactly one of URL or RawPayloadText is
@@ -136,10 +138,12 @@ func (s *Service) Submit(ctx context.Context, request Request) (Result, error) {
 	if _, err := uuid.Parse(strings.TrimSpace(request.IdempotencyKey)); err != nil {
 		return Result{}, fmt.Errorf("%w: the idempotency key must be a UUID", ErrUnsupported)
 	}
-	if len(request.CollectionIDs) > 0 {
-		// ponytail: rejected until the collections service joins this
-		// transaction; wired in one commit when both are on the trunk.
-		return Result{}, ErrCollectionsUnsupported
+	// Shape is checked here; reach is checked inside the transaction, where a
+	// collection cannot be deleted between the check and the filing.
+	for _, collectionID := range request.CollectionIDs {
+		if _, err := uuid.Parse(strings.TrimSpace(collectionID)); err != nil {
+			return Result{}, fmt.Errorf("%w: a collection id must be a UUID", ErrCollectionUnreachable)
+		}
 	}
 
 	var identity sourceidentity.SourceIdentity

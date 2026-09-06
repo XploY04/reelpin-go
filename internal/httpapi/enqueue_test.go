@@ -129,7 +129,7 @@ func TestSubmissionMapsUseCaseFailuresToTheContract(t *testing.T) {
 	}{
 		{"active job cap", enqueue.ErrActiveJobLimit, http.StatusTooManyRequests, "active_job_limit"},
 		{"unsupported link", enqueue.ErrUnsupported, http.StatusUnprocessableEntity, "validation_error"},
-		{"collections not ready", enqueue.ErrCollectionsUnsupported, http.StatusUnprocessableEntity, "validation_error"},
+		{"unreachable collection", enqueue.ErrCollectionUnreachable, http.StatusUnprocessableEntity, "validation_error"},
 		{"anything else", errors.New("the database is away"), http.StatusInternalServerError, "submission_failed"},
 	}
 	for _, tt := range tests {
@@ -148,6 +148,22 @@ func TestSubmissionMapsUseCaseFailuresToTheContract(t *testing.T) {
 				t.Error("the internal error leaked into the response")
 			}
 		})
+	}
+}
+
+func TestACollectionTheUserCannotFileIntoNamesTheField(t *testing.T) {
+	// The app has to know which field to send the user back to, and a 403
+	// would tell a stranger the collection exists.
+	rec := post(submitDeps(&fakeSubmitter{err: enqueue.ErrCollectionUnreachable}),
+		"/api/v2/processing-jobs/reels",
+		`{"url":"https://www.instagram.com/reel/C8abc123/","collection_ids":["`+testCollectionID+`"]}`,
+		map[string]string{"Authorization": "Bearer good.token", "Idempotency-Key": validKey})
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (%s)", rec.Code, rec.Body.String())
+	}
+	if field := decodeError(t, rec).Error.Details["field"]; field != "collection_ids" {
+		t.Errorf("error.details.field = %v, want collection_ids", field)
 	}
 }
 

@@ -425,3 +425,158 @@ func TestNativeShareTextResolvesAndEnqueues(t *testing.T) {
 		t.Fatalf("contents=%d runs=%d; shared text and its URL must be one identity", contents, runs)
 	}
 }
+
+// createCollection returns one collection owned by the given user, which is
+// the only thing a submission needs to be allowed to file into it.
+func createCollection(t *testing.T, pool *pgxpool.Pool, ownerID, name string) string {
+	t.Helper()
+	var collectionID string
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO reelpin.collections (owner_id, name) VALUES ($1, $2)
+		RETURNING id::text`, ownerID, name).Scan(&collectionID); err != nil {
+		t.Fatalf("seeding a collection: %v", err)
+	}
+	return collectionID
+}
+
+func itemCount(t *testing.T, pool *pgxpool.Pool, collectionID string) int {
+	t.Helper()
+	var items int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM reelpin.collection_items WHERE collection_id = $1`,
+		collectionID).Scan(&items); err != nil {
+		t.Fatalf("counting items: %v", err)
+	}
+	return items
+}
+
+func TestAnUnreachableCollectionIsRefusedAndNothingIsEnqueued(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	somebodyElses := createCollection(t, pool, userB, "User B's list")
+	for _, name := range []string{"another user's collection", "no collection at all", "not an id"} {
+		collectionID := somebodyElses
+		switch name {
+		case "no collection at all":
+			collectionID = uuid.NewString()
+		case "not an id":
+			collectionID = "weekend-cooking"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, err := service.Submit(ctx, enqueue.Request{
+				UserID: userA, URL: publicReel, CollectionIDs: []string{collectionID},
+				IdempotencyKey: uuid.NewString(), Endpoint: "processing-jobs/reels",
+			})
+			if !errors.Is(err, enqueue.ErrCollectionUnreachable) {
+				t.Fatalf("err = %v, want the collection to be refused", err)
+			}
+		})
+	}
+
+	// A refused submission is a refused submission: no content, no run, no job.
+	contents, runs, jobs, saves, events := counts(t, pool)
+	if contents+runs+jobs+saves+events != 0 {
+		t.Fatalf("a refused submission left state: contents=%d runs=%d jobs=%d saves=%d events=%d",
+			contents, runs, jobs, saves, events)
+	}
+}
+
+func TestAnAcceptedSubmissionRecordsTheFilingAsIntent(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	collectionID := createCollection(t, pool, userA, "Goa")
+	result, err := service.Submit(ctx, enqueue.Request{
+		UserID: userA, URL: publicReel, CollectionIDs: []string{collectionID},
+		IdempotencyKey: uuid.NewString(), Endpoint: "processing-jobs/reels",
+	})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if result.Kind != enqueue.Accepted {
+		t.Fatalf("kind = %v, want the job", result.Kind)
+	}
+	if len(result.Job.CollectionIDs) != 1 || result.Job.CollectionIDs[0] != collectionID {
+		t.Fatalf("job collection_ids = %v, want the one submitted", result.Job.CollectionIDs)
+	}
+
+	// There is no save yet, so there is nothing to file: the intent waits for
+	// the run to complete.
+	if items := itemCount(t, pool, collectionID); items != 0 {
+		t.Fatalf("collection items = %d before the run completed, want 0", items)
+	}
+
+	// A second submission of the same link naming another collection keeps
+	// both: the job's intent is the union, not the last writer.
+	second := createCollection(t, pool, userA, "Cafes")
+	again, err := service.Submit(ctx, enqueue.Request{
+		UserID: userA, URL: publicReel, CollectionIDs: []string{second},
+		IdempotencyKey: uuid.NewString(), Endpoint: "processing-jobs/reels",
+	})
+	if err != nil {
+		t.Fatalf("second submit: %v", err)
+	}
+	if again.Job.ID != result.Job.ID {
+		t.Fatalf("second submission made job %s, want the first one", again.Job.ID)
+	}
+	if len(again.Job.CollectionIDs) != 2 {
+		t.Fatalf("job collection_ids = %v, want both collections", again.Job.CollectionIDs)
+	}
+}
+
+func TestAlreadySavedContentIsFiledImmediately(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	submit(t, service, userA, publicReel)
+	var contentID string
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM reelpin.contents`).Scan(&contentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		WITH v AS (
+			INSERT INTO reelpin.content_versions
+				(content_id, processor_version, prompt_version, schema_version, model_version, title)
+			VALUES ($1, 'go-v1', 'p1', 's1', 'm1', 'Mine already')
+			RETURNING id
+		)
+		UPDATE reelpin.contents SET current_version_id = (SELECT id FROM v) WHERE id = $1`,
+		contentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2)`,
+		userA, contentID); err != nil {
+		t.Fatal(err)
+	}
+
+	collectionID := createCollection(t, pool, userA, "Goa")
+	for attempt := 1; attempt <= 2; attempt++ {
+		result, err := service.Submit(ctx, enqueue.Request{
+			UserID: userA, URL: publicReel, CollectionIDs: []string{collectionID},
+			IdempotencyKey: uuid.NewString(), Endpoint: "processing-jobs/reels",
+		})
+		if err != nil {
+			t.Fatalf("submission %d: %v", attempt, err)
+		}
+		if result.Kind != enqueue.AlreadySaved {
+			t.Fatalf("submission %d kind = %v, want the reel back", attempt, result.Kind)
+		}
+		// The save exists, so the filing is visible in the same response, and
+		// submitting twice files one item, not two.
+		var filed bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM reelpin.collection_items
+			               WHERE collection_id = $1 AND save_id = $2::uuid)`,
+			collectionID, result.Reel.ID).Scan(&filed); err != nil {
+			t.Fatal(err)
+		}
+		if !filed {
+			t.Fatalf("submission %d answered 200 without filing the save", attempt)
+		}
+		if items := itemCount(t, pool, collectionID); items != 1 {
+			t.Fatalf("collection items = %d after submission %d, want 1", items, attempt)
+		}
+	}
+}

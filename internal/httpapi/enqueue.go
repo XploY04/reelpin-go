@@ -202,8 +202,8 @@ func (s *Server) respondToSubmission(w http.ResponseWriter, result enqueue.Resul
 			Message: "This Idempotency-Key was already used with a different request.",
 		})
 		return
-	case errors.Is(err, enqueue.ErrCollectionsUnsupported):
-		validationError(w, "collection_ids", "collection filing is not available yet")
+	case errors.Is(err, enqueue.ErrCollectionUnreachable):
+		validationError(w, "collection_ids", "must all be collections you can add to")
 		return
 	case errors.Is(err, enqueue.ErrUnsupported):
 		validationError(w, "url", "is not a link this service can ingest")
