@@ -12,10 +12,16 @@ runs it is not reconstructing it from memory.
   - Account deletion cannot delete the Supabase identity. `cmd/maintenance`
     builds `lifecycle.New` with a `nil` auth deleter, so `identity_deleted` is
     reported `false` and the row in `auth.users` survives.
-  - Hybrid search has never been measured against real Gemini embeddings. Run
-    the search evaluation and read its report before search takes production
-    traffic.
+  - Hybrid search has now been measured against real `gemini-embedding-2`
+    vectors: recall@10 0.992 and nDCG@10 0.975 over 70 labeled queries, and the
+    dense gate was moved from an inherited 0.42 to a measured 0.40 because at
+    0.42 an unrelated query starts returning results. `api/eval/REPORT.md`
+    carries the numbers and is honest that the corpus is 61 synthetic reels,
+    not production data. Re-run it against real saves during the rehearsal.
 - There is 30 days of route usage data. Do not remove any route before that.
+- The rehearsal in `docs/rehearsal.md` has passed. Its gates are what decide
+  whether compute has to move before launch, and that decision is much cheaper
+  before traffic than after.
 
 ## Hosts and services
 
