@@ -15,6 +15,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/lease"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -82,6 +83,8 @@ type Deps struct {
 	// run deletes its directory on every exit.
 	TempRoot string
 	Now      func() time.Time
+	// Metrics is optional. Nil means the pipeline measures nothing.
+	Metrics *metrics.Metrics
 }
 
 type Pipeline struct {
@@ -173,7 +176,10 @@ func (p *Pipeline) process(ctx context.Context, message queue.Message, held leas
 		if p.deps.Now().After(state.CreatedAt.Add(runLifetime)) {
 			return p.applyFailure(ctx, held, stage, errRunExpired)
 		}
-		if err := p.runStage(ctx, stage, state); err != nil {
+		started := time.Now()
+		err := p.runStage(ctx, stage, state)
+		p.observeStage(stage, state, err, time.Since(started))
+		if err != nil {
 			if errors.Is(err, lease.ErrFenced) {
 				return err
 			}
@@ -198,7 +204,10 @@ func (p *Pipeline) process(ctx context.Context, message queue.Message, held leas
 
 	stageCtx, cancelPersist := context.WithTimeout(ctx, stageTimeouts[stagePersist])
 	defer cancelPersist()
-	if err := p.persist(stageCtx, state); err != nil {
+	started := time.Now()
+	err = p.persist(stageCtx, state)
+	p.observeStage(stagePersist, state, err, time.Since(started))
+	if err != nil {
 		if errors.Is(err, lease.ErrFenced) {
 			return err
 		}
@@ -252,6 +261,31 @@ func (p *Pipeline) escalate(ctx context.Context, held lease.Lease, state *run) e
 		return err
 	}
 	return transaction.Commit(ctx)
+}
+
+// observeStage records one stage attempt. The outcome is the failure class,
+// not the message, so a rising internal rate is visible next to a transient
+// one without any error text reaching a label.
+func (p *Pipeline) observeStage(stage string, state *run, err error, elapsed time.Duration) {
+	if p.deps.Metrics == nil {
+		return
+	}
+	if errors.Is(err, lease.ErrFenced) {
+		// A newer claim owns the run; this attempt has no outcome of its own.
+		return
+	}
+
+	outcome := "ok"
+	if err != nil {
+		class := Classify(err).Class
+		outcome = string(class)
+		// A provider refusing is not the same as a bug, and the on-call
+		// response differs, so it is counted separately by platform.
+		if class == ProviderExhausted || class == Transient {
+			p.deps.Metrics.ProviderFailures.WithLabelValues(state.Identity.Platform, outcome).Inc()
+		}
+	}
+	p.deps.Metrics.ObserveStage(stage, state.Identity.Platform, outcome, elapsed)
 }
 
 func (p *Pipeline) renew(ctx context.Context, held lease.Lease, cancel context.CancelFunc) {

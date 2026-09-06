@@ -16,7 +16,14 @@ correct and tested.
   body is never used for authorization.
 - **Every response is JSON, including errors, 404 and 405.** `writeJSON` encodes
   into a buffer before writing the status, so an encoding failure becomes a 500
-  rather than a 200 with a truncated body.
+  rather than a 200 with a truncated body. `GET /metrics` is the one exception:
+  it answers the Prometheus exposition format, which is why it is registered
+  directly on the mux instead of in `routeTable()` and stays out of
+  `api/openapi.yaml`. It is served only when both a registry and an admin key
+  are configured.
+- **A log line never carries a user id.** `metrics.Hash` turns it into a stable
+  16-character digest, and the path logged is `r.Pattern`, not the raw URL: a
+  raw path carries reel and job ids.
 - **A driver error never reaches a body.** Log it with the request id, return
   the error code and a sentence a person can read.
 - **Missing, forbidden and malformed all answer the same 404.** Distinguishing

@@ -129,7 +129,7 @@ func (f *fakeJobs) Get(_ context.Context, userID string, id uuid.UUID) (jobs.Job
 	return jobs.JobRecord{}, jobs.ErrNotFound
 }
 
-func testDeps(pinger DatabasePinger) Deps {
+func testDeps(pinger Pinger) Deps {
 	return Deps{
 		DB:            pinger,
 		Auth:          fakeAuth{userID: testUserID},

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/lease"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
@@ -82,14 +84,18 @@ func run(logger *slog.Logger) error {
 	}
 	defer connection.Close()
 
+	meters := metrics.New()
+
 	publisher, err := queue.NewPublisher(connection, 5*time.Second)
 	if err != nil {
 		return err
 	}
+	publisher.Metrics = meters
 	defer publisher.Close()
 
 	// Heartbeats are how readiness sees the fleet. Redis being optional in
 	// development means a worker without it simply is not counted.
+	var liveWorkers metrics.WorkerCount
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
 		if err != nil {
@@ -101,9 +107,22 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("redis connect: %w", err)
 		}
 		go workerhealth.New(redisClient, cfg.RedisKeyPrefix, cfg.WorkerID, queue.WorkQueues).Run(ctx)
+		liveWorkers = func(ctx context.Context) (int, error) {
+			return workerhealth.Live(ctx, redisClient, cfg.RedisKeyPrefix)
+		}
 	} else {
 		logger.Warn("no REDIS_URL: this worker sends no heartbeats and readiness cannot see it")
 	}
+
+	// Runs live under one directory this worker owns, so the disk gauge
+	// measures this worker's leftovers rather than everything else in /tmp.
+	tempRoot := filepath.Join(os.TempDir(), "reelpin-worker")
+	if err := os.MkdirAll(tempRoot, 0o700); err != nil {
+		return fmt.Errorf("worker temp directory: %w", err)
+	}
+
+	go metrics.Sample(ctx, meters, pool, liveWorkers)
+	go metrics.SampleTempDisk(ctx, meters, tempRoot)
 
 	// No platform handlers are registered yet: any run fails cleanly as
 	// unsupported until the platform tasks land, which is honest and visible
@@ -123,12 +142,15 @@ func run(logger *slog.Logger) error {
 		ModelVersion: gemini.ModelVersion(),
 		Logger:       logger,
 		WorkerID:     cfg.WorkerID,
+		TempRoot:     tempRoot,
+		Metrics:      meters,
 	})
 
 	// Firebase is optional in development: without it a run still completes and
 	// the notification is recorded as having nowhere to go.
 	var sender notify.Sender = notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0)
 	notifications := notify.NewService(pool, sender, logger, time.Now)
+	notifications.Metrics = meters
 
 	// The index is asynchronous on purpose: a search-index failure must never
 	// turn a completed save into a failed job.
@@ -155,8 +177,11 @@ func run(logger *slog.Logger) error {
 		return handler(ctx, message)
 	}
 
-	done := make(chan error, len(queue.WorkQueues)+2)
+	done := make(chan error, len(queue.WorkQueues)+3)
 	started := 0
+
+	started++
+	go func() { done <- serveMetrics(ctx, meters, cfg.MetricsPort, cfg.AdminKey, logger) }()
 
 	started++
 	go func() {
@@ -174,6 +199,7 @@ func run(logger *slog.Logger) error {
 				Prefetch:    1,
 				Logger:      logger,
 				ConsumerTag: cfg.WorkerID + ":" + name,
+				Metrics:     meters,
 			}, publisher, handle)
 		}(name)
 	}

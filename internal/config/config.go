@@ -15,12 +15,20 @@ import (
 const localDatabaseURL = "postgres://reelpin:reelpin@localhost:5432/reelpin"
 
 type Config struct {
-	Environment         string
-	Port                int
+	Environment string
+	Port        int
+	// MetricsPort is where the worker exposes its Prometheus endpoint. The API
+	// serves its own on the API port instead.
+	MetricsPort         int
 	DatabaseURL         string
 	Version             string
 	SupabaseURL         string
 	SupabaseJWTAudience string
+
+	// AdminKey guards the Prometheus endpoints. Empty means neither process
+	// exposes one: queue depths and failure rates are operational detail, and
+	// an unauthenticated scrape target is worse than none.
+	AdminKey string
 
 	// RedisURL is required in production: rate limits fail closed without it,
 	// which would refuse every submission. Outside production it may be empty,
@@ -79,8 +87,10 @@ func Load() (Config, error) {
 	cfg := Config{
 		Environment: envOr("ENVIRONMENT", "development"),
 		Port:        8000,
+		MetricsPort: 9100,
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Version:     envOr("APP_VERSION", "dev"),
+		AdminKey:    strings.TrimSpace(os.Getenv("ADMIN_KEY")),
 
 		SupabaseURL: strings.TrimSpace(os.Getenv("SUPABASE_URL")),
 		RabbitMQURL: strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
@@ -107,16 +117,17 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("ENVIRONMENT %q is not one of development, test, production", cfg.Environment)
 	}
 
-	if raw := os.Getenv("PORT"); raw != "" {
-		port, err := strconv.Atoi(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("PORT %q is not a number", raw)
-		}
-		if port < 1 || port > 65535 {
-			return Config{}, fmt.Errorf("PORT %d is outside 1..65535", port)
-		}
-		cfg.Port = port
+	port, err := portFrom("PORT", cfg.Port)
+	if err != nil {
+		return Config{}, err
 	}
+	cfg.Port = port
+
+	metricsPort, err := portFrom("METRICS_PORT", cfg.MetricsPort)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MetricsPort = metricsPort
 
 	if cfg.DatabaseURL == "" {
 		if cfg.Environment == "production" {
@@ -153,6 +164,21 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func portFrom(key string, fallback int) (int, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a number", key, raw)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%s %d is outside 1..65535", key, port)
+	}
+	return port, nil
 }
 
 func envOr(key, fallback string) string {

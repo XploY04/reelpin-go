@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -50,6 +51,23 @@ type ConsumerConfig struct {
 	Prefetch    int
 	Logger      *slog.Logger
 	ConsumerTag string
+	// Metrics is optional. Nil means the consumer counts nothing.
+	Metrics *metrics.Metrics
+}
+
+func (c ConsumerConfig) count(outcome string) {
+	if c.Metrics != nil {
+		c.Metrics.QueueConsumed.WithLabelValues(c.Queue, outcome).Inc()
+	}
+}
+
+// deadLettered counts a rejection without requeue. It is separate from count
+// because the alert on it is the one that pages: nothing retries these.
+func (c ConsumerConfig) deadLettered(reason string) {
+	c.count(reason)
+	if c.Metrics != nil {
+		c.Metrics.DeadLettered.WithLabelValues(c.Queue).Inc()
+	}
 }
 
 // Consume runs until ctx is cancelled, reconnecting its channel with bounded
@@ -142,6 +160,7 @@ func handleDelivery(ctx context.Context, config ConsumerConfig, publisher *Publi
 		// Requeueing it would spin; it goes to this class's dead letters.
 		config.Logger.Error("dead-lettering an undecodable message",
 			"queue", config.Queue, "error", err)
+		config.deadLettered("undecodable")
 		_ = delivery.Nack(false, false)
 		return
 	}
@@ -160,6 +179,7 @@ func handleDelivery(ctx context.Context, config ConsumerConfig, publisher *Publi
 		if err != nil {
 			logger.Error("handler reported done with an error", "error", err)
 		}
+		config.count("done")
 		if ackErr := delivery.Ack(false); ackErr != nil {
 			logger.Error("acknowledging failed", "error", ackErr)
 		}
@@ -170,13 +190,16 @@ func handleDelivery(ctx context.Context, config ConsumerConfig, publisher *Publi
 			// The retry could not be parked, so the message must stay on the
 			// broker: reject it back onto the queue.
 			logger.Error("parking the retry failed, requeueing", "error", publishErr)
+			config.count("requeued")
 			_ = delivery.Nack(false, true)
 			return
 		}
+		config.count("retried")
 		_ = delivery.Ack(false)
 
 	case DeadLetter:
 		logger.Error("dead-lettering", "error", err)
+		config.deadLettered("dead_lettered")
 		_ = delivery.Nack(false, false)
 	}
 }
