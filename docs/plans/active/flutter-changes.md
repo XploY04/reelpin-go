@@ -1,9 +1,13 @@
 # Flutter changes for the Go v2 API
 
-A running record for the app developer of everything the Flutter app and both
-native share extensions must change to move from the Python `/api/v1` service to
-the Go `/api/v2` service. Updated in the same pull request as each backend
-change, so it is never behind the contract.
+The handoff for the app developer: everything the Flutter app and both native
+share extensions must change to move from the Python `/api/v1` service to the Go
+`/api/v2` service. It was updated in the same pull request as each backend
+change, so it is not behind the contract.
+
+The backend contract is complete as of this writing: **40 operations**, all of
+`/api/v2`. Read **Migrating the app** at the end for the checklist and the test
+gate; the sections before it are the reference for each area.
 
 The machine-readable source of truth is `api/openapi.yaml` (embedded and
 published with a SHA-256 digest per release). This page is the narrative: what
@@ -143,7 +147,35 @@ in-app URL preview. The extensions must not call it any more.
 | native share enqueue (v1 two-step) | `POST /api/v2/native-shares/reels` | one atomic call, `X-Share-Token` |
 | `POST /api/v1/share-tokens` / `DELETE` | same paths under `/api/v2` | bearer only |
 | `GET /api/v1/account/library-stats` | `GET /api/v2/account/library-stats` | none |
+| `POST /api/v1/share/resolve` | `POST /api/v2/share/resolve` | takes `raw_payload_text`; unsupported is a `200`, not an error |
+| search (v1) | `POST /api/v2/search` | now a POST with a JSON body; see **Search** below |
+| collections (v1) | 15 routes under `/api/v2/collections` | see **Collections** |
+| map (v1) | 5 routes under `/api/v2/map` | see **Map** |
+| push tokens (v1) | `POST`/`DELETE /api/v2/device-push-tokens` | `platform` validated; token never echoed |
+| notification opened (v1) | `POST /api/v2/notifications/{notification_id}/opened` | none |
+| delete reel (v1) | `DELETE /api/v2/reels/{reel_id}` | `204`, no body |
+| delete account (v1) | `DELETE /api/v2/account` | see **Deletion**; the two halves report separately |
 | `GET /api/v1/account/entitlements` | **not in v2 yet** | stays on v1 until a v2 decision; do not migrate this call |
+
+Everything above is the complete v2 surface: **40 operations**. Anything the app
+calls today that is not in this table does not exist in v2, and `/api/v1` keeps
+serving it for installed versions throughout coexistence.
+
+## Search (built)
+
+`POST /api/v2/search`, not a GET with query parameters. The body is
+`{"query": "...", "limit": 5, "platform": ..., "category": ..., "subcategory":
+..., "saved_date": "YYYY-MM-DD"}` and **unknown fields are rejected**, so a
+leftover `user_id` from the v1 call is a `422` rather than being ignored.
+
+- `query` is capped at 200 characters. **Under two characters returns an empty
+  result, not an error** — do not treat it as a failure state.
+- `limit` is 1 to 20, default 5.
+- The response carries `search_mode`, which says which arms answered. It is
+  diagnostic: show results the same way whatever it says. A mode of `lexical`
+  alone means the embedding provider was unavailable and the answer is
+  word-matching only, which is a degraded result, not a wrong one.
+- `saved_date` is one day, not a range.
 
 ## Collections (built)
 
@@ -299,10 +331,70 @@ Unchanged: the same Supabase project, the same access token in
 changes in the app. `user_id` in bodies or query strings is ignored — remove it
 from requests when convenient, but sending it breaks nothing.
 
-## Still to come (this file will grow)
+## Migrating the app (Task 30)
 
-- Search (Task 20) is the last product contract still to land here.
-- The dev base URL becomes real at Task 22.
-- Task 30 is the app migration itself: vendor the released OpenAPI artifact,
-  regenerate the Dart client, and point dev + extensions at
-  `api-dev.reelpin.in`.
+This is the checklist for the app change itself. Nothing before this point
+requires an app release; Python v1 keeps serving installed versions.
+
+**Vendor the contract, do not copy endpoints by hand.** Take the released
+`api/openapi.yaml` artifact, record the Go commit and its SHA-256 digest
+alongside it, and generate the Dart client from that file. A hand-written client
+drifts silently; a vendored one fails loudly when the contract moves. The web
+app does exactly this in `reelpin-web/api/reelpin-v2.lock.json`, and its
+`scripts/generate-api-client.mjs` is a working reference for the drift check.
+
+**Change only what the contract intentionally changed.** Those are: cursors,
+the error envelope, submission idempotency, and processing job states. Anything
+else that looks different is a mapping bug, not a migration.
+
+**Keep `reel` and reel IDs at the Flutter boundary.** `user_saves.id` carries
+every existing `public.reels.id`, so deep links, local caches and share cards
+keep working untouched. Do not rename the concept in the app just because the
+backend calls the table something else.
+
+**Point dev at `api-dev.reelpin.in`.** Flutter dev and *both* native share
+extensions. **No production endpoint changes in this task** — production stays
+on v1 until Task 32.
+
+**Both share extensions send one atomic call.** Raw shared text, collection ids
+and a stable retry idempotency key, to `POST /api/v2/native-shares/reels` with
+`X-Share-Token`. The v1 two-step resolve-then-enqueue is gone. The key must be
+stable across retries of one share and different for a new share, exactly as
+described under **Submission**.
+
+**Token behaviour does not change.** Same Supabase project, same access token,
+same refresh. The long-lived native share token keeps its current lifecycle;
+it is still mirrored into the native-owned store, and the Android background
+share still reads the handoff through the native MethodChannel store rather
+than `shared_preferences`.
+
+### What the app must prove before it ships
+
+- Android and iOS unit and widget tests pass.
+- On a device or simulator: sign-in, feed, detail, filters, submission,
+  background polling, native share, collections, map, search and deletion.
+- Two users, and an expired token, against Go dev.
+- No production endpoint changed.
+
+### The five states that are easy to get wrong
+
+Each of these is a real, expected answer that reads like a bug:
+
+1. **`200` on submission** means the content was already saved. There is no job
+   to poll. Show the reel.
+2. **`data_deleted: true` with `identity_deleted: false` and `pending: true`**
+   is a successful account deletion in progress. Sign out.
+3. **`{"supported": false}` from share resolve is a `200`.** It is a preview
+   answer, not an error path.
+4. **A search returning nothing for a one-character query is a `200`** with an
+   empty list.
+5. **An unknown `source_platform` or `category`** is a new handler or a newly
+   curated category, not corrupt data. Render it as itself.
+
+## Still open
+
+- Entitlements have no v2 route. Keep calling v1 for that one thing.
+- The dev base URL is live only once Task 22's deployment lands.
+- Task 31 adds a stable `503` for the spending hard stop. When it lands it will
+  be recorded here, and the app will need to explain it as "saving is paused"
+  rather than as a failure.
