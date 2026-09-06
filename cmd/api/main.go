@@ -178,8 +178,8 @@ func run(logger *slog.Logger) error {
 		DB:             pool,
 		Auth:           verifier,
 		Reels:          postgres.NewReels(pool),
-		Jobs:           postgres.NewJobs(pool),
-		Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, gate),
+		Jobs:           postgres.NewCombinedJobs(pool),
+		Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, optionalGate(gate)),
 		ShareTokens:    shareTokens,
 		Resolver:       resolver,
 		Collections:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
@@ -254,4 +254,14 @@ func costGate(cfg config.Config, ledger *postgres.Spend, meters *metrics.Metrics
 		"stop_usd", limits.StopMicros.USD(),
 		"ladder", strings.Join(ladder, ", "))
 	return spend.NewGate(limits, ledger, meters), nil
+}
+
+// optionalGate prevents a nil *spend.Gate from becoming a non-nil interface.
+// Calling a method through that typed-nil interface panics on the first
+// submission when the development cost gate is intentionally disabled.
+func optionalGate(gate *spend.Gate) enqueue.Gate {
+	if gate == nil {
+		return nil
+	}
+	return gate
 }
