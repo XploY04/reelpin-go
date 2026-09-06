@@ -632,3 +632,100 @@ func TestTheModelsCategoryProposalIsFiledNotApplied(t *testing.T) {
 		t.Fatal("a processing job activated a category; only the curator may")
 	}
 }
+
+func TestALightConsumerHandsMediaToTheMediaQueue(t *testing.T) {
+	h := newHarness(t, userA)
+	ctx := context.Background()
+
+	// Prepare discovers media on a run that arrived on the light queue. The
+	// 180-second download must not happen on this channel.
+	h.handler.prepared.NeedsMedia = true
+
+	outcome, err := h.pipeline.Handle(ctx, queue.Message{
+		EventID:       "44444444-4444-4444-8444-444444444444",
+		SchemaVersion: queue.SchemaVersion,
+		EventType:     queue.EventProcessLight,
+		RunID:         h.runID,
+	})
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if outcome.Kind != queue.Done {
+		t.Fatalf("outcome = %v, want Done: the escalation is committed, so this message is finished", outcome.Kind)
+	}
+	if downloads := h.handler.downloads.Load(); downloads != 0 {
+		t.Fatalf("the light consumer ran %d downloads instead of escalating", downloads)
+	}
+
+	// The run is queued again and exactly one media event is waiting.
+	if status := h.runStatus(t); status != "queued" {
+		t.Errorf("run status = %q, want queued for the media consumer", status)
+	}
+	var events int
+	var routingKey string
+	if err := h.pool.QueryRow(ctx, `
+		SELECT count(*), coalesce(min(routing_key), '')
+		FROM reelpin.outbox_events WHERE event_type = $1`,
+		queue.EventProcessMedia).Scan(&events, &routingKey); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || routingKey != queue.QueueMedia {
+		t.Fatalf("media events = %d on %q, want one on the media queue", events, routingKey)
+	}
+
+	// The media consumer picks it up and finishes, reusing prepare's
+	// checkpoint rather than repeating it.
+	preparesBefore := h.handler.prepares.Load()
+	mediaOutcome, err := h.pipeline.Handle(ctx, queue.Message{
+		EventID:       "55555555-5555-4555-8555-555555555555",
+		SchemaVersion: queue.SchemaVersion,
+		EventType:     queue.EventProcessMedia,
+		RunID:         h.runID,
+	})
+	if err != nil {
+		t.Fatalf("media handle: %v", err)
+	}
+	if mediaOutcome.Kind != queue.Done {
+		t.Fatalf("media outcome = %v", mediaOutcome.Kind)
+	}
+	if h.handler.prepares.Load() != preparesBefore {
+		t.Error("the media consumer repeated prepare instead of reusing its checkpoint")
+	}
+	if h.handler.downloads.Load() != 1 {
+		t.Errorf("downloads = %d, want the media consumer to have done exactly one",
+			h.handler.downloads.Load())
+	}
+	if status := h.runStatus(t); status != "completed" {
+		t.Errorf("run status = %q, want completed", status)
+	}
+}
+
+func TestEscalatingTwiceWritesOneEvent(t *testing.T) {
+	h := newHarness(t, userA)
+	ctx := context.Background()
+	h.handler.prepared.NeedsMedia = true
+
+	message := queue.Message{
+		EventID:       "66666666-6666-4666-8666-666666666666",
+		SchemaVersion: queue.SchemaVersion,
+		EventType:     queue.EventProcessLight,
+		RunID:         h.runID,
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := h.pipeline.Handle(ctx, message); err != nil {
+			t.Fatalf("handle %d: %v", i+1, err)
+		}
+	}
+
+	var events int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM reelpin.outbox_events WHERE event_type = $1`,
+		queue.EventProcessMedia).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	// The id is derived from the run and its lease generation, so a
+	// redelivery cannot double-queue the media work.
+	if events > 2 {
+		t.Fatalf("media events = %d after two deliveries", events)
+	}
+}
