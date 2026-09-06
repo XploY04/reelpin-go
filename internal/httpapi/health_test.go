@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -175,6 +177,8 @@ func TestRequestID(t *testing.T) {
 
 func TestRecoverPanic(t *testing.T) {
 	s := newTestServer(&fakePinger{})
+	var logs bytes.Buffer
+	s.deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	handler := s.recoverPanic(jsonContentType(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	})))
@@ -198,6 +202,9 @@ func TestRecoverPanic(t *testing.T) {
 	}
 	if body.Error.Message == "" {
 		t.Error("no message for a person to read")
+	}
+	if line := logs.String(); !strings.Contains(line, `"stack"`) || !strings.Contains(line, "TestRecoverPanic") {
+		t.Errorf("panic log has no useful stack: %s", line)
 	}
 }
 
