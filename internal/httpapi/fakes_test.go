@@ -134,6 +134,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Auth:        fakeAuth{userID: testUserID},
 		Reels:       &fakeReels{},
 		Jobs:        &fakeJobs{},
+		Collections: newFakeCollections(),
 		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:     "test",
 		Now:         func() time.Time { return testNow },

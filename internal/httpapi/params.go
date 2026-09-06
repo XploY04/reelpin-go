@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -119,6 +121,34 @@ func savedDateParam(w http.ResponseWriter, query url.Values) (string, bool) {
 
 // pathUUID rejects a malformed id with the same 404 a missing record gets, so
 // probing ids never leaks the difference.
+// maxJSONBodyBytes bounds every JSON request body this API accepts. The
+// largest legitimate body is a hundred reel ids; anything near a megabyte is
+// not a request.
+const maxJSONBodyBytes = 1 << 20
+
+// decodeJSONBody decodes a strict JSON body. Unknown fields are rejected: the
+// request schemas declare additionalProperties false, and silently dropping a
+// misspelled field hides client bugs.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(target); err != nil {
+		var maxBytes *http.MaxBytesError
+		switch {
+		case errors.As(err, &maxBytes):
+			validationError(w, "body", "the request body is too large")
+		case errors.Is(err, io.EOF):
+			validationError(w, "body", "a JSON body is required")
+		default:
+			validationError(w, "body", "the request body is not valid JSON")
+		}
+		return false
+	}
+	return true
+}
+
 func pathUUID(w http.ResponseWriter, r *http.Request, name, errorCode string) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue(name))
 	if err != nil {

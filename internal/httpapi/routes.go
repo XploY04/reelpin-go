@@ -79,6 +79,28 @@ func (s *Server) routeTable() []Route {
 			OperationID: "submitNativeShare", Auth: AuthShareToken,
 			handler: s.shareTokenAuthenticated(s.handleNativeShare), claimMethods: true,
 		},
+
+		bearer(http.MethodGet, "/api/v2/collections", "listCollections", s.handleListCollections, false),
+		bearer(http.MethodPost, "/api/v2/collections", "createCollection", s.handleCreateCollection, true),
+		bearer(http.MethodGet, "/api/v2/collections/{collection_id}", "getCollection", s.handleCollectionDetail, false),
+		bearer(http.MethodPatch, "/api/v2/collections/{collection_id}", "updateCollection", s.handleUpdateCollection, false),
+		bearer(http.MethodDelete, "/api/v2/collections/{collection_id}", "deleteCollection", s.handleDeleteCollection, true),
+		bearer(http.MethodPost, "/api/v2/collections/{collection_id}/items", "addCollectionItems", s.handleAddCollectionItems, true),
+		bearer(http.MethodDelete, "/api/v2/collections/{collection_id}/items/{reel_id}", "removeCollectionItem", s.handleRemoveCollectionItem, true),
+		bearer(http.MethodGet, "/api/v2/collections/{collection_id}/members", "listCollectionMembers", s.handleCollectionMembers, true),
+		bearer(http.MethodDelete, "/api/v2/collections/{collection_id}/members/{member_user_id}", "removeCollectionMember", s.handleRemoveCollectionMember, true),
+		bearer(http.MethodPost, "/api/v2/collections/{collection_id}/leave", "leaveCollection", s.handleLeaveCollection, true),
+		bearer(http.MethodPost, "/api/v2/collections/{collection_id}/link", "enableCollectionLink", s.handleEnableCollectionLink, false),
+		bearer(http.MethodDelete, "/api/v2/collections/{collection_id}/link", "disableCollectionLink", s.handleDisableCollectionLink, true),
+		bearer(http.MethodPost, "/api/v2/collections/{collection_id}/invites", "createCollectionInvite", s.handleCreateCollectionInvite, true),
+		bearer(http.MethodPost, "/api/v2/collection-invites/{token}/accept", "acceptCollectionInvite", s.handleAcceptCollectionInvite, true),
+		{
+			// The token in the path is the whole authorization: an unguessable
+			// capability granting a read-only view of one collection.
+			Method: http.MethodGet, Path: "/api/v2/shared-collections/{token}",
+			OperationID: "getSharedCollection", Auth: AuthPublicShare,
+			handler: s.handleSharedCollection, claimMethods: true,
+		},
 	}
 }
 
