@@ -1,0 +1,23 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "title": "",
+            "selftext": "",
+            "url_overridden_by_dest": "",
+            "preview": {"images": []},
+            "stickied": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {"children": []}
+  }
+]

@@ -1,0 +1,13 @@
+[
+  {
+    "text": "We shipped the new ingest pipeline this week. Three lessons about back-pressure.",
+    "title": "Shipping the ingest pipeline",
+    "authorName": "Priya Nair",
+    "imageUrl": "https:\/\/media.example-cdn.com\/linkedin\/post-image.jpg",
+    "comments": [
+      {"text": "The back-pressure point matches what we saw."},
+      {"text": "Any write-up coming?"},
+      {"text": "   "}
+    ]
+  }
+]
