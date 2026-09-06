@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/geo"
+	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -138,6 +140,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Collections:   newFakeCollections(),
 		Notifications: &fakeNotifications{},
 		Lifecycle:     &fakeLifecycle{},
+		Map:           &fakeMap{},
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
 		Now:           func() time.Time { return testNow },
@@ -304,4 +307,46 @@ func (f *fakeLifecycle) DeleteAccount(_ context.Context, userID string) (lifecyc
 	report := f.report
 	report.UserID = userID
 	return report, nil
+}
+
+// fakeMap answers with whatever the test set up and records the bounds it was
+// asked for, so a test can prove the viewport reached the service unchanged.
+type fakeMap struct {
+	pins       []mapview.Pin
+	err        error
+	lastUserID string
+	lastBounds geo.Bounds
+	lastCentre geo.Point
+	hidden     *bool
+}
+
+func (f *fakeMap) Pins(_ context.Context, userID string, bounds geo.Bounds) ([]mapview.Pin, error) {
+	f.lastUserID, f.lastBounds = userID, bounds
+	return f.pins, f.err
+}
+
+func (f *fakeMap) Nearby(_ context.Context, userID string, centre geo.Point, _ float64, _ int) ([]mapview.Pin, error) {
+	f.lastUserID, f.lastCentre = userID, centre
+	return f.pins, f.err
+}
+
+func (f *fakeMap) CreateManualPin(_ context.Context, userID, name string, address *string, point geo.Point) (mapview.Pin, error) {
+	f.lastUserID = userID
+	if f.err != nil {
+		return mapview.Pin{}, f.err
+	}
+	return mapview.Pin{
+		ID: "55555555-5555-4555-8555-555555555555", Kind: "manual",
+		Name: name, Address: address, Latitude: point.Latitude, Longitude: point.Longitude,
+	}, nil
+}
+
+func (f *fakeMap) DeleteManualPin(_ context.Context, userID, _ string) error {
+	f.lastUserID = userID
+	return f.err
+}
+
+func (f *fakeMap) HidePin(_ context.Context, userID, _ string, hidden bool) error {
+	f.lastUserID, f.hidden = userID, &hidden
+	return f.err
 }
