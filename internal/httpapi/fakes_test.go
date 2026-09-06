@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
@@ -12,6 +15,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"io"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
@@ -373,4 +377,13 @@ func (f *fakeSearch) Search(_ context.Context, userID, query string, filters sea
 		f.response.Results = []search.Result{}
 	}
 	return f.response, nil
+}
+
+// signedBucketHeader builds the header the Next.js boundary sends, using the
+// same message layout as src/lib/security/ip-bucket.ts.
+func signedBucketHeader(secret, bucket string, at time.Time) string {
+	payload := "v1." + strconv.FormatInt(at.Unix(), 10) + "." + bucket
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	return payload + "." + hex.EncodeToString(mac.Sum(nil))
 }

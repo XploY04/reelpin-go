@@ -30,6 +30,11 @@ type Config struct {
 	// an unauthenticated scrape target is worse than none.
 	AdminKey string
 
+	// IPBucketSecret is shared with the Next.js boundary, which is the only hop
+	// that sees a browser's real address. Empty means no forwarded bucket is
+	// believed and per-IP limits fall back to the socket peer.
+	IPBucketSecret string
+
 	// RedisURL is required in production: rate limits fail closed without it,
 	// which would refuse every submission. Outside production it may be empty,
 	// and everything Redis-backed is simply off.
@@ -85,12 +90,13 @@ var validEnvironments = map[string]bool{
 
 func Load() (Config, error) {
 	cfg := Config{
-		Environment: envOr("ENVIRONMENT", "development"),
-		Port:        8000,
-		MetricsPort: 9100,
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		Version:     envOr("APP_VERSION", "dev"),
-		AdminKey:    strings.TrimSpace(os.Getenv("ADMIN_KEY")),
+		Environment:    envOr("ENVIRONMENT", "development"),
+		Port:           8000,
+		MetricsPort:    9100,
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		Version:        envOr("APP_VERSION", "dev"),
+		AdminKey:       strings.TrimSpace(os.Getenv("ADMIN_KEY")),
+		IPBucketSecret: strings.TrimSpace(os.Getenv("REELPIN_IP_BUCKET_SECRET")),
 
 		SupabaseURL: strings.TrimSpace(os.Getenv("SUPABASE_URL")),
 		RabbitMQURL: strings.TrimSpace(os.Getenv("RABBITMQ_URL")),

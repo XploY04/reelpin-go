@@ -60,7 +60,7 @@ func (s *Server) allowSubmission(w http.ResponseWriter, r *http.Request, userID 
 		subject string
 	}{
 		{ratelimit.Submission, userID},
-		{ratelimit.SubmissionIP, clientIP(r)},
+		{ratelimit.SubmissionIP, s.limitSubject(r)},
 	} {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {
@@ -90,8 +90,25 @@ func (s *Server) allowSubmission(w http.ResponseWriter, r *http.Request, userID 
 	return true
 }
 
-// clientIP is the socket peer. Forwarding headers are not believed here; the
-// trusted web boundary forwards a signed bucket in a later task.
+// limitSubject is what a per-IP policy counts against.
+//
+// The socket peer is the honest answer for a request from a phone. It is the
+// wrong answer once Next.js is the caller, because every web visitor arrives
+// from one socket and the whole web collapses into one bucket. So the boundary
+// that really sees the client forwards an opaque bucket it has signed, and this
+// side believes it only if it verifies. A forged or absent header costs nothing
+// and changes nothing: it falls through to the peer.
+func (s *Server) limitSubject(r *http.Request) string {
+	if bucket := ratelimit.VerifyIPBucket(
+		r.Header.Get(ratelimit.IPBucketHeader), s.deps.IPBucketSecret, s.deps.Now(),
+	); bucket != "" {
+		return bucket
+	}
+	return clientIP(r)
+}
+
+// clientIP is the socket peer. A forwarding header is never read here: anyone
+// can send one, and the signed bucket above is how a real one arrives.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

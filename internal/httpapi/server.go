@@ -60,6 +60,9 @@ type Deps struct {
 	Metrics *metrics.Metrics
 	// AdminKey guards /metrics. Empty means the endpoint is not mounted.
 	AdminKey string
+	// IPBucketSecret verifies the bucket the web boundary forwards. Empty means
+	// per-IP limits use the socket peer, which is the behaviour without a web.
+	IPBucketSecret string
 	// Redis and Workers are readiness inputs. Each is optional: a process
 	// without one is ready without it.
 	Redis   Pinger
