@@ -9,6 +9,8 @@ folder is the detail behind it. Read the page the task needs, not the folder.
 | [`domain-model.md`](domain-model.md) | You are touching reels, jobs, or how one becomes the other. |
 | [`api-contract.md`](api-contract.md) | You are adding, changing, or breaking an endpoint. |
 | [`operations.md`](operations.md) | You are running it, configuring it, or it is misbehaving. |
+| [`cost-gate.md`](cost-gate.md) | You need to know what a job costs a provider, or you are setting the spending limits. |
+| [`reopening-submissions.md`](reopening-submissions.md) | Submissions are answering `503 spend_limit_reached` and you have to decide what to do. |
 | [`cutover.md`](cutover.md) | You are deploying the image, or switching traffic from Python to Go. |
 | [`decisions/`](decisions/) | You want to know why something is the way it is before changing it. |
 | [`plans/`](plans/) | You are picking up work someone else scoped. |

@@ -36,6 +36,12 @@ FORBIDDEN = {
     "internal/config": [
         ("internal/", "config is read at startup and depends on nothing internal"),
     ],
+    "internal/spend": [
+        ("net/http", "the cost gate does not know about transport"),
+        ("github.com/jackc/pgx", "the ledger takes a store port, not a driver"),
+        ("internal/postgres", "the cost gate does not depend on its storage"),
+        ("internal/httpapi", "the cost gate does not depend on transport"),
+    ],
     "internal/auth": [
         ("internal/postgres", "token verification does not touch storage"),
     ],

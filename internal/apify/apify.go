@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // ErrNotConfigured means no token or no actor for this platform, so the caller
@@ -33,6 +35,9 @@ type Config struct {
 	Token   string
 	Actors  map[string]string
 	Timeout time.Duration
+	// Usage receives one record per completed run. Nil means nothing is
+	// recorded.
+	Usage spend.Recorder
 }
 
 type Client struct {
@@ -101,6 +106,16 @@ func (c *Client) Run(ctx context.Context, platform string, input any) ([]json.Ra
 	case response.StatusCode < 200 || response.StatusCode >= 300:
 		// The actor's body can echo the input, so only the status is reported.
 		return nil, fmt.Errorf("the actor returned HTTP %d", response.StatusCode)
+	}
+
+	// Apify reports nothing about what the run cost on this endpoint, so this
+	// is a call count and not a measured cost: the price of one run is
+	// configuration. A run that failed before returning is not counted, which
+	// undercounts a run that was billed and then errored.
+	if c.config.Usage != nil {
+		c.config.Usage.Record(ctx, spend.Usage{
+			Provider: "apify", Model: platform, Operation: "actor_run", Calls: 1,
+		})
 	}
 
 	var items []json.RawMessage

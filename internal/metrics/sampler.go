@@ -74,6 +74,38 @@ func (m *Metrics) sampleOnce(ctx context.Context, pool *pgxpool.Pool, workers Wo
 	}
 }
 
+// MonthlySpendUSD reports provider spend so far this calendar month.
+type MonthlySpendUSD func(ctx context.Context) (float64, error)
+
+// SampleSpend keeps month-to-date provider spend on a gauge. Exactly one
+// process should run it, because the number is the whole fleet's, not this
+// process's. It runs whether or not a cost gate is configured: watching the
+// spend is how the limits get chosen in the first place.
+func SampleSpend(ctx context.Context, m *Metrics, read MonthlySpendUSD) {
+	if m == nil || read == nil {
+		return
+	}
+	ticker := time.NewTicker(SampleInterval)
+	defer ticker.Stop()
+
+	for {
+		func() {
+			queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			// A failed read leaves the previous value in place: a zero here
+			// would read as a month with no spending at all.
+			if usd, err := read(queryCtx); err == nil {
+				m.ProviderSpendMonthUSD.Set(usd)
+			}
+		}()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // SampleTempDisk keeps the worker's temp-directory size on a gauge. A run that
 // leaks a download shows up here long before the disk fills.
 func SampleTempDisk(ctx context.Context, m *Metrics, root string) {

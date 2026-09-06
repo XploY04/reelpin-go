@@ -12,6 +12,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // Submitter is the submission use case, faked in handler tests.
@@ -221,6 +222,15 @@ func (s *Server) respondToSubmission(w http.ResponseWriter, result enqueue.Resul
 		return
 	case errors.Is(err, enqueue.ErrCollectionUnreachable):
 		validationError(w, "collection_ids", "must all be collections you can add to")
+		return
+	case errors.Is(err, spend.ErrLimitReached):
+		// Not retryable: this clears when an operator reopens submissions or
+		// the month rolls over, never by trying again in a minute. Reads and
+		// jobs already committed are untouched.
+		writeError(w, http.StatusServiceUnavailable, errorBody{
+			Code:    "spend_limit_reached",
+			Message: "New submissions are paused until the monthly provider budget is reviewed. Everything already saved is still available.",
+		})
 		return
 	case errors.Is(err, enqueue.ErrUnsupported):
 		validationError(w, "url", "is not a link this service can ingest")

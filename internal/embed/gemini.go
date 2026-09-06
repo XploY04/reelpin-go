@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // ErrNotConfigured means no API key. It is an explicit state rather than a nil
@@ -23,6 +25,7 @@ type Gemini struct {
 	dimension int
 	baseURL   string
 	client    *http.Client
+	usage     spend.Recorder
 }
 
 type GeminiConfig struct {
@@ -32,6 +35,8 @@ type GeminiConfig struct {
 	Timeout   time.Duration
 	// BaseURL is a test seam. Empty means the real endpoint.
 	BaseURL string
+	// Usage receives what each call cost. Nil means nothing is recorded.
+	Usage spend.Recorder
 }
 
 func NewGemini(config GeminiConfig) *Gemini {
@@ -53,6 +58,7 @@ func NewGemini(config GeminiConfig) *Gemini {
 		dimension: config.Dimension,
 		baseURL:   config.BaseURL,
 		client:    &http.Client{Timeout: config.Timeout},
+		usage:     config.Usage,
 	}
 }
 
@@ -82,6 +88,12 @@ type embedResponse struct {
 	Embeddings []struct {
 		Values []float32 `json:"values"`
 	} `json:"embeddings"`
+	// batchEmbedContents does not document a usage block. It is decoded anyway
+	// so that a provider which starts reporting one is measured rather than
+	// estimated; until then the cost is priced per document embedded.
+	UsageMetadata struct {
+		PromptTokenCount int64 `json:"promptTokenCount"`
+	} `json:"usageMetadata"`
 }
 
 // Embed returns one vector per text, in order. The requested dimension is sent
@@ -146,9 +158,28 @@ func (g *Gemini) Embed(ctx context.Context, texts []string) ([][]float32, error)
 			len(texts), len(decoded.Embeddings))
 	}
 
+	g.record(ctx, len(texts), decoded.UsageMetadata.PromptTokenCount)
+
 	vectors := make([][]float32, 0, len(decoded.Embeddings))
 	for _, embedding := range decoded.Embeddings {
 		vectors = append(vectors, embedding.Values)
 	}
 	return vectors, nil
+}
+
+// record reports what one batch cost. Calls is the number of documents, not the
+// number of HTTP requests: the provider bills the work, and the indexer sends
+// one document at a time anyway.
+func (g *Gemini) record(ctx context.Context, documents int, promptTokens int64) {
+	if g.usage == nil {
+		return
+	}
+	g.usage.Record(ctx, spend.Usage{
+		Provider:    "gemini",
+		Model:       g.model,
+		Operation:   "embed",
+		Calls:       documents,
+		InputTokens: promptTokens,
+		Measured:    promptTokens > 0,
+	})
 }

@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 func TestEmbedSendsTheModelTaskAndDimension(t *testing.T) {
@@ -80,5 +82,45 @@ func TestAShortResponseIsAnError(t *testing.T) {
 	if _, err := NewGemini(GeminiConfig{APIKey: "k", BaseURL: server.URL}).
 		Embed(context.Background(), []string{"one", "two"}); err == nil {
 		t.Fatal("a short response was accepted")
+	}
+}
+
+// countingUsage collects what the embedder reported it spent.
+type countingUsage struct {
+	seen []spend.Usage
+}
+
+func (c *countingUsage) Record(_ context.Context, usage spend.Usage) {
+	c.seen = append(c.seen, usage)
+}
+
+func TestEmbeddingIsCountedPerDocument(t *testing.T) {
+	// batchEmbedContents reports no usage block, so the cost gate can only be
+	// told how many documents were embedded. Pricing one is configuration.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(embedResponse{Embeddings: []struct {
+			Values []float32 `json:"values"`
+		}{
+			{Values: make([]float32, DefaultDimension)},
+			{Values: make([]float32, DefaultDimension)},
+		}})
+	}))
+	defer server.Close()
+
+	usage := &countingUsage{}
+	client := NewGemini(GeminiConfig{APIKey: "test-key", BaseURL: server.URL, Usage: usage})
+	if _, err := client.Embed(context.Background(), []string{"one", "two"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+
+	if len(usage.seen) != 1 {
+		t.Fatalf("recorded %d batches, want 1", len(usage.seen))
+	}
+	got := usage.seen[0]
+	if got.Calls != 2 || got.Measured {
+		t.Errorf("usage = %+v, want two unmeasured documents", got)
+	}
+	if got.Operation != "embed" || got.Model != DefaultModel {
+		t.Errorf("usage = %+v, want it attributed to the embedding model", got)
 	}
 }

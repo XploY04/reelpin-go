@@ -1138,8 +1138,18 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     ProcessingUnavailable:
       description: |
-        A capability this endpoint needs is unavailable. Reads stay healthy;
-        retry later.
+        Submissions are not being accepted. Reads stay healthy either way, and
+        anything already saved or already processing is unaffected. Match on
+        `error.code` to tell the two states apart:
+
+        - `processing_unavailable`: a capability this endpoint needs is
+          temporarily down. `retryable` is `true`; try again later.
+        - `spend_limit_reached`: the month's provider spending has reached the
+          limit the operator set, so no new work that costs a provider is
+          accepted. `retryable` is `false`: this clears when an operator reopens
+          submissions or the month rolls over, never by repeating the request.
+          Some sources may stop before others, so one link can be refused while
+          another is still accepted.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/redis/go-redis/v9"
 )
@@ -127,17 +129,39 @@ func run(logger *slog.Logger) error {
 	resolver := &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})}
 	shareTokens := sharetoken.NewStore(pool)
 
+	// Every search embeds its query, so the API spends money too and writes the
+	// same ledger the worker does.
+	prices, err := spend.ParsePricesOrNone(cfg.CostGatePrices)
+	if err != nil {
+		return fmt.Errorf("COST_GATE_PRICES: %w", err)
+	}
+	ledger := postgres.NewSpend(pool)
+
 	// Without a key the embedder answers ErrNotConfigured, which search treats
 	// as one arm being unavailable rather than as a failure.
 	embedder := embed.NewGemini(embed.GeminiConfig{
 		APIKey:    cfg.GeminiAPIKey,
 		Model:     cfg.EmbeddingModel,
 		Dimension: cfg.EmbeddingDimension,
+		Usage:     spend.NewLedger(ledger, prices, meters, logger),
 	})
 	if cfg.AdminKey == "" {
 		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
 	}
 	go metrics.Sample(ctx, meters, pool, liveWorkers)
+
+	// The API is the one process that publishes the fleet's month-to-date
+	// spend, whether or not a gate is configured: watching it is how the
+	// limits get chosen.
+	go metrics.SampleSpend(ctx, meters, func(ctx context.Context) (float64, error) {
+		total, err := ledger.MonthToDateMicros(ctx)
+		return total.USD(), err
+	})
+
+	gate, err := costGate(cfg, ledger, meters, logger)
+	if err != nil {
+		return err
+	}
 
 	searchService := search.NewService(pool, embedder, logger, time.Now)
 	searchService.Metrics = meters
@@ -149,7 +173,7 @@ func run(logger *slog.Logger) error {
 			Auth:           verifier,
 			Reels:          postgres.NewReels(pool),
 			Jobs:           postgres.NewJobs(pool),
-			Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver),
+			Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, gate),
 			ShareTokens:    shareTokens,
 			Resolver:       resolver,
 			Map:            mapview.New(pool, time.Now),
@@ -191,4 +215,28 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	return nil
+}
+
+// costGate builds the gate from the approved values, or returns nil when none
+// are configured. A nil gate refuses nothing: the amounts are a product
+// decision, and inventing one would look like it had been made.
+func costGate(cfg config.Config, ledger *postgres.Spend, meters *metrics.Metrics, logger *slog.Logger) (*spend.Gate, error) {
+	if !cfg.CostGateConfigured() {
+		logger.Warn("no cost gate is configured: provider spending is measured but not limited",
+			"set", "COST_GATE_WARN_USD, COST_GATE_STOP_USD, COST_GATE_STOP_ORDER, COST_GATE_PRICES")
+		return nil, nil
+	}
+	limits, err := spend.NewLimits(cfg.CostGateWarnUSD, cfg.CostGateStopUSD, cfg.CostGateStopOrder)
+	if err != nil {
+		return nil, fmt.Errorf("the cost gate: %w", err)
+	}
+	ladder := make([]string, 0, len(limits.StopOrder))
+	for position, group := range limits.StopOrder {
+		ladder = append(ladder, fmt.Sprintf("%s at $%.2f", group, limits.ShedAt(position).USD()))
+	}
+	logger.Info("cost gate enabled",
+		"warn_usd", limits.WarnMicros.USD(),
+		"stop_usd", limits.StopMicros.USD(),
+		"ladder", strings.Join(ladder, ", "))
+	return spend.NewGate(limits, ledger, meters), nil
 }

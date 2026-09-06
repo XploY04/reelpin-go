@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // fakeGemini answers like the REST API. The body it returns is scripted per
@@ -157,5 +159,78 @@ func TestAMissingKeyFailsBeforeTheNetwork(t *testing.T) {
 	var provider *ProviderError
 	if !errors.As(err, &provider) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// recordedUsage collects what the client reported it spent.
+type recordedUsage struct {
+	seen []spend.Usage
+}
+
+func (r *recordedUsage) Record(_ context.Context, usage spend.Usage) {
+	r.seen = append(r.seen, usage)
+}
+
+func TestUsageComesFromTheProvidersOwnCount(t *testing.T) {
+	// The cost gate runs on what the provider says it billed, never on an
+	// estimate made here.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{map[string]any{
+				"content": map[string]any{"parts": []any{map[string]any{"text": `{"title":"t","summary":"s"}`}}},
+			}},
+			"usageMetadata": map[string]any{
+				"promptTokenCount": 4321, "candidatesTokenCount": 210,
+			},
+		})
+	}))
+	defer server.Close()
+
+	usage := &recordedUsage{}
+	client := NewGemini(GeminiConfig{APIKey: "test-key", BaseURL: server.URL, Usage: usage})
+	if _, err := client.Extract(context.Background(), "transcript", "caption"); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	if len(usage.seen) != 1 {
+		t.Fatalf("recorded %d calls, want 1", len(usage.seen))
+	}
+	got := usage.seen[0]
+	if got.InputTokens != 4321 || got.OutputTokens != 210 || !got.Measured {
+		t.Errorf("usage = %+v, want the provider's own counts", got)
+	}
+	if got.Provider != "gemini" || got.Operation != "extract" || got.Model != DefaultModel {
+		t.Errorf("usage = %+v, want it attributed to the model and the stage", got)
+	}
+}
+
+func TestAnAnswerWithNoUsageBlockIsCountedNotEstimated(t *testing.T) {
+	server := fakeGemini(t, http.StatusOK, `{"title":"t","summary":"s"}`, nil)
+	defer server.Close()
+
+	usage := &recordedUsage{}
+	client := NewGemini(GeminiConfig{APIKey: "test-key", BaseURL: server.URL, Usage: usage})
+	if _, err := client.Extract(context.Background(), "t", "c"); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(usage.seen) != 1 || usage.seen[0].Measured {
+		t.Fatalf("usage = %+v, want one unmeasured call rather than zero tokens", usage.seen)
+	}
+	if usage.seen[0].Calls != 1 {
+		t.Errorf("calls = %d, want the call itself to be on record", usage.seen[0].Calls)
+	}
+}
+
+func TestARefusalIsNotBilled(t *testing.T) {
+	server := fakeGemini(t, http.StatusTooManyRequests, `{"error":{"code":429}}`, nil)
+	defer server.Close()
+
+	usage := &recordedUsage{}
+	client := NewGemini(GeminiConfig{APIKey: "test-key", BaseURL: server.URL, Usage: usage})
+	if _, err := client.Extract(context.Background(), "t", "c"); err == nil {
+		t.Fatal("a 429 was not an error")
+	}
+	if len(usage.seen) != 0 {
+		t.Errorf("a refused call was recorded as spending: %+v", usage.seen)
 	}
 }

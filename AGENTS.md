@@ -39,6 +39,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/notify/` | Push tokens and FCM delivery. |
 | `internal/media/`, `internal/storage/`, `internal/providers/`, `internal/apify/`, `internal/cookies/` | Bounded downloads, the temp workspace, provider budgets and cooldowns. |
 | `internal/safehttp/`, `internal/ratelimit/` | The outbound SSRF guard and the Redis limiters. |
+| `internal/spend/` | The cost gate: what a provider call cost, and whether new submissions are still accepted. The amounts are configuration; see `docs/cost-gate.md`. |
 | `internal/postgres/`, `internal/db/`, `internal/migrations/` | pgx implementations, the pool, and the embedded migrations. |
 | `internal/metrics/` | The only importer of the Prometheus client: every collector, the gauge sampler, and `Hash` for log redaction. |
 | `internal/load/` | The load driver's scenarios, sender and report. |

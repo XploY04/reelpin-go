@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // DefaultModel is what the Python service runs today, so a migrated reel is
@@ -41,6 +43,9 @@ var ErrEmptyResponse = errors.New("gemini returned no content")
 type GeminiConfig struct {
 	APIKey string
 	Model  string
+	// Usage receives what each call cost. Nil means nothing is recorded, which
+	// is how the whole test suite and a local worker run.
+	Usage spend.Recorder
 	// BaseURL exists for tests, which stand up a local server. Empty means the
 	// real API.
 	BaseURL string
@@ -99,11 +104,17 @@ type geminiResponse struct {
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
+	// The provider's own count of what it billed. It is the measurement the
+	// cost gate runs on; nothing here estimates a token.
+	UsageMetadata struct {
+		PromptTokenCount     int64 `json:"promptTokenCount"`
+		CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+	} `json:"usageMetadata"`
 }
 
 // generate makes one call. responseSchema, when set, asks the provider to
 // enforce JSON shape; domain validation still happens after.
-func (g *Gemini) generate(ctx context.Context, parts []geminiPart, responseSchema json.RawMessage) (string, error) {
+func (g *Gemini) generate(ctx context.Context, operation string, parts []geminiPart, responseSchema json.RawMessage) (string, error) {
 	if strings.TrimSpace(g.config.APIKey) == "" {
 		return "", &ProviderError{StatusCode: 0, message: "GEMINI_API_KEY is not configured"}
 	}
@@ -157,6 +168,9 @@ func (g *Gemini) generate(ctx context.Context, parts []geminiPart, responseSchem
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		return "", fmt.Errorf("decoding the gemini response: %w", err)
 	}
+	// Recorded before the empty-candidate check: an answer with no usable
+	// candidate was still billed.
+	g.record(ctx, operation, decoded.UsageMetadata.PromptTokenCount, decoded.UsageMetadata.CandidatesTokenCount)
 	if len(decoded.Candidates) == 0 || len(decoded.Candidates[0].Content.Parts) == 0 {
 		return "", ErrEmptyResponse
 	}
@@ -165,6 +179,24 @@ func (g *Gemini) generate(ctx context.Context, parts []geminiPart, responseSchem
 		text.WriteString(part.Text)
 	}
 	return strings.TrimSpace(text.String()), nil
+}
+
+// record reports one billed call. A 200 with no usageMetadata is possible, and
+// it is reported as a call count rather than as zero tokens, because a zero
+// would price the call at nothing.
+func (g *Gemini) record(ctx context.Context, operation string, prompt, candidates int64) {
+	if g.config.Usage == nil {
+		return
+	}
+	g.config.Usage.Record(ctx, spend.Usage{
+		Provider:     "gemini",
+		Model:        g.config.Model,
+		Operation:    operation,
+		Calls:        1,
+		InputTokens:  prompt,
+		OutputTokens: candidates,
+		Measured:     prompt > 0 || candidates > 0,
+	})
 }
 
 // retryAfter reads the provider's push-back from the standard header or the
@@ -202,7 +234,7 @@ func (g *Gemini) Transcribe(ctx context.Context, audio Media) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading audio: %w", err)
 	}
-	return g.generate(ctx, []geminiPart{
+	return g.generate(ctx, "transcribe", []geminiPart{
 		{Text: transcriptionPrompt},
 		{InlineData: &geminiInlineData{MIMEType: audio.MIMEType, Data: base64.StdEncoding.EncodeToString(body)}},
 	}, nil)
@@ -222,7 +254,7 @@ func (g *Gemini) ReadText(ctx context.Context, images []Media) (string, error) {
 			InlineData: &geminiInlineData{MIMEType: image.MIMEType, Data: base64.StdEncoding.EncodeToString(body)},
 		})
 	}
-	return g.generate(ctx, parts, nil)
+	return g.generate(ctx, "read_text", parts, nil)
 }
 
 // extractionSchema is the provider-side shape hint. Domain validation in
@@ -250,7 +282,7 @@ var extractionSchema = json.RawMessage(`{
 }`)
 
 func (g *Gemini) Extract(ctx context.Context, transcript, caption string) (Extraction, error) {
-	text, err := g.generate(ctx, []geminiPart{{Text: extractionUserPrompt(transcript, caption)}}, extractionSchema)
+	text, err := g.generate(ctx, "extract", []geminiPart{{Text: extractionUserPrompt(transcript, caption)}}, extractionSchema)
 	if err != nil {
 		return Extraction{}, err
 	}
@@ -274,7 +306,7 @@ var categorySchema = json.RawMessage(`{
 }`)
 
 func (g *Gemini) Categorize(ctx context.Context, extraction Extraction, taxonomy []TaxonomyOption) (Category, error) {
-	text, err := g.generate(ctx, []geminiPart{{Text: categoryUserPrompt(extraction, taxonomy)}}, categorySchema)
+	text, err := g.generate(ctx, "categorize", []geminiPart{{Text: categoryUserPrompt(extraction, taxonomy)}}, categorySchema)
 	if err != nil {
 		return Category{}, err
 	}

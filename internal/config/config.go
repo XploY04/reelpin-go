@@ -63,6 +63,16 @@ type Config struct {
 	// mismatch is a corrupt vector set rather than a slow query.
 	EmbeddingModel     string
 	EmbeddingDimension int
+	// The cost gate. These four are the only product values in this file, and
+	// they are read as raw strings because parsing them belongs to
+	// internal/spend, which config may not import. All four together enable the
+	// gate; none of them leaves it off. Anything in between fails at startup,
+	// because a limit assembled from half a decision is a limit nobody made.
+	CostGateWarnUSD   string
+	CostGateStopUSD   string
+	CostGateStopOrder string
+	CostGatePrices    string
+
 	// GeminiAPIKey is the worker's model credential. Empty means every
 	// provider call fails as unconfigured, which the pipeline surfaces as a
 	// retryable provider error rather than a crash.
@@ -117,6 +127,15 @@ func Load() (Config, error) {
 		RateLimitSalt:  strings.TrimSpace(os.Getenv("RATE_LIMIT_SALT")),
 
 		GeminiAPIKey: strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+
+		CostGateWarnUSD:   strings.TrimSpace(os.Getenv("COST_GATE_WARN_USD")),
+		CostGateStopUSD:   strings.TrimSpace(os.Getenv("COST_GATE_STOP_USD")),
+		CostGateStopOrder: strings.TrimSpace(os.Getenv("COST_GATE_STOP_ORDER")),
+		CostGatePrices:    strings.TrimSpace(os.Getenv("COST_GATE_PRICES")),
+	}
+
+	if err := cfg.checkCostGate(); err != nil {
+		return Config{}, err
 	}
 
 	if !validEnvironments[cfg.Environment] {
@@ -170,6 +189,46 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// CostGateConfigured reports whether all four cost-gate variables are set.
+func (c Config) CostGateConfigured() bool {
+	return c.CostGateWarnUSD != "" && c.CostGateStopUSD != "" &&
+		c.CostGateStopOrder != "" && c.CostGatePrices != ""
+}
+
+// checkCostGate refuses a partial gate. Set none of them and spending is simply
+// not limited, which is visible in the startup log and on the zeroed gauges;
+// set some of them and the service would enforce a limit assembled out of
+// defaults nobody approved.
+func (c Config) checkCostGate() error {
+	set := map[string]bool{
+		"COST_GATE_WARN_USD":   c.CostGateWarnUSD != "",
+		"COST_GATE_STOP_USD":   c.CostGateStopUSD != "",
+		"COST_GATE_STOP_ORDER": c.CostGateStopOrder != "",
+		"COST_GATE_PRICES":     c.CostGatePrices != "",
+	}
+	missing := []string{}
+	for _, name := range []string{
+		"COST_GATE_WARN_USD", "COST_GATE_STOP_USD",
+		"COST_GATE_STOP_ORDER", "COST_GATE_PRICES",
+	} {
+		if !set[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 || len(missing) == len(set) {
+		return nil
+	}
+	return fmt.Errorf("the cost gate needs all four of its variables or none: %s %s not set",
+		strings.Join(missing, ", "), plural(len(missing)))
+}
+
+func plural(count int) string {
+	if count == 1 {
+		return "is"
+	}
+	return "are"
 }
 
 func portFrom(key string, fallback int) (int, error) {

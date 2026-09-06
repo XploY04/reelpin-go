@@ -166,3 +166,53 @@ groups:
           description: >-
             Check the Firebase credentials first. A wholesale failure is usually
             an expired service account, not the devices.
+
+  - name: reelpin-cost
+    rules:
+      # The amounts are not in this file. They are configuration the product
+      # owner approves, exported as gauges, so a rule can compare spend against
+      # the approved number without anyone editing a limit into a rules file.
+      - alert: ProviderSpendWarning
+        expr: |
+          reelpin_cost_gate_warn_usd > 0
+            and reelpin_provider_spend_month_usd >= reelpin_cost_gate_warn_usd
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: Provider spend has reached the approved warning amount
+          description: >-
+            This month's provider spend is at or above the warning amount. The
+            first stop-order group sheds new submissions at this point; the rest
+            follow as spend climbs toward the hard stop. Read
+            docs/reopening-submissions.md before changing anything.
+
+      - alert: ProviderSpendHardStop
+        expr: |
+          reelpin_cost_gate_stop_usd > 0
+            and reelpin_provider_spend_month_usd >= reelpin_cost_gate_stop_usd
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Provider spend has reached the hard stop
+          description: >-
+            Every provider-costing submission is now refused with
+            spend_limit_reached. Reads and jobs already committed are
+            unaffected. Reopening is a decision, not a restart:
+            docs/reopening-submissions.md.
+
+      - alert: CostGateUndercounting
+        expr: |
+          sum by (provider, accounting) (
+            increase(reelpin_provider_calls_total{accounting=~"unpriced|unrecorded"}[1h])) > 0
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.provider }} calls are {{ $labels.accounting }}"
+          description: >-
+            The gate is spending money it cannot see. unpriced means
+            COST_GATE_PRICES has no entry for that provider and model;
+            unrecorded means the ledger insert failed and the call is missing
+            from the month's total entirely.

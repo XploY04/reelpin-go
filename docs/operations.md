@@ -16,6 +16,15 @@ testable without setting a variable.
 | `DATABASE_URL` | compose DSN | **Required** in production; outside it, falls back to the local compose database. |
 | `SUPABASE_URL` | none | **Required** outside the `test` environment. The JWKS is fetched from it at startup. |
 | `SUPABASE_JWT_AUDIENCE` | `authenticated` | Checked on every token. |
+| `COST_GATE_WARN_USD` | none | Monthly warning amount, plain dollars (`12.00`). See [`cost-gate.md`](cost-gate.md). |
+| `COST_GATE_STOP_USD` | none | Monthly hard stop. Must be above the warning amount. |
+| `COST_GATE_STOP_ORDER` | none | Which groups stop taking new work first, in order, ending with `all`: `instagram,media,light,all`. An entry is a platform or a work class (`media`, `light`). |
+| `COST_GATE_PRICES` | none | Provider prices, `provider:model:unit=usd` separated by commas. Units: `input_mtok`, `output_mtok`, `call`. The model may be `*`. |
+
+The four cost-gate variables are all-or-nothing. Set all four and the gate runs;
+set none and provider spending is measured but not limited. Set some and startup
+fails, because a spending limit assembled out of defaults is a limit nobody
+approved.
 
 Startup fails loudly and immediately on a missing required variable. A service
 that starts and then answers 500 is harder to diagnose than one that refuses to
