@@ -216,3 +216,53 @@ groups:
             COST_GATE_PRICES has no entry for that provider and model;
             unrecorded means the ledger insert failed and the call is missing
             from the month's total entirely.
+
+  # Task 29's automatic rollback triggers, kept apart from the pages above on
+  # purpose. These are tighter than the operational rules and they exist to be
+  # read by automation, not by a person: autorollback="true" is the contract
+  # between this file and whatever runs the rollback.
+  #
+  # They are deliberately not the same thresholds as SustainedServerErrors and
+  # SlowRequests. Those page a human about a service that is misbehaving. These
+  # decide that a new deployment is worse than the one it replaced, which is a
+  # lower bar and has to fire sooner.
+  - name: reelpin-rollback
+    rules:
+      - alert: RollbackOnServerErrors
+        # The request floor is the point. Two failures out of three requests is
+        # 66% and means nothing at three in five minutes; without the floor a
+        # quiet window rolls back a healthy deployment on noise.
+        expr: |
+          sum(increase(reelpin_http_requests_total[5m])) >= 100
+            and
+          sum(rate(reelpin_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(reelpin_http_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: page
+          autorollback: "true"
+        annotations:
+          summary: v2 is failing more than 2% of at least 100 requests
+          description: >-
+            Roll back to the previous image digest. Do not roll back the
+            database: every migration in this stack is expand-only, so the
+            prior digest reads the current schema. docs/cutover.md has the
+            command and the order.
+
+      - alert: RollbackOnSlowReads
+        # GET only. A slow submission is a provider being slow, which is not a
+        # reason to roll back a read path that is fine.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(reelpin_http_request_duration_seconds_bucket{method="GET"}[15m]))) > 0.8
+        for: 15m
+        labels:
+          severity: page
+          autorollback: "true"
+        annotations:
+          summary: Read p95 is above 800ms for fifteen minutes
+          description: >-
+            The rehearsal gate is 800ms with database network time under 150ms.
+            Check the network time first: compute in ap-south-1 against a
+            database in ap-northeast-1 measured about 265ms on its own, and no
+            amount of rolling back fixes distance.

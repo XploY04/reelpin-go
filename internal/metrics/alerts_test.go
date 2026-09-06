@@ -164,3 +164,43 @@ func TestPoolAlertDoesNotCompareMismatchedSeries(t *testing.T) {
 		t.Error("the pool alert should aggregate the state label away before comparing")
 	}
 }
+
+// Task 29 fixes the automatic rollback thresholds: 5xx above 2 percent for five
+// minutes once v2 has at least 100 requests, or read p95 above 800ms for
+// fifteen. They are a contract with whatever runs the rollback, so a well-meant
+// edit that loosens one is a deployment that stops being reverted when it
+// should be. This asserts the numbers rather than trusting the file.
+func TestRollbackTriggersKeepTheAgreedThresholds(t *testing.T) {
+	blocks := alertBlocks(t)
+
+	errors, ok := blocks["RollbackOnServerErrors"]
+	if !ok {
+		t.Fatal("RollbackOnServerErrors is gone")
+	}
+	for _, want := range []string{"[5m]", "> 0.02", ">= 100", "for: 5m"} {
+		if !strings.Contains(errors, want) {
+			t.Errorf("RollbackOnServerErrors no longer says %q", want)
+		}
+	}
+
+	reads, ok := blocks["RollbackOnSlowReads"]
+	if !ok {
+		t.Fatal("RollbackOnSlowReads is gone")
+	}
+	for _, want := range []string{"histogram_quantile(0.95", "> 0.8", "for: 15m", `method="GET"`} {
+		if !strings.Contains(reads, want) {
+			t.Errorf("RollbackOnSlowReads no longer says %q", want)
+		}
+	}
+
+	// The label is how automation finds them. A rule that loses it stops being
+	// a rollback trigger and becomes a page nobody wired up.
+	for name, block := range map[string]string{
+		"RollbackOnServerErrors": errors,
+		"RollbackOnSlowReads":    reads,
+	} {
+		if !strings.Contains(block, `autorollback: "true"`) {
+			t.Errorf("%s is not labelled for automatic rollback", name)
+		}
+	}
+}

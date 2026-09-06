@@ -12,6 +12,7 @@ folder is the detail behind it. Read the page the task needs, not the folder.
 | [`cost-gate.md`](cost-gate.md) | You need to know what a job costs a provider, or you are setting the spending limits. |
 | [`reopening-submissions.md`](reopening-submissions.md) | Submissions are answering `503 spend_limit_reached` and you have to decide what to do. |
 | [`cutover.md`](cutover.md) | You are deploying the image, or switching traffic from Python to Go. |
+| [`rehearsal.md`](rehearsal.md) | You are proving the migration on a copy of production, before any of it is real. |
 | [`decisions/`](decisions/) | You want to know why something is the way it is before changing it. |
 | [`plans/`](plans/) | You are picking up work someone else scoped. |
 
