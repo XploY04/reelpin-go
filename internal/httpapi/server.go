@@ -13,17 +13,25 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
 
-// DatabasePinger is the only thing the health endpoints need from the pool.
-type DatabasePinger interface {
-	Ping(context.Context) error
+// Pinger is one bounded liveness check against a dependency this process owns.
+// It is all the health endpoints need from the pool or from Redis, and it
+// never reaches a paid provider.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// WorkerCounter reports how many workers are currently heartbeating.
+type WorkerCounter interface {
+	LiveWorkers(ctx context.Context) (int, error)
 }
 
 // Deps is everything the API needs from the outside world.
 type Deps struct {
-	DB    DatabasePinger
+	DB    Pinger
 	Auth  auth.Authenticator
 	Reels reels.ReelReader
 	Jobs  jobs.JobReader
@@ -47,6 +55,15 @@ type Deps struct {
 	// Limiter is nil outside production-shaped setups. Provider-costing
 	// endpoints fail closed without a decision; reads never consult it.
 	Limiter RateLimiter
+	// Metrics is optional: nil means this process exports none and /metrics is
+	// not served at all.
+	Metrics *metrics.Metrics
+	// AdminKey guards /metrics. Empty means the endpoint is not mounted.
+	AdminKey string
+	// Redis and Workers are readiness inputs. Each is optional: a process
+	// without one is ready without it.
+	Redis   Pinger
+	Workers WorkerCounter
 	Logger  *slog.Logger
 	Version string
 	Now     func() time.Time
@@ -84,9 +101,16 @@ func (s *Server) Routes() http.Handler {
 		}
 	}
 
+	// Prometheus scrapes this. It is deliberately outside the route table and
+	// the contract: it answers the exposition format, not JSON, and no
+	// generated client should ever call it.
+	if s.deps.Metrics != nil && s.deps.AdminKey != "" {
+		mux.Handle("GET /metrics", s.deps.Metrics.GuardedHandler(s.deps.AdminKey))
+	}
+
 	mux.HandleFunc("/", notFound)
 
-	return s.requestID(s.logRequest(s.recoverPanic(jsonContentType(mux))))
+	return s.requestID(s.observe(s.logRequest(s.recoverPanic(jsonContentType(mux)))))
 }
 
 func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
@@ -103,7 +127,10 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		userID, err := s.deps.Auth.Authenticate(r.Context(), token)
 		if err != nil {
 			// The verification error stays in the log; the client learns nothing.
-			s.deps.Logger.Info("token rejected", "path", r.URL.Path, "error", err)
+			s.deps.Logger.Info("token rejected",
+				"route", routeLabel(r.Pattern),
+				"request_id", w.Header().Get("X-Request-ID"),
+				"error", err)
 			writeError(w, http.StatusUnauthorized, errorBody{
 				Code:    "invalid_auth_token",
 				Message: "Your sign-in session is invalid or expired.",
@@ -111,6 +138,11 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// The log middleware runs outside this one and cannot see a context
+		// value set here, so the hashed user is handed back through a holder.
+		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok {
+			holder.hashedUser = metrics.Hash(userID)
+		}
 		next(w, r.WithContext(auth.WithUserID(r.Context(), userID)))
 	}
 }
@@ -218,6 +250,14 @@ func validRequestID(id string) bool {
 	return true
 }
 
+// logSubject carries the hashed user back out to the log middleware. One
+// request is handled by one goroutine, so it needs no lock.
+type logSubject struct{ hashedUser string }
+
+type logSubjectKeyType struct{}
+
+var logSubjectKey logSubjectKeyType
+
 func (s *Server) requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
@@ -225,8 +265,36 @@ func (s *Server) requestID(next http.Handler) http.Handler {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), logSubjectKey, &logSubject{})))
 	})
+}
+
+// observe records the request against the registry. It sits inside the
+// request-id middleware and outside everything else, so it sees the status any
+// handler or middleware wrote.
+func (s *Server) observe(next http.Handler) http.Handler {
+	if s.deps.Metrics == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		s.deps.Metrics.ObserveRequest(routeLabel(r.Pattern), r.Method, rec.status, time.Since(start))
+	})
+}
+
+// routeLabel keeps a label to the shape of the route, not the request. The mux
+// fills in r.Pattern during routing; the raw path carries reel and job ids and
+// would grow a time series per id.
+func routeLabel(pattern string) string {
+	if pattern == "" {
+		return "unmatched"
+	}
+	if _, path, found := strings.Cut(pattern, " "); found {
+		return path
+	}
+	return pattern
 }
 
 func (s *Server) logRequest(next http.Handler) http.Handler {
@@ -234,13 +302,20 @@ func (s *Server) logRequest(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		s.deps.Logger.Info("request",
+
+		// The user is hashed and the path is the route pattern: a log line is
+		// for correlating, never for identifying.
+		fields := []any{
 			"method", r.Method,
-			"path", r.URL.Path,
+			"route", routeLabel(r.Pattern),
 			"status", rec.status,
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+			"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
 			"request_id", w.Header().Get("X-Request-ID"),
-		)
+		}
+		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok && holder.hashedUser != "" {
+			fields = append(fields, "user", holder.hashedUser)
+		}
+		s.deps.Logger.Info("request", fields...)
 	})
 }
 

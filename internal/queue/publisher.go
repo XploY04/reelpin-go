@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -25,6 +26,8 @@ type Publisher struct {
 	channel *amqp.Channel
 	returns chan amqp.Return
 	timeout time.Duration
+	// Metrics is optional. Nil means the publisher counts nothing.
+	Metrics *metrics.Metrics
 }
 
 func NewPublisher(connection *amqp.Connection, confirmTimeout time.Duration) (*Publisher, error) {
@@ -55,6 +58,16 @@ func NewPublisher(connection *amqp.Connection, confirmTimeout time.Duration) (*P
 // outbox event id travels as MessageId, so a consumer can dedupe and an
 // operator can trace a delivery back to its row.
 func (p *Publisher) Publish(ctx context.Context, routingKey string, message Message) (err error) {
+	defer func() {
+		if p.Metrics != nil {
+			outcome := "confirmed"
+			if err != nil {
+				outcome = "failed"
+			}
+			p.Metrics.QueuePublished.WithLabelValues(routingKey, outcome).Inc()
+		}
+	}()
+
 	body, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encoding message: %w", err)
@@ -111,7 +124,11 @@ func (p *Publisher) Publish(ctx context.Context, routingKey string, message Mess
 // failures only; a failure that reached durable state schedules its retry
 // through the outbox instead, on the database clock.
 func (p *Publisher) PublishRetry(ctx context.Context, workQueue string, attempt int, message Message) error {
-	return p.Publish(ctx, RetryRoutingKey(workQueue, attempt), message)
+	err := p.Publish(ctx, RetryRoutingKey(workQueue, attempt), message)
+	if err == nil && p.Metrics != nil {
+		p.Metrics.QueueRetried.WithLabelValues(workQueue).Inc()
+	}
+	return err
 }
 
 func (p *Publisher) drainReturns() {

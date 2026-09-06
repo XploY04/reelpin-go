@@ -30,7 +30,10 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/jobs/` | Job domain types, the `JobReader` port, status presentation. |
 | `internal/postgres/` | pgx implementations of both reader ports. Reads only. |
 | `internal/db/` | `Connect(ctx, url)`: a pgx pool and a 5s ping. Nothing else. |
+| `internal/metrics/` | The only importer of the Prometheus client: every collector, the gauge sampler, and `Hash` for log redaction. |
+| `internal/load/` | The load driver's scenarios, sender and report. Driven by `cmd/load/`; never runs in CI. |
 | `api/` | The OpenAPI contract, its embedded bytes, the generated route manifest and fixtures. |
+| `deploy/` | `alerts.yml`, the Prometheus rules. Checked against the real registry by `internal/metrics/alerts_test.go`. |
 | `docs/` | Committed knowledge. See `docs/index.md`. |
 | `deploy/` | Host-side scripts the release workflow copies over and runs. No secrets. |
 | `drills/` | Standalone Go/DSA practice programs. Unrelated to the service. |

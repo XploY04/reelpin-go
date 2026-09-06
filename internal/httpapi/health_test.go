@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func newTestServer(p DatabasePinger) *Server {
+func newTestServer(p Pinger) *Server {
 	return New(testDeps(p))
 }
 

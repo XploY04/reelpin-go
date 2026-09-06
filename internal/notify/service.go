@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,6 +19,14 @@ type Service struct {
 	sender Sender
 	logger *slog.Logger
 	now    func() time.Time
+	// Metrics is optional. Nil means delivery is not counted.
+	Metrics *metrics.Metrics
+}
+
+func (s *Service) count(outcome string) {
+	if s.Metrics != nil {
+		s.Metrics.PushDelivery.WithLabelValues(outcome).Inc()
+	}
 }
 
 func NewService(pool *pgxpool.Pool, sender Sender, logger *slog.Logger, now func() time.Time) *Service {
@@ -134,6 +143,7 @@ func (s *Service) SendToUser(ctx context.Context, notification Notification) (st
 		Title: notification.Title, Body: notification.Body, Data: payload,
 	})
 	if err != nil {
+		s.count("provider_unavailable")
 		s.mark(ctx, notificationID, "failed", "", "the push provider was unavailable")
 		return notificationID, fmt.Errorf("sending: %w", err)
 	}
@@ -161,12 +171,15 @@ func (s *Service) SendToUser(ctx context.Context, notification Notification) (st
 
 	switch {
 	case messageID != "":
+		s.count("sent")
 		s.mark(ctx, notificationID, "sent", messageID, "")
 		return notificationID, nil
 	case retryable:
+		s.count("retryable")
 		s.mark(ctx, notificationID, "failed", "", "the push provider was unavailable")
 		return notificationID, ErrRetryable
 	default:
+		s.count("rejected")
 		s.mark(ctx, notificationID, "failed", "", "no device accepted the notification")
 		return notificationID, ErrNoDeviceTokens
 	}

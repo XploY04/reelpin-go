@@ -1,0 +1,153 @@
+# Prometheus alerting rules for reelpin-go.
+#
+# Every rule here is something a person should act on at the time it fires. If
+# an alert is not worth waking up for, it belongs on a dashboard instead.
+#
+# internal/metrics/alerts_test.go checks these against the real registry, so a
+# rule cannot name a metric or a label that nothing exports.
+#
+# Load with: rule_files: [ "alerts.yml" ] in prometheus.yml.
+groups:
+  - name: reelpin-api
+    rules:
+      - alert: SustainedServerErrors
+        expr: |
+          sum(rate(reelpin_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(reelpin_http_requests_total[5m])) > 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: More than 2% of requests are failing
+          description: >-
+            The 5xx rate has been above 2% for ten minutes. Check the API logs
+            for the route and the error, and whether the database or Redis is
+            the cause.
+
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(reelpin_http_request_duration_seconds_bucket[5m]))) > 1.5
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: p95 latency is above 1.5 seconds
+          description: >-
+            Look at the pool gauges first: reelpin_db_pool_connections with
+            acquired at max means requests are queueing for a connection.
+
+      - alert: DatabasePoolExhausted
+        # The state label has to be aggregated away, or the two series never
+        # match and the rule can never fire. The API and the worker each export
+        # their own pool, so the comparison stays per instance.
+        expr: |
+          sum by (instance) (reelpin_db_pool_connections{state="acquired"})
+            >= sum by (instance) (reelpin_db_pool_connections{state="max"})
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Every database connection is checked out on {{ $labels.instance }}
+          description: >-
+            Requests are now waiting on the pool. Either a query is slow enough
+            to hold connections, or the pool is too small for current traffic.
+
+  - name: reelpin-pipeline
+    rules:
+      - alert: NoLiveWorkers
+        expr: reelpin_live_workers == 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: No worker is heartbeating
+          description: >-
+            Nothing is processing shares. Jobs will keep queueing and users will
+            see them stuck. Check the worker units and RabbitMQ connectivity.
+
+      - alert: JobsQueuedTooLong
+        expr: reelpin_jobs_oldest_queued_seconds > 900
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: The oldest queued job is more than 15 minutes old
+          description: >-
+            Either no worker is consuming, or one platform is failing every
+            attempt. Check reelpin_live_workers and
+            reelpin_provider_failures_total.
+
+      - alert: OutboxFallingBehind
+        expr: reelpin_outbox_oldest_pending_seconds > 300
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Outbox events are not being published
+          description: >-
+            The dispatcher is stuck or RabbitMQ is refusing publishes. Enqueued
+            work is committed but never reaches a worker.
+
+      - alert: DeadLettersArriving
+        expr: sum by (queue) (increase(reelpin_queue_dead_lettered_total[15m])) > 0
+        for: 1m
+        labels:
+          severity: warn
+        annotations:
+          summary: Messages are being dead-lettered on {{ $labels.queue }}
+          description: >-
+            These will not retry on their own. Inspect the dead-letter queue and
+            replay once the cause is fixed.
+
+      - alert: PublishesNotConfirmed
+        expr: |
+          sum(rate(reelpin_queue_published_total{outcome="failed"}[10m]))
+            / sum(rate(reelpin_queue_published_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: More than one publish in ten is not confirmed
+          description: >-
+            The broker is refusing or not confirming. Outbox rows stay
+            unpublished and retry, so nothing is lost yet, but the backlog grows.
+
+      - alert: OnePlatformFailingEveryShare
+        expr: |
+          sum by (platform) (
+            rate(reelpin_provider_failures_total{class="provider_exhausted"}[30m])) > 0.1
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.platform }} has been refusing for 30 minutes"
+          description: >-
+            Every share from this platform is being deferred. A refusal that
+            does not clear usually means credentials or cookies, not rate limits.
+
+      - alert: TempDiskGrowing
+        expr: reelpin_worker_temp_bytes > 5e9
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: The worker is holding more than 5 GB of temporary media
+          description: >-
+            Runs delete their directories on every exit, so a rising number
+            means runs are being killed rather than finishing.
+
+  - name: reelpin-delivery
+    rules:
+      - alert: PushDeliveryFailing
+        expr: |
+          sum(rate(reelpin_push_delivery_total{outcome!="sent"}[15m]))
+            / sum(rate(reelpin_push_delivery_total[15m])) > 0.5
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: More than half of push notifications are failing
+          description: >-
+            Check the Firebase credentials first. A wholesale failure is usually
+            an expired service account, not the devices.

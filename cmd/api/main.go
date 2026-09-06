@@ -18,6 +18,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
@@ -25,8 +26,27 @@ import (
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/redis/go-redis/v9"
 )
+
+type pingFunc func(ctx context.Context) error
+
+func (f pingFunc) Ping(ctx context.Context) error { return f(ctx) }
+
+type workerCountFunc metrics.WorkerCount
+
+func (f workerCountFunc) LiveWorkers(ctx context.Context) (int, error) { return f(ctx) }
+
+// workerCounter keeps a nil count function from becoming a non-nil interface
+// holding nil, which would look configured and then report an error on every
+// readiness check.
+func workerCounter(count metrics.WorkerCount) httpapi.WorkerCounter {
+	if count == nil {
+		return nil
+	}
+	return workerCountFunc(count)
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -73,9 +93,15 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	meters := metrics.New()
+
 	// Redis is optional outside production: without it there are no limits, and
 	// submissions fail closed while every read keeps serving.
-	var limiter httpapi.RateLimiter
+	var (
+		limiter     httpapi.RateLimiter
+		redisPinger httpapi.Pinger
+		liveWorkers metrics.WorkerCount
+	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
 		if err != nil {
@@ -87,6 +113,10 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("redis connect: %w", err)
 		}
 		limiter = ratelimit.New(client, cfg.RedisKeyPrefix, ratelimit.NewHasher(cfg.RateLimitSalt))
+		redisPinger = pingFunc(func(ctx context.Context) error { return client.Ping(ctx).Err() })
+		liveWorkers = func(ctx context.Context) (int, error) {
+			return workerhealth.Live(ctx, client, cfg.RedisKeyPrefix)
+		}
 	} else {
 		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
 			"environment", cfg.Environment)
@@ -104,6 +134,10 @@ func run(logger *slog.Logger) error {
 		Model:     cfg.EmbeddingModel,
 		Dimension: cfg.EmbeddingDimension,
 	})
+	if cfg.AdminKey == "" {
+		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
+	}
+	go metrics.Sample(ctx, meters, pool, liveWorkers)
 
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
@@ -119,6 +153,10 @@ func run(logger *slog.Logger) error {
 			Notifications: notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 			Search:        search.NewService(pool, embedder, logger, time.Now),
 			Limiter:       limiter,
+			Metrics:       meters,
+			AdminKey:      cfg.AdminKey,
+			Redis:         redisPinger,
+			Workers:       workerCounter(liveWorkers),
 			Logger:        logger,
 			Version:       cfg.Version,
 		}).Routes(),
