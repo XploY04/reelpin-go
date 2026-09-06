@@ -128,7 +128,7 @@ jobs:
           # --entrypoint is required: the image's entrypoint is the API, so
           # trailing arguments would be handed to the API and the migration
           # would never run.
-          $SSH "docker run --rm --env-file /etc/reelpin/${{ inputs.environment }}.env \
+          $SSH "sudo docker run --rm --env-file /etc/reelpin/${{ inputs.environment }}.env \
             --entrypoint /usr/local/bin/reelpin-maintenance \
             ${{ env.IMAGE }}@${DIGEST} migrate"
 
