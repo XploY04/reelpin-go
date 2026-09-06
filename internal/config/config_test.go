@@ -179,3 +179,60 @@ func TestLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestTheCostGateIsAllFourVariablesOrNone(t *testing.T) {
+	all := map[string]string{
+		"COST_GATE_WARN_USD":   "12.00",
+		"COST_GATE_STOP_USD":   "20.00",
+		"COST_GATE_STOP_ORDER": "media,all",
+		"COST_GATE_PRICES":     "gemini:*:call=0.001",
+	}
+
+	t.Run("none is off", func(t *testing.T) {
+		cfg, err := loadWith(t, nil)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.CostGateConfigured() {
+			t.Error("the gate reports configured with nothing set")
+		}
+	})
+
+	t.Run("all four is on", func(t *testing.T) {
+		cfg, err := loadWith(t, all)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.CostGateConfigured() {
+			t.Error("the gate reports unconfigured with all four set")
+		}
+	})
+
+	// Half a decision would run a limit assembled from defaults nobody approved.
+	for missing := range all {
+		t.Run("without "+missing, func(t *testing.T) {
+			partial := map[string]string{}
+			for name, value := range all {
+				if name != missing {
+					partial[name] = value
+				}
+			}
+			if _, err := loadWith(t, partial); err == nil {
+				t.Errorf("Load accepted a cost gate with no %s", missing)
+			}
+		})
+	}
+}
+
+// loadWith sets the given variables for one test and clears the rest.
+func loadWith(t *testing.T, values map[string]string) (Config, error) {
+	t.Helper()
+	for _, name := range []string{
+		"COST_GATE_WARN_USD", "COST_GATE_STOP_USD",
+		"COST_GATE_STOP_ORDER", "COST_GATE_PRICES",
+	} {
+		t.Setenv(name, values[name])
+	}
+	t.Setenv("SUPABASE_URL", "https://project.supabase.co")
+	return Load()
+}

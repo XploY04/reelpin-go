@@ -24,7 +24,9 @@ import (
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/queue"
+	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -131,7 +133,19 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey})
+	// The worker is where the money is spent, so it is what writes the ledger.
+	// Without configured prices the calls are still counted and stored; they
+	// are stored at zero and surfaced as unpriced rather than guessed at.
+	prices, err := spend.ParsePricesOrNone(cfg.CostGatePrices)
+	if err != nil {
+		return fmt.Errorf("COST_GATE_PRICES: %w", err)
+	}
+	if len(prices) == 0 {
+		logger.Warn("no COST_GATE_PRICES: provider calls are counted but valued at zero")
+	}
+	ledger := spend.NewLedger(postgres.NewSpend(pool), prices, meters, logger)
+
+	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey, Usage: ledger})
 	processor := pipeline.New(pipeline.Deps{
 		Pool:         pool,
 		Handlers:     platforms,
@@ -158,6 +172,7 @@ func run(logger *slog.Logger) error {
 		APIKey:    cfg.GeminiAPIKey,
 		Model:     cfg.EmbeddingModel,
 		Dimension: cfg.EmbeddingDimension,
+		Usage:     ledger,
 	})
 	if err := embed.AssertConfigured(cfg.EmbeddingModel, cfg.EmbeddingDimension); err != nil {
 		return err

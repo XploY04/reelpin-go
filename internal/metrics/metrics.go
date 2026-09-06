@@ -39,6 +39,13 @@ type Metrics struct {
 	SearchDuration   *prometheus.HistogramVec
 	SearchResults    *prometheus.CounterVec
 
+	ProviderCalls         *prometheus.CounterVec
+	ProviderTokens        *prometheus.CounterVec
+	ProviderSpendMonthUSD prometheus.Gauge
+	CostGateWarnUSD       prometheus.Gauge
+	CostGateStopUSD       prometheus.Gauge
+	SubmissionsBlocked    *prometheus.CounterVec
+
 	PushDelivery *prometheus.CounterVec
 
 	TempDiskBytes prometheus.Gauge
@@ -132,6 +139,36 @@ func New() *Metrics {
 			Help: "Searches by whether they returned anything.",
 		}, []string{"mode", "outcome"}),
 
+		ProviderCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "reelpin_provider_calls_total",
+			Help: "Billed provider calls. The accounting label names the weakest thing true about the call: measured (the provider reported its tokens), counted (a call count, not a measured cost), unpriced (no configured price covers it) or unrecorded (the ledger insert failed, so the gate is undercounting).",
+		}, []string{"provider", "model", "operation", "accounting"}),
+
+		ProviderTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "reelpin_provider_tokens_total",
+			Help: "Tokens the provider reported, by direction. Absent for a provider that reports none.",
+		}, []string{"provider", "model", "operation", "direction"}),
+
+		ProviderSpendMonthUSD: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "reelpin_provider_spend_month_usd",
+			Help: "Provider spend so far this calendar month, in US dollars, priced at the rates in force when each call was made.",
+		}),
+
+		CostGateWarnUSD: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "reelpin_cost_gate_warn_usd",
+			Help: "The approved monthly warning amount. Zero means no cost gate is configured, so nothing is limited by spend.",
+		}),
+
+		CostGateStopUSD: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "reelpin_cost_gate_stop_usd",
+			Help: "The approved monthly hard stop. Zero means no cost gate is configured.",
+		}),
+
+		SubmissionsBlocked: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "reelpin_submissions_blocked_total",
+			Help: "Submissions refused by the cost gate, by the stop-order group that refused them.",
+		}, []string{"group"}),
+
 		PushDelivery: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "reelpin_push_delivery_total",
 			Help: "Push notification delivery attempts by outcome.",
@@ -154,6 +191,8 @@ func New() *Metrics {
 		m.OutboxAgeSeconds, m.OldestQueuedJobAge,
 		m.StageDuration, m.StageResults, m.ProviderFailures,
 		m.SearchDuration, m.SearchResults,
+		m.ProviderCalls, m.ProviderTokens, m.ProviderSpendMonthUSD,
+		m.CostGateWarnUSD, m.CostGateStopUSD, m.SubmissionsBlocked,
 		m.PushDelivery, m.TempDiskBytes, m.LiveWorkers,
 	)
 	return m

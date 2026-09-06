@@ -13,6 +13,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/google/uuid"
 )
 
@@ -112,13 +113,23 @@ type Resolver interface {
 	ResolvePayload(ctx context.Context, payload string) (sourceidentity.SourceIdentity, error)
 }
 
+// Gate decides whether new provider-costing work may still be accepted. It is
+// consulted after the link resolves, because what a submission will cost
+// depends on where it came from, and before anything is committed, because a
+// refused submission must leave no run behind. Nil means no cost gate is
+// configured and nothing is refused on spending grounds.
+type Gate interface {
+	Allow(ctx context.Context, work spend.Work) error
+}
+
 type Service struct {
 	store    Store
 	resolver Resolver
+	gate     Gate
 }
 
-func New(store Store, resolver Resolver) *Service {
-	return &Service{store: store, resolver: resolver}
+func New(store Store, resolver Resolver, gate Gate) *Service {
+	return &Service{store: store, resolver: resolver, gate: gate}
 }
 
 // mediaPlatforms need a download before anything can be read from them.
@@ -167,9 +178,17 @@ func (s *Service) Submit(ctx context.Context, request Request) (Result, error) {
 
 	eventType := queue.EventProcessLight
 	routingKey := queue.QueueLight
+	class := spend.ClassLight
 	if mediaPlatforms[identity.Platform] {
 		eventType = queue.EventProcessMedia
 		routingKey = queue.QueueMedia
+		class = spend.ClassMedia
+	}
+
+	if s.gate != nil {
+		if err := s.gate.Allow(ctx, spend.Work{Platform: identity.Platform, Class: class}); err != nil {
+			return Result{}, err
+		}
 	}
 
 	return s.store.Submit(ctx, Submission{

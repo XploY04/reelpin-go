@@ -97,12 +97,38 @@ v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
 | `active_job_limit` | 429 | Two submissions are already processing. Show "wait for one to finish"; do not retry automatically. |
 | `idempotency_conflict` | 409 | The key was reused with a different body. This is a client bug: generate a new key. |
 | `rate_limited` | 429 | Obey the `Retry-After` header; `error.details.retry_after_seconds` carries the same number. |
-| `processing_unavailable` | 503 | Submissions are temporarily off (a safety dependency is down, or the cost gate has tripped). Retryable; reads still work. |
+| `processing_unavailable` | 503 | Submissions are temporarily off: a safety dependency is down. Retryable; reads still work. |
+| `spend_limit_reached` | 503 | The monthly provider budget has been reached. **Not** retryable; see below. |
 | `validation_error` | 422 | `error.details.field` names the offending field, including a missing `Idempotency-Key`. |
 
 **The body is strict.** Unknown JSON fields are rejected with `422`, so a stale
 client that still sends `user_id` in the body **will now fail**. Remove it
 before pointing a build at v2.
+
+### `spend_limit_reached` is a real state, not a bug
+
+The backend meters what each saved link costs the AI and scraping providers, and
+refuses new submissions once the month reaches a limit set by us. When that
+happens a submission answers `503` with `error.code = "spend_limit_reached"` and
+`retryable: false`.
+
+What the app should do:
+
+- **Do not retry automatically, and do not back off and retry.** Nothing the app
+  does clears this. It clears when we reopen submissions or when the calendar
+  month rolls over.
+- **Show it as a wait, not a failure.** "We have paused new saves for now.
+  Everything you have saved is still here." A crash report or a red error is the
+  wrong shape: nothing is broken and no data is at risk.
+- **Keep the rest of the app working.** The library, search, the map, collections
+  and any job already processing are all unaffected. A job that was already
+  running still finishes and still produces its reel, so keep polling it.
+- **Expect it per link, not per session.** Sources stop in an order, so an
+  Instagram link can be refused while a plain web link is still accepted. Do not
+  cache "submissions are off" and stop sending; send the link and read the
+  answer.
+- The idempotency key is unused when this comes back, so reuse it or mint a new
+  one, whichever is simpler.
 
 ## Native share extensions (Android + iOS) — biggest change
 
@@ -394,7 +420,7 @@ Each of these is a real, expected answer that reads like a bug:
 ## Still open
 
 - Entitlements have no v2 route. Keep calling v1 for that one thing.
-- The dev base URL is live only once Task 22's deployment lands.
-- Task 31 adds a stable `503` for the spending hard stop. When it lands it will
-  be recorded here, and the app will need to explain it as "saving is paused"
-  rather than as a failure.
+- The dev base URL is live only once Task 22's deployment is deployed.
+- `spend_limit_reached` is built, but the monthly limits are not set on any
+  deployment, so it cannot fire yet. Handle it before the first public web
+  release rather than after the first time it appears.

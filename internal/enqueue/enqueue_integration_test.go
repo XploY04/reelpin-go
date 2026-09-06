@@ -86,7 +86,7 @@ func testService(t *testing.T) (*enqueue.Service, *pgxpool.Pool) {
 		t.Fatalf("seeding users: %v", err)
 	}
 
-	return enqueue.New(postgres.NewEnqueue(pool), &sourceidentity.Resolver{}), pool
+	return enqueue.New(postgres.NewEnqueue(pool), &sourceidentity.Resolver{}, nil), pool
 }
 
 func submit(t *testing.T, service *enqueue.Service, userID, link string) enqueue.Result {

@@ -38,6 +38,12 @@ func exported(t *testing.T) map[string]map[string]bool {
 	m.ProviderFailures.WithLabelValues("instagram", "transient").Inc()
 	m.ObserveSearch("hybrid", 0, 1)
 	m.PushDelivery.WithLabelValues("sent").Inc()
+	m.ProviderCalls.WithLabelValues("gemini", "gemini-2.0-flash-lite", "extract", "measured").Inc()
+	m.ProviderTokens.WithLabelValues("gemini", "gemini-2.0-flash-lite", "extract", "input").Inc()
+	m.SubmissionsBlocked.WithLabelValues("media").Inc()
+	m.ProviderSpendMonthUSD.Set(1)
+	m.CostGateWarnUSD.Set(1)
+	m.CostGateStopUSD.Set(1)
 	m.OutboxAgeSeconds.Set(1)
 	m.OldestQueuedJobAge.Set(1)
 	m.TempDiskBytes.Set(1)
@@ -128,6 +134,24 @@ func TestEveryAlertLabelBelongsToThatAlertsOwnMetric(t *testing.T) {
 			if !available[match[1]] {
 				t.Errorf("alert %s uses $labels.%s, which none of its own metrics carry", alert, match[1])
 			}
+		}
+	}
+}
+
+func TestCostAlertsCompareAgainstTheConfiguredLimits(t *testing.T) {
+	// The amounts are a product decision the owner approves in the environment.
+	// A number written into a rules file is a second limit, and the two drift.
+	blocks := alertBlocks(t)
+	for alert, gauge := range map[string]string{
+		"ProviderSpendWarning":  "reelpin_cost_gate_warn_usd",
+		"ProviderSpendHardStop": "reelpin_cost_gate_stop_usd",
+	} {
+		block, ok := blocks[alert]
+		if !ok {
+			t.Fatalf("alert %s is missing from the rules", alert)
+		}
+		if !strings.Contains(block, "reelpin_provider_spend_month_usd >= "+gauge) {
+			t.Errorf("alert %s does not compare month-to-date spend against %s", alert, gauge)
 		}
 	}
 }
