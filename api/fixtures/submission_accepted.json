@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/processing-jobs/reels"
+  },
+  "response": {
+    "collection_ids": [],
+    "created_at": "2026-09-06T10:00:00Z",
+    "current_step": "queued",
+    "failure_code": null,
+    "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "progress_percent": 0,
+    "result_reel_id": null,
+    "source_platform": null,
+    "status": "queued",
+    "status_message": "Queued for processing.",
+    "updated_at": "2026-09-06T10:00:00Z",
+    "url": "https://www.instagram.com/reel/C8abc123/"
+  },
+  "status": 202
+}

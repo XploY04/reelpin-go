@@ -87,6 +87,11 @@ different body is a `409`. `200` means already saved and carries the reel;
 The native-share endpoint resolves and enqueues in one request, because a share
 extension can be killed between two calls.
 
+Submission bodies are strict: an unknown field is a `422`, so a client cannot
+smuggle a `user_id` past the token. Provider-costing endpoints fail closed —
+without a working rate limiter they answer `503 processing_unavailable` rather
+than spending unmetered — while reads never consult the limiter at all.
+
 ## Transcripts
 
 A transcript appears only in `GET /api/v2/reels/{reel_id}`, never in a list.

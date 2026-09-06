@@ -11,8 +11,8 @@ func TestMigrationsLoadInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(loaded) != 3 {
-		t.Fatalf("loaded %d migrations, want 3", len(loaded))
+	if len(loaded) != len(migrationFiles()) {
+		t.Fatalf("loaded %d migrations, want every embedded migration", len(loaded))
 	}
 	for i := 1; i < len(loaded); i++ {
 		if loaded[i].Version <= loaded[i-1].Version {
@@ -57,4 +57,20 @@ func TestNoEnvironmentColumnInTheSQL(t *testing.T) {
 			t.Errorf("%s mentions an environment column", migration.Name)
 		}
 	}
+}
+
+// migrationFiles counts the embedded SQL directly, so adding a migration does
+// not mean editing every count assertion.
+func migrationFiles() []string {
+	entries, err := files.ReadDir(".")
+	if err != nil {
+		panic(err)
+	}
+	names := []string{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
 }

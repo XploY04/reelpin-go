@@ -148,8 +148,8 @@ func TestMigrationsApplyToAnEmptyDatabaseAndRepeatCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	if len(applied) != 3 {
-		t.Fatalf("applied %d migrations, want 3: %v", len(applied), applied)
+	if len(applied) != len(migrationFiles()) {
+		t.Fatalf("applied %d migrations, want every embedded migration: %v", len(applied), applied)
 	}
 
 	wantTables := []string{
@@ -377,7 +377,7 @@ func TestDownUnwindsADisposableDatabase(t *testing.T) {
 	migrate(t, databaseURL)
 	ctx := context.Background()
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < len(migrationFiles()); i++ {
 		if _, err := Down(ctx, databaseURL); err != nil {
 			t.Fatalf("Down %d: %v", i+1, err)
 		}

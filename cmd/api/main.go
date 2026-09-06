@@ -14,8 +14,14 @@ import (
 	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/sharetoken"
+	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -53,15 +59,43 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	// Redis is optional outside production: without it there are no limits, and
+	// submissions fail closed while every read keeps serving.
+	var limiter httpapi.RateLimiter
+	if cfg.RedisURL != "" {
+		options, err := cfg.RedisOptions()
+		if err != nil {
+			return err
+		}
+		client := redis.NewClient(options)
+		defer client.Close()
+		if err := client.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("redis connect: %w", err)
+		}
+		limiter = ratelimit.New(client, cfg.RedisKeyPrefix, ratelimit.NewHasher(cfg.RateLimitSalt))
+	} else {
+		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
+			"environment", cfg.Environment)
+	}
+
+	// One resolver serves both preview and submission, so a link that previews
+	// resolves identically when it is submitted.
+	resolver := &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})}
+	shareTokens := sharetoken.NewStore(pool)
+
 	srv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.Port),
 		Handler: httpapi.New(httpapi.Deps{
-			DB:      pool,
-			Auth:    verifier,
-			Reels:   postgres.NewReels(pool),
-			Jobs:    postgres.NewJobs(pool),
-			Logger:  logger,
-			Version: cfg.Version,
+			DB:          pool,
+			Auth:        verifier,
+			Reels:       postgres.NewReels(pool),
+			Jobs:        postgres.NewJobs(pool),
+			Enqueue:     enqueue.New(postgres.NewEnqueue(pool), resolver),
+			ShareTokens: shareTokens,
+			Resolver:    resolver,
+			Limiter:     limiter,
+			Logger:      logger,
+			Version:     cfg.Version,
 		}).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

@@ -58,7 +58,7 @@ v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
 - The old client behaviour of passing an integer cursor/offset will be rejected,
   not silently accepted.
 
-## Submission (Task 8 — endpoint shape is final now, returns 503 until built)
+## Submission (built)
 
 `POST /api/v2/processing-jobs/reels`, bearer auth:
 
@@ -70,6 +70,20 @@ v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
 - `200` = already saved, body is the reel itself (no job to poll).
 - `202` = queued or already in flight, body is the processing job to poll.
 - v1's single-status behaviour is gone; handle both.
+
+**New error codes on this endpoint**, all matched on `error.code`:
+
+| Code | Status | What the app should do |
+|---|---|---|
+| `active_job_limit` | 429 | Two submissions are already processing. Show "wait for one to finish"; do not retry automatically. |
+| `idempotency_conflict` | 409 | The key was reused with a different body. This is a client bug: generate a new key. |
+| `rate_limited` | 429 | Obey the `Retry-After` header; `error.details.retry_after_seconds` carries the same number. |
+| `processing_unavailable` | 503 | Submissions are temporarily off (a safety dependency is down, or the cost gate has tripped). Retryable; reads still work. |
+| `validation_error` | 422 | `error.details.field` names the offending field, including a missing `Idempotency-Key`. |
+
+**The body is strict.** Unknown JSON fields are rejected with `422`, so a stale
+client that still sends `user_id` in the body **will now fail**. Remove it
+before pointing a build at v2.
 
 ## Native share extensions (Android + iOS) — biggest change
 
@@ -83,6 +97,11 @@ because an extension can be killed between two calls:
 - A missing/invalid token is `401 share_token_required`.
 - The extensions should persist the idempotency key with the pending payload so
   a retry after being killed cannot double-enqueue.
+
+Bad or missing share tokens answer `401` with `share_token_required` (no header)
+or `invalid_share_token` (unknown, expired or revoked — the three are
+deliberately indistinguishable). On `invalid_share_token` the extension should
+stop retrying and prompt the user to open the app, which mints a fresh token.
 
 Share tokens are minted and revoked from the app process (bearer auth):
 
@@ -129,6 +148,9 @@ from requests when convenient, but sending it breaks nothing.
 
 ## Still to come (this file will grow)
 
+- **`collection_ids` is currently rejected**, not ignored: sending a non-empty
+  array answers `422` until the collections task lands. Send it only once this
+  file says collections are built.
 - Collection endpoints (Task 15), map/Discover (Task 16), notifications
   (Task 17), account deletion (Task 18), search (Task 20): each will be recorded
   here when its contract lands.

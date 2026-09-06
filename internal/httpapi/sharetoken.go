@@ -1,6 +1,21 @@
 package httpapi
 
-import "net/http"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/XploY04/reelpin-go/internal/auth"
+	"github.com/XploY04/reelpin-go/internal/sharetoken"
+)
+
+// ShareTokenStore is the credential store behind the native-share mode.
+type ShareTokenStore interface {
+	Mint(ctx context.Context, userID string) (string, time.Time, error)
+	Authenticate(ctx context.Context, raw string) (string, error)
+	RevokeAll(ctx context.Context, userID string) (int, error)
+}
 
 // shareTokenAuthenticated guards the one endpoint a native share extension
 // calls. The extension runs outside the app process and cannot refresh a
@@ -19,9 +34,22 @@ func (s *Server) shareTokenAuthenticated(next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 
-		// Task 8 exchanges the token for a user id. Until then the mode exists
-		// so the contract and its tests are real, and the endpoint answers the
-		// same 503 as the rest of the unbuilt surface.
-		next(w, r)
+		userID, err := s.deps.ShareTokens.Authenticate(r.Context(), token)
+		if errors.Is(err, sharetoken.ErrUnknownToken) {
+			// Unknown, expired and revoked all answer identically: a probe
+			// learns nothing about which tokens exist.
+			writeError(w, http.StatusUnauthorized, errorBody{
+				Code:    "invalid_share_token",
+				Message: "This share token is not valid. Open the app to reconnect sharing.",
+			})
+			return
+		}
+		if err != nil {
+			s.deps.Logger.Error("share token check failed", "error", err)
+			internalError(w, "internal_error", "The server could not finish this request.")
+			return
+		}
+
+		next(w, r.WithContext(auth.WithUserID(r.Context(), userID)))
 	}
 }
