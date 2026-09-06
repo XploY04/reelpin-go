@@ -1,61 +1,469 @@
 {
-  "version": "search-eval-v1",
-  "note": "Hand-labeled queries over the fixture library in internal/search/testdata/corpus-v1.json. Gains: 3 is what the user meant, 2 is a good alternative, 1 is related. Keyed by reel URL, so this set only measures a library that actually holds these reels: seed the corpus into a dedicated evaluation user, or write a set labeled with a real user's own reel URLs. Add queries by appending; changing an existing judgment means a new version, because reports are only comparable within one version.",
+  "version": "search-eval-v2",
+  "note": "Hand-labeled queries over the fixture library in internal/search/testdata/corpus-v1.json. Gains: 3 is what the user meant, 2 is a good alternative, 1 is related. A query with an empty `relevant` has no right answer and is judged only on coming back empty. Keyed by reel URL, so this set only measures a library that actually holds these reels: seed the corpus into a dedicated evaluation user, or write a set labeled with a real user's own reel URLs. Add queries by appending; changing an existing judgment means a new version, because reports are only comparable within one version. The intent line names the arm each query is meant to lean on: full-text reaches title, summary and caption, trigram reaches the title, and the vector arm is the only one that reaches tags, key facts, places and category.",
   "queries": [
     {
       "id": "exact-place-name",
       "query": "artjuna cafe",
-      "intent": "The user remembers the name and wants that saved reel back.",
+      "intent": "lexical. The user remembers the name and wants that saved reel back.",
       "relevant": {
         "https://example.com/eval/artjuna": 3
+      }
+    },
+    {
+      "id": "exact-standing-sushi",
+      "query": "standing sushi counter",
+      "intent": "lexical. Three words, all of them in the title.",
+      "relevant": {
+        "https://example.com/eval/tokyo-standing-sushi": 3
+      }
+    },
+    {
+      "id": "exact-boat-noodles",
+      "query": "boat noodles by the canal",
+      "intent": "lexical. A full phrase from the title.",
+      "relevant": {
+        "https://example.com/eval/bangkok-boat-noodles": 3
+      }
+    },
+    {
+      "id": "exact-tram-28",
+      "query": "tram 28",
+      "intent": "lexical. A name with a number in it, which stemming leaves alone.",
+      "relevant": {
+        "https://example.com/eval/lisbon-tram-28": 3
+      }
+    },
+    {
+      "id": "exact-egg-coffee",
+      "query": "egg coffee",
+      "intent": "lexical. Two common words that only collide on one reel.",
+      "relevant": {
+        "https://example.com/eval/hanoi-egg-coffee": 3
+      }
+    },
+    {
+      "id": "exact-port-cellar",
+      "query": "port cellar tour",
+      "intent": "lexical. Every word is in the title.",
+      "relevant": {
+        "https://example.com/eval/porto-port-cellar": 3
+      }
+    },
+    {
+      "id": "exact-mauerpark",
+      "query": "mauerpark flea market",
+      "intent": "lexical. A place name that happens to sit in the title as well as in places.",
+      "relevant": {
+        "https://example.com/eval/berlin-flea-market": 3
+      }
+    },
+    {
+      "id": "exact-vermouth-hour",
+      "query": "vermouth hour before lunch",
+      "intent": "lexical. The title almost word for word.",
+      "relevant": {
+        "https://example.com/eval/barcelona-vermut": 3
+      }
+    },
+    {
+      "id": "exact-used-camera",
+      "query": "buying a used camera body",
+      "intent": "lexical. Title match with a stemmed verb.",
+      "relevant": {
+        "https://example.com/eval/camera-second-hand": 3
+      }
+    },
+    {
+      "id": "exact-al-pastor",
+      "query": "al pastor from the spit",
+      "intent": "lexical. The title exactly.",
+      "relevant": {
+        "https://example.com/eval/mexico-city-tacos": 3
+      }
+    },
+    {
+      "id": "words-split-across-fields",
+      "query": "filter coffee steel tumbler",
+      "intent": "lexical, split. Two words are in the title and two are in the caption, so the whole weighted document has to be searched, not one column.",
+      "relevant": {
+        "https://example.com/eval/bengaluru-filter-coffee": 3
+      }
+    },
+    {
+      "id": "words-plus-place-only-in-metadata",
+      "query": "harbour swimming copenhagen",
+      "intent": "hybrid. Two words are in the title, the city is only in places, so full-text alone cannot satisfy every term.",
+      "relevant": {
+        "https://example.com/eval/copenhagen-swim-harbour": 3
+      }
+    },
+    {
+      "id": "words-plus-city-reykjavik",
+      "query": "reykjavik hot dog stand",
+      "intent": "hybrid. The city lives only in places and the rest is in the title.",
+      "relevant": {
+        "https://example.com/eval/reykjavik-hot-dog": 3
       }
     },
     {
       "id": "misspelled-place-name",
       "query": "artjunna caffe",
-      "intent": "Same intent, typed badly. The fuzzy arm has to carry it.",
+      "intent": "trigram. Same intent as exact-place-name, typed badly.",
       "relevant": {
         "https://example.com/eval/artjuna": 3
       }
     },
     {
+      "id": "misspelled-dudhsagar",
+      "query": "dudsagar trek guide",
+      "intent": "trigram. One letter dropped from a name nobody spells right.",
+      "relevant": {
+        "https://example.com/eval/dudhsagar-trek": 3
+      }
+    },
+    {
+      "id": "misspelled-kushikatsu",
+      "query": "kushikatso rules in osaka",
+      "intent": "trigram. A transliterated word typed by ear.",
+      "relevant": {
+        "https://example.com/eval/osaka-kushikatsu": 3
+      }
+    },
+    {
+      "id": "misspelled-hanbok",
+      "query": "renting a hanbock for the palace",
+      "intent": "trigram. An extra consonant in a borrowed word.",
+      "relevant": {
+        "https://example.com/eval/seoul-hanbok": 3
+      }
+    },
+    {
+      "id": "misspelled-cubbon",
+      "query": "cubon park on a car free sunday",
+      "intent": "trigram. A doubled letter dropped.",
+      "relevant": {
+        "https://example.com/eval/bengaluru-cubbon": 3
+      }
+    },
+    {
+      "id": "misspelled-yanaka",
+      "query": "walking yanka old tokyo",
+      "intent": "trigram. A neighbourhood name half remembered.",
+      "relevant": {
+        "https://example.com/eval/tokyo-yanaka": 3
+      }
+    },
+    {
+      "id": "partial-word-kushi",
+      "query": "kushikatsu",
+      "intent": "trigram, partial. One word out of a five word title.",
+      "relevant": {
+        "https://example.com/eval/osaka-kushikatsu": 3
+      }
+    },
+    {
+      "id": "partial-word-testaccio",
+      "query": "testacio market",
+      "intent": "hybrid. The neighbourhood is only in places, and it is misspelled.",
+      "relevant": {
+        "https://example.com/eval/rome-testaccio-market": 3
+      }
+    },
+    {
       "id": "described-not-named",
       "query": "quiet garden cafe with good coffee",
-      "intent": "No name, only a description. The dense arm has to carry it.",
+      "intent": "dense. No name, only a description.",
       "relevant": {
         "https://example.com/eval/artjuna": 3,
         "https://example.com/eval/garden-bistro": 2
       }
     },
     {
+      "id": "paraphrase-raw-fish-standing",
+      "query": "place to eat raw fish standing up",
+      "intent": "dense. Nobody wrote the word sushi in this query.",
+      "relevant": {
+        "https://example.com/eval/tokyo-standing-sushi": 3
+      }
+    },
+    {
+      "id": "paraphrase-airport-to-city",
+      "query": "cheap way to get from the airport into the city",
+      "intent": "dense. The reel calls it an express metro line.",
+      "relevant": {
+        "https://example.com/eval/delhi-metro-airport": 3,
+        "https://example.com/eval/tokyo-suica": 1
+      }
+    },
+    {
+      "id": "paraphrase-one-bag-clothes",
+      "query": "keeping clothes wearable with only one bag",
+      "intent": "dense. The reel is about packing and washing in a sink.",
+      "relevant": {
+        "https://example.com/eval/packing-carry-on": 3
+      }
+    },
+    {
+      "id": "paraphrase-data-abroad",
+      "query": "staying connected in another country without buying a local sim card in a shop",
+      "intent": "dense. The reel calls it an esim.",
+      "relevant": {
+        "https://example.com/eval/esim-abroad": 3
+      }
+    },
+    {
+      "id": "paraphrase-wild-yeast",
+      "query": "making bread rise without shop bought yeast",
+      "intent": "dense. The word sourdough appears nowhere in the reel.",
+      "relevant": {
+        "https://example.com/eval/sourdough-starter": 3
+      }
+    },
+    {
+      "id": "paraphrase-city-from-above",
+      "query": "somewhere to look down over the whole city at dusk",
+      "intent": "dense. Three viewpoint reels, only one of which uses the word dusk.",
+      "relevant": {
+        "https://example.com/eval/barcelona-bunkers": 3,
+        "https://example.com/eval/lisbon-miradouro": 3,
+        "https://example.com/eval/chapora-fort": 1
+      }
+    },
+    {
+      "id": "paraphrase-cheap-old-clothes",
+      "query": "buying clothes other people already wore",
+      "intent": "dense. The reels say thrift and flea market.",
+      "relevant": {
+        "https://example.com/eval/bengaluru-thrift": 3,
+        "https://example.com/eval/berlin-flea-market": 2
+      }
+    },
+    {
+      "id": "paraphrase-unchanged-bar",
+      "query": "a bar that has not been redecorated in a hundred years",
+      "intent": "dense. The reel says dark wood, sand on the floor, since 1890.",
+      "relevant": {
+        "https://example.com/eval/amsterdam-brown-cafe": 3
+      }
+    },
+    {
+      "id": "paraphrase-blown-out-lights",
+      "query": "stop street lamps turning into white blobs after dark",
+      "intent": "dense. The reel is about phone exposure at night.",
+      "relevant": {
+        "https://example.com/eval/phone-night-photos": 3
+      }
+    },
+    {
+      "id": "paraphrase-blunt-knives",
+      "query": "my kitchen knives will not cut a tomato any more",
+      "intent": "dense. The reel is a sharpening technique.",
+      "relevant": {
+        "https://example.com/eval/knife-sharpening": 3
+      }
+    },
+    {
+      "id": "paraphrase-long-run-shoes",
+      "query": "trainers that will not wreck my feet on a long run",
+      "intent": "dense. The reel is about fit and sizing.",
+      "relevant": {
+        "https://example.com/eval/running-shoe-fit": 3
+      }
+    },
+    {
+      "id": "paraphrase-covered-lunch-hall",
+      "query": "where the people who live there go for lunch under one roof",
+      "intent": "dense. Two market halls and a hawker centre, none of which use these words.",
+      "relevant": {
+        "https://example.com/eval/rome-testaccio-market": 3,
+        "https://example.com/eval/singapore-hawker": 2
+      }
+    },
+    {
+      "id": "paraphrase-outdoor-wine-evening",
+      "query": "sitting outside with a bottle of wine watching the water",
+      "intent": "dense. The reel calls it a stone point at the end of the island.",
+      "relevant": {
+        "https://example.com/eval/paris-picnic-spot": 3
+      }
+    },
+    {
+      "id": "paraphrase-galleries-after-work",
+      "query": "galleries you can visit after finishing work",
+      "intent": "dense. The reel says museum late opening.",
+      "relevant": {
+        "https://example.com/eval/london-late-museum": 3
+      }
+    },
+    {
+      "id": "paraphrase-custard-tart",
+      "query": "little pastry with custard in the middle",
+      "intent": "dense. The reel says custard tarts, but not pastry or middle.",
+      "relevant": {
+        "https://example.com/eval/lisbon-pasteis": 3
+      }
+    },
+    {
+      "id": "paraphrase-avoid-crowds-temple",
+      "query": "seeing a famous temple without a crowd around it",
+      "intent": "dense. The reel is about arriving at opening time.",
+      "relevant": {
+        "https://example.com/eval/kyoto-morning-temple": 3
+      }
+    },
+    {
       "id": "detail-inside-the-video",
       "query": "what time does the bakery open",
-      "intent": "The answer is one extracted fact, not in the title, summary or caption. Only the dense arm reads it.",
+      "intent": "dense, key fact. The answer is an extracted fact, and facts are not in the full-text column at all.",
       "relevant": {
-        "https://example.com/eval/goa-vlog": 3
+        "https://example.com/eval/goa-vlog": 3,
+        "https://example.com/eval/paris-bakery-rules": 1
+      }
+    },
+    {
+      "id": "fact-cash-only",
+      "query": "which of these only take cash",
+      "intent": "dense, key fact. Three reels record it and none of them say it in the title or summary.",
+      "relevant": {
+        "https://example.com/eval/tokyo-standing-sushi": 3,
+        "https://example.com/eval/bengaluru-filter-coffee": 3,
+        "https://example.com/eval/berlin-flea-market": 3
+      }
+    },
+    {
+      "id": "fact-card-deposit",
+      "query": "how much is the deposit on the travel card",
+      "intent": "dense, key fact. Five hundred yen, refundable, in the facts.",
+      "relevant": {
+        "https://example.com/eval/tokyo-suica": 3
+      }
+    },
+    {
+      "id": "fact-shutter-count",
+      "query": "what shutter count is too high to pay full price",
+      "intent": "dense, key fact.",
+      "relevant": {
+        "https://example.com/eval/camera-second-hand": 3
+      }
+    },
+    {
+      "id": "fact-museum-break-even",
+      "query": "how many visits before the pass pays for itself",
+      "intent": "dense, key fact. Five, in the facts.",
+      "relevant": {
+        "https://example.com/eval/amsterdam-museum-pass": 3
+      }
+    },
+    {
+      "id": "fact-airport-terminal",
+      "query": "which terminal does the airport train stop at",
+      "intent": "dense, key fact. Terminal three only.",
+      "relevant": {
+        "https://example.com/eval/delhi-metro-airport": 3
+      }
+    },
+    {
+      "id": "fact-hill-closing-time",
+      "query": "what time do they clear people off the hill",
+      "intent": "dense, key fact. Half past nine in summer.",
+      "relevant": {
+        "https://example.com/eval/barcelona-bunkers": 3
+      }
+    },
+    {
+      "id": "fact-free-entry-dress",
+      "query": "do I get in free if I wear traditional dress",
+      "intent": "dense, key fact.",
+      "relevant": {
+        "https://example.com/eval/seoul-hanbok": 3
+      }
+    },
+    {
+      "id": "fact-two-cards-one-day",
+      "query": "what happens if I tap two different bank cards in one day",
+      "intent": "dense, key fact. It breaks the daily cap.",
+      "relevant": {
+        "https://example.com/eval/london-oyster-contactless": 3
+      }
+    },
+    {
+      "id": "fact-gravel-insurance",
+      "query": "is the rental insurance still valid on gravel roads",
+      "intent": "dense, key fact.",
+      "relevant": {
+        "https://example.com/eval/iceland-ring-road": 3
+      }
+    },
+    {
+      "id": "fact-counting-bowls",
+      "query": "how do they work out the bill from the empty bowls",
+      "intent": "dense, key fact.",
+      "relevant": {
+        "https://example.com/eval/bangkok-boat-noodles": 3
+      }
+    },
+    {
+      "id": "fact-tissue-packet",
+      "query": "what does a packet of tissues left on a table mean",
+      "intent": "dense, key fact.",
+      "relevant": {
+        "https://example.com/eval/singapore-hawker": 3
+      }
+    },
+    {
+      "id": "fact-flag-on-the-boat",
+      "query": "which coloured flag is the cheap local boat",
+      "intent": "dense, key fact. Orange.",
+      "relevant": {
+        "https://example.com/eval/bangkok-ferry": 3
+      }
+    },
+    {
+      "id": "fact-shops-shut-sunday",
+      "query": "where can I buy food when every shop is shut",
+      "intent": "dense, key fact. The station supermarkets are the exception.",
+      "relevant": {
+        "https://example.com/eval/berlin-sunday-closed": 3
+      }
+    },
+    {
+      "id": "fact-bakery-closing-day",
+      "query": "which weekday is the bakery closed",
+      "intent": "dense, key fact. Usually Monday.",
+      "relevant": {
+        "https://example.com/eval/paris-bakery-rules": 3
+      }
+    },
+    {
+      "id": "fact-no-road-to-the-door",
+      "query": "the taxi cannot reach the hotel door",
+      "intent": "dense, key fact. They meet you at the gate with a cart.",
+      "relevant": {
+        "https://example.com/eval/marrakech-riad-booking": 3
+      }
+    },
+    {
+      "id": "person-mentioned",
+      "query": "recommendations from the chef",
+      "intent": "dense, key fact. Matches on a person rather than a place.",
+      "relevant": {
+        "https://example.com/eval/garden-bistro": 3
       }
     },
     {
       "id": "category-word",
       "query": "sunset viewpoint",
-      "intent": "A category-shaped query with two reasonable answers.",
+      "intent": "lexical. A category-shaped query with two reasonable answers.",
       "relevant": {
         "https://example.com/eval/chapora-fort": 3,
         "https://example.com/eval/goa-vlog": 1
       }
     },
     {
-      "id": "person-mentioned",
-      "query": "recommendations from the chef",
-      "intent": "Matches on a person rather than a place.",
-      "relevant": {
-        "https://example.com/eval/garden-bistro": 3
-      }
-    },
-    {
       "id": "filtered-by-platform",
       "query": "trek",
-      "intent": "A filter must narrow before ranking, not after.",
+      "intent": "filter. A platform filter must narrow before ranking, not after.",
       "filters": {
         "platforms": [
           "youtube"
@@ -66,9 +474,136 @@
       }
     },
     {
+      "id": "filtered-by-platform-tiktok",
+      "query": "queue",
+      "intent": "filter. Several reels are about queues; the filter has to drop the ones on other platforms.",
+      "filters": {
+        "platforms": [
+          "tiktok"
+        ]
+      },
+      "relevant": {
+        "https://example.com/eval/berlin-doner": 3,
+        "https://example.com/eval/reykjavik-hot-dog": 3
+      }
+    },
+    {
+      "id": "filtered-by-platform-instagram",
+      "query": "market",
+      "intent": "filter. The same word matches on youtube and tiktok too, and those must not appear.",
+      "filters": {
+        "platforms": [
+          "instagram"
+        ]
+      },
+      "relevant": {
+        "https://example.com/eval/berlin-flea-market": 3,
+        "https://example.com/eval/rome-testaccio-market": 3
+      }
+    },
+    {
+      "id": "filtered-by-category-food",
+      "query": "coffee",
+      "intent": "filter. Category narrows a word that also appears outside food.",
+      "filters": {
+        "category": "food"
+      },
+      "relevant": {
+        "https://example.com/eval/artjuna": 3,
+        "https://example.com/eval/bengaluru-filter-coffee": 3,
+        "https://example.com/eval/hanoi-egg-coffee": 3,
+        "https://example.com/eval/garden-bistro": 2
+      }
+    },
+    {
+      "id": "filtered-by-category-travel",
+      "query": "viewpoint over the city",
+      "intent": "filter. Category plus a description, so the filter and the vector arm both have to work.",
+      "filters": {
+        "category": "travel"
+      },
+      "relevant": {
+        "https://example.com/eval/lisbon-miradouro": 3,
+        "https://example.com/eval/barcelona-bunkers": 3,
+        "https://example.com/eval/chapora-fort": 2
+      }
+    },
+    {
+      "id": "filtered-by-subcategory",
+      "query": "getting around",
+      "intent": "filter. Subcategory carries the meaning the query does not spell out.",
+      "filters": {
+        "subcategory": "transport"
+      },
+      "relevant": {
+        "https://example.com/eval/tokyo-suica": 3,
+        "https://example.com/eval/bangkok-ferry": 3,
+        "https://example.com/eval/delhi-metro-airport": 3,
+        "https://example.com/eval/amsterdam-bike-rules": 3,
+        "https://example.com/eval/london-oyster-contactless": 3,
+        "https://example.com/eval/nyc-subway-weekend": 3,
+        "https://example.com/eval/goa-scooter-rental": 3,
+        "https://example.com/eval/lisbon-tram-28": 2
+      }
+    },
+    {
+      "id": "filtered-by-date",
+      "query": "tokyo",
+      "intent": "filter. One day's saves only. Everything else the word matches was saved on another date.",
+      "filters": {
+        "saved_date": "2026-01-18"
+      },
+      "relevant": {
+        "https://example.com/eval/tokyo-yanaka": 3,
+        "https://example.com/eval/tokyo-suica": 3,
+        "https://example.com/eval/tokyo-standing-sushi": 2
+      }
+    },
+    {
+      "id": "filtered-by-date-and-word",
+      "query": "sushi",
+      "intent": "filter. A date filter that leaves exactly one candidate standing.",
+      "filters": {
+        "saved_date": "2026-01-18"
+      },
+      "relevant": {
+        "https://example.com/eval/tokyo-standing-sushi": 3
+      }
+    },
+    {
       "id": "no-such-thing",
       "query": "scuba diving in switzerland",
-      "intent": "Nothing in the library matches. An empty result is the correct answer.",
+      "intent": "unrelated. Nothing in the library matches. An empty result is the correct answer.",
+      "relevant": {}
+    },
+    {
+      "id": "unrelated-car-battery",
+      "query": "how to change a car battery",
+      "intent": "unrelated. The library has how-to reels, none of them about cars.",
+      "relevant": {}
+    },
+    {
+      "id": "unrelated-ski-argentina",
+      "query": "best ski resorts in argentina",
+      "intent": "unrelated. Travel shaped, and about a continent the library never visits.",
+      "relevant": {}
+    },
+    {
+      "id": "unrelated-wedding-photographer",
+      "query": "wedding photographers in dublin",
+      "intent": "unrelated. The library has a photography reel, which is the trap.",
+      "relevant": {}
+    },
+    {
+      "id": "unrelated-database-benchmarks",
+      "query": "postgres connection pool benchmark results",
+      "intent": "unrelated. Nothing in the library is about software at all.",
+      "relevant": {}
+    },
+    {
+      "id": "unrelated-mortgage-rates",
+      "query": "fixed mortgage rates compared",
+      "intent": "unrelated. Money shaped, and the library only prices tickets and deposits.",
       "relevant": {}
     }
   ]

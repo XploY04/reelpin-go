@@ -13,7 +13,7 @@ import (
 
 // EvalSetVersion is stamped into every report so two numbers are only ever
 // compared when they came from the same labeled set.
-const EvalSetVersion = "search-eval-v1"
+const EvalSetVersion = "search-eval-v2"
 
 // LabeledQuery is one judged query. Relevant maps a saved reel's URL to a
 // gain: 3 is exactly what the user meant, 2 is a good alternative, 1 is
@@ -56,7 +56,13 @@ func LoadLabeledSet(path string) (LabeledSet, error) {
 }
 
 // QueryScore is one query's relevance, measured against its judgments.
+//
+// Judged separates the two kinds of query the set holds. A query with
+// judgments is scored on where its answers landed. A query the set says has no
+// right answer cannot have a recall or an nDCG at all: its only correct
+// outcome is an empty result, which is counted on its own.
 type QueryScore struct {
+	Judged         bool
 	PrecisionAt5   float64
 	RecallAt10     float64
 	ReciprocalRank float64
@@ -67,7 +73,10 @@ type QueryScore struct {
 // Score measures one ranked list of keys against its judgments. Keys are
 // whatever the labeled set is keyed by; only equality matters here.
 func Score(ranked []string, relevant map[string]int) QueryScore {
-	score := QueryScore{ZeroResults: len(ranked) == 0}
+	score := QueryScore{
+		Judged:      len(relevant) > 0,
+		ZeroResults: len(ranked) == 0,
+	}
 
 	hitsAt5 := 0
 	for index, key := range ranked {
@@ -138,18 +147,27 @@ func ndcgAt10(ranked []string, relevant map[string]int) float64 {
 // Report is what one run of the labeled set measured. Latencies are end to end
 // through the search service, not the HTTP handler.
 type Report struct {
-	SetVersion     string        `json:"set_version"`
-	System         string        `json:"system"`
-	Queries        int           `json:"queries"`
-	PrecisionAt5   float64       `json:"precision_at_5"`
-	RecallAt10     float64       `json:"recall_at_10"`
-	MRR            float64       `json:"mrr"`
-	NDCGAt10       float64       `json:"ndcg_at_10"`
-	ZeroResultRate float64       `json:"zero_result_rate"`
-	P50            time.Duration `json:"p50"`
-	P95            time.Duration `json:"p95"`
-	// DenseQueries counts the queries whose vector arm ran, which is also the
-	// number of embedding calls a run paid for.
+	SetVersion string `json:"set_version"`
+	System     string `json:"system"`
+	Queries    int    `json:"queries"`
+	// JudgedQueries is how many queries the relevance averages below are taken
+	// over: the ones with at least one right answer.
+	JudgedQueries  int     `json:"judged_queries"`
+	PrecisionAt5   float64 `json:"precision_at_5"`
+	RecallAt10     float64 `json:"recall_at_10"`
+	MRR            float64 `json:"mrr"`
+	NDCGAt10       float64 `json:"ndcg_at_10"`
+	ZeroResultRate float64 `json:"zero_result_rate"`
+	// UnrelatedQueries is the rest: queries the set says nothing answers.
+	// UnrelatedCorrect counts how many of them came back empty, which is the
+	// only thing they can be right about.
+	UnrelatedQueries int           `json:"unrelated_queries"`
+	UnrelatedCorrect int           `json:"unrelated_correct"`
+	P50              time.Duration `json:"p50"`
+	P95              time.Duration `json:"p95"`
+	// DenseQueries counts the queries whose vector arm returned candidates. It
+	// is not the embedding bill: a query whose neighbours all sit outside the
+	// relevance gate paid for its vector and contributed nothing.
 	DenseQueries int `json:"dense_queries"`
 }
 
@@ -167,20 +185,31 @@ func Summarize(system string, scores []QueryScore, latencies []time.Duration, de
 
 	zeros := 0
 	for _, score := range scores {
+		if score.ZeroResults {
+			zeros++
+		}
+		if !score.Judged {
+			report.UnrelatedQueries++
+			if score.ZeroResults {
+				report.UnrelatedCorrect++
+			}
+			continue
+		}
+		report.JudgedQueries++
 		report.PrecisionAt5 += score.PrecisionAt5
 		report.RecallAt10 += score.RecallAt10
 		report.MRR += score.ReciprocalRank
 		report.NDCGAt10 += score.NDCGAt10
-		if score.ZeroResults {
-			zeros++
-		}
 	}
-	count := float64(len(scores))
-	report.PrecisionAt5 /= count
-	report.RecallAt10 /= count
-	report.MRR /= count
-	report.NDCGAt10 /= count
-	report.ZeroResultRate = float64(zeros) / count
+	report.ZeroResultRate = float64(zeros) / float64(len(scores))
+
+	if report.JudgedQueries > 0 {
+		judged := float64(report.JudgedQueries)
+		report.PrecisionAt5 /= judged
+		report.RecallAt10 /= judged
+		report.MRR /= judged
+		report.NDCGAt10 /= judged
+	}
 
 	report.P50 = percentile(latencies, 50)
 	report.P95 = percentile(latencies, 95)

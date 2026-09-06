@@ -18,10 +18,17 @@ import (
 const RRFConstant = 60.0
 
 // MaxDenseDistance gates the vector arm so a query about something the user
-// never saved comes back empty. 0.42 cosine distance is 0.58 similarity, the
-// lower semantic bar the Python search already used. It is a starting point for
-// the evaluation sweep, not a measured answer; see api/eval/REPORT.md.
-const MaxDenseDistance = 0.42
+// never saved comes back empty.
+//
+// Measured, not copied. TestSweepingTheDenseGate ran the 70 queries of
+// search-eval-v2 against the 61-reel corpus with real gemini-embedding-2
+// vectors, at every cutoff from 0.20 to 1.00 in steps of 0.02. 0.40 is the
+// widest gate at which all six unrelated queries still returned nothing, and it
+// already holds recall@10 0.99 and nDCG@10 0.98. At 0.42, the value this was
+// before and the one the Python path used, an unrelated query starts coming
+// back with results. Widening further buys 0.008 of recall and loses the empty
+// answer entirely. See api/eval/REPORT.md.
+const MaxDenseDistance = 0.40
 
 // Limits for one query.
 const (
