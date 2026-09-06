@@ -5,8 +5,8 @@ state applied on 2026-09-06 and how to reproduce or roll it back.
 
 ## Current layout
 
-The host has 911 MiB RAM and 2 GiB swap. Python was stopped to make room; its
-checkout, environment and unit files remain intact.
+The host has 911 MiB RAM and 2 GiB swap. Python was stopped and disabled to
+make room; its checkout, environment and unit files remain intact.
 
 | Process | Address | Limit |
 |---|---|---|
@@ -129,7 +129,7 @@ sudo systemctl stop reelpin-api-dev reelpin-worker-dev
 sudo cp /etc/nginx/backups/reelpin-api.python-20260906 \
   /etc/nginx/sites-enabled/reelpin-api
 sudo nginx -t && sudo systemctl reload nginx
-sudo systemctl start reelpin-api.service reelpin-worker.service
+sudo systemctl enable --now reelpin-api.service reelpin-worker.service
 curl -fsS https://api-dev.reelpin.in/api/v1/health/ready
 ```
 
