@@ -17,6 +17,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/google/uuid"
 )
 
@@ -141,6 +142,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Notifications: &fakeNotifications{},
 		Lifecycle:     &fakeLifecycle{},
 		Map:           &fakeMap{},
+		Search:        &fakeSearch{},
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
 		Now:           func() time.Time { return testNow },
@@ -349,4 +351,26 @@ func (f *fakeMap) DeleteManualPin(_ context.Context, userID, _ string) error {
 func (f *fakeMap) HidePin(_ context.Context, userID, _ string, hidden bool) error {
 	f.lastUserID, f.hidden = userID, &hidden
 	return f.err
+}
+
+// fakeSearch records what a query asked for and answers with whatever the test
+// set up.
+type fakeSearch struct {
+	err         error
+	response    search.Response
+	lastUserID  string
+	lastQuery   string
+	lastFilters search.Filters
+	lastLimit   int
+}
+
+func (f *fakeSearch) Search(_ context.Context, userID, query string, filters search.Filters, limit int) (search.Response, error) {
+	f.lastUserID, f.lastQuery, f.lastFilters, f.lastLimit = userID, query, filters, limit
+	if f.err != nil {
+		return search.Response{}, f.err
+	}
+	if f.response.Results == nil {
+		f.response.Results = []search.Result{}
+	}
+	return f.response, nil
 }

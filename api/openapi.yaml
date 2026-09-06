@@ -617,6 +617,43 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/search:
+    post:
+      operationId: searchReels
+      tags: [reels]
+      summary: Search saved reels
+      description: |
+        Hybrid search over the authenticated user's own saves: meaning, exact
+        words and misspellings, fused into one ranking. Filters narrow the
+        library before ranking, so they never trim an already-ranked list.
+
+        `relevance_percent` is relative to the top hit of the same search. It
+        compares results within one response and means nothing across two.
+
+        `search_mode` names the arms that produced the answer. It degrades to
+        the lexical arms when a query vector is unavailable, which is a
+        successful search with fewer arms, not an error.
+
+        A query costs one embedding call, so this endpoint is rate limited and
+        answers `503 search_unavailable` when it cannot be metered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200":
+          description: The ranked results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResults" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
   /api/v2/collections:
     get:
       operationId: listCollections
@@ -1209,6 +1246,60 @@ components:
         longitude: { type: number }
         address: { type: string, nullable: true }
         location_display_label: { type: string }
+
+    SearchRequest:
+      type: object
+      required: [query]
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+          maxLength: 200
+          description: What the user typed. Shorter than two characters returns nothing.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+        platform: { type: string }
+        category: { type: string }
+        subcategory: { type: string }
+        saved_date:
+          type: string
+          format: date
+          description: One day, as YYYY-MM-DD.
+
+    SearchResults:
+      type: object
+      required: [query, search_mode, total, results]
+      properties:
+        query:
+          type: string
+          description: The query as it was searched, trimmed and bounded.
+        search_mode:
+          type: string
+          description: |
+            The arms that produced this ranking, joined by `+`, or `empty` when
+            none ran. `dense` is vectors, `sparse` is full text, `fuzzy` is
+            trigrams.
+          example: dense+sparse+fuzzy
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/SearchResult" }
+
+    SearchResult:
+      type: object
+      required: [reel, relevance_score, relevance_percent, display_score_label]
+      properties:
+        reel: { $ref: "#/components/schemas/Reel" }
+        relevance_score:
+          type: number
+          description: The fused rank score. Useful for ordering, not for display.
+        relevance_percent:
+          type: integer
+          description: Relative to the top hit of this same search, never across searches.
+        display_score_label: { type: string }
 
     PlatformFilters:
       type: object

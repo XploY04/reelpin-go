@@ -12,6 +12,7 @@ import (
 
 	"github.com/XploY04/reelpin-go/api"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/search"
 	"gopkg.in/yaml.v3"
 )
 
@@ -290,6 +291,9 @@ func TestFixturesMatchTheContract(t *testing.T) {
 		body    string
 		headers map[string]string
 		status  int
+		// searchResponse installs a search service answering with exactly this,
+		// so a ranking fixture does not need a database.
+		searchResponse *search.Response
 	}{
 		{name: "health_live", method: "GET", target: "/api/v2/health/live", status: 200},
 		{name: "reel_page", method: "GET", target: "/api/v2/reels?limit=25", token: "Bearer good.token", status: 200},
@@ -324,12 +328,39 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			token: "Bearer good.token", status: 200,
 			body: `{"raw_payload_text":"look at this https://www.instagram.com/reel/C8abc123/"}`,
 		},
+		{
+			name: "search_results", method: "POST", target: "/api/v2/search",
+			token: "Bearer good.token", status: 200,
+			body: `{"query":"artjuna cafe","limit":5}`,
+			searchResponse: &search.Response{
+				Query:      "artjuna cafe",
+				SearchMode: "dense+sparse+fuzzy",
+				Total:      1,
+				Results: []search.Result{{
+					Reel:              reels.BuildDisplayReel(record, testNow),
+					RelevanceScore:    0.0492,
+					RelevancePercent:  100,
+					DisplayScoreLabel: "Strong match",
+				}},
+			},
+		},
+		{
+			name: "search_empty", method: "POST", target: "/api/v2/search",
+			token: "Bearer good.token", status: 200,
+			body: `{"query":"scuba diving in switzerland"}`,
+			searchResponse: &search.Response{
+				Query: "scuba diving in switzerland", SearchMode: "empty",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := testDeps(&fakePinger{})
 			deps.Reels = reader
+			if tt.searchResponse != nil {
+				deps.Search = &fakeSearch{response: *tt.searchResponse}
+			}
 			// Fixture cases that exercise submissions need the metered path
 			// open and deterministic outcomes.
 			if tt.status != 503 {
