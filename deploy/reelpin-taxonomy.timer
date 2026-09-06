@@ -1,0 +1,17 @@
+[Unit]
+Description=Run ReelPin taxonomy curation weekly
+Documentation=https://github.com/XploY04/reelpin-go
+
+[Timer]
+# Sunday 02:00 UTC. The unit runs in UTC explicitly so a host timezone change
+# cannot move a weekly job into peak hours.
+OnCalendar=Sun *-*-* 02:00:00 UTC
+# A host that was down at 02:00 still curates when it comes back, rather than
+# skipping a week silently.
+Persistent=true
+# Spread the start so a fleet does not call the model in lockstep.
+RandomizedDelaySec=5min
+Unit=reelpin-taxonomy.service
+
+[Install]
+WantedBy=timers.target

@@ -27,7 +27,7 @@ func main() {
 func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|" +
-			"rebuild-queue|retention|purge|backfill-embeddings>")
+			"rebuild-queue|retention|purge|backfill-embeddings|curate-taxonomy|rollback-taxonomy>")
 	}
 
 	cfg, err := config.Load()
@@ -68,6 +68,12 @@ func run(logger *slog.Logger, args []string) error {
 
 	case "purge":
 		return runPurge(ctx, logger, cfg, args[1:])
+
+	case "curate-taxonomy":
+		return runCurateTaxonomy(ctx, logger, cfg, args[1:])
+
+	case "rollback-taxonomy":
+		return runRollbackTaxonomy(ctx, logger, cfg, args[1:])
 
 	case "migrate-down":
 		// Expand-only migrations are corrected forward in production. This is
