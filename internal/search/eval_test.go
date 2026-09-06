@@ -65,6 +65,9 @@ func TestAQueryWithNoRightAnswerScoresZeroNotNaN(t *testing.T) {
 	if math.IsNaN(score.RecallAt10) || math.IsNaN(score.NDCGAt10) {
 		t.Fatalf("score = %+v, want zeros rather than NaN", score)
 	}
+	if score.Judged {
+		t.Error("a query with no right answer was counted as judged")
+	}
 }
 
 func TestHigherGainsRankFirstInTheIdeal(t *testing.T) {
@@ -80,8 +83,8 @@ func TestHigherGainsRankFirstInTheIdeal(t *testing.T) {
 
 func TestSummarizeAveragesAndPicksPercentiles(t *testing.T) {
 	scores := []QueryScore{
-		{PrecisionAt5: 1, RecallAt10: 1, ReciprocalRank: 1, NDCGAt10: 1},
-		{ZeroResults: true},
+		{Judged: true, PrecisionAt5: 1, RecallAt10: 1, ReciprocalRank: 1, NDCGAt10: 1},
+		{Judged: true, ZeroResults: true},
 	}
 	latencies := []time.Duration{10 * time.Millisecond, 200 * time.Millisecond}
 
@@ -95,6 +98,25 @@ func TestSummarizeAveragesAndPicksPercentiles(t *testing.T) {
 	if report.P50 != 10*time.Millisecond || report.P95 != 200*time.Millisecond {
 		t.Errorf("p50 = %s p95 = %s", report.P50, report.P95)
 	}
+}
+
+// An unrelated query has no right answer, so averaging its unavoidable zero
+// into recall would make the relevance numbers a function of how many
+// unrelated queries the set happens to hold. They are counted apart instead.
+func TestUnrelatedQueriesAreCountedApartFromRelevance(t *testing.T) {
+	scores := []QueryScore{
+		{Judged: true, PrecisionAt5: 1, RecallAt10: 1, ReciprocalRank: 1, NDCGAt10: 1},
+		{ZeroResults: true},
+		{},
+	}
+
+	report := Summarize("go-hybrid", scores, nil, 3)
+	if report.JudgedQueries != 1 || report.UnrelatedQueries != 2 || report.UnrelatedCorrect != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	closeTo(t, "recall@10", report.RecallAt10, 1)
+	closeTo(t, "ndcg@10", report.NDCGAt10, 1)
+	closeTo(t, "zero-result rate", report.ZeroResultRate, 1.0/3)
 }
 
 func TestSummarizeWithNothingMeasured(t *testing.T) {
