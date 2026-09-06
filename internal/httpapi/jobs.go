@@ -9,6 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
+type processingJobListResponse struct {
+	Jobs []jobs.Response `json:"jobs"`
+}
+
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
@@ -33,7 +37,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	for _, record := range records {
 		responses = append(responses, jobs.BuildResponse(record, s.jobResultReel(r, userID, record), s.now()))
 	}
-	writeJSON(w, http.StatusOK, responses)
+	writeJSON(w, http.StatusOK, processingJobListResponse{Jobs: responses})
 }
 
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
