@@ -34,6 +34,8 @@ tags:
     description: Account-scoped reads.
   - name: sharing
     description: Native share tokens and share-text resolution.
+  - name: collections
+    description: Named sets of saves, shared by membership or link.
 
 security:
   - supabaseBearer: []
@@ -362,6 +364,334 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/collections:
+    get:
+      operationId: listCollections
+      tags: [collections]
+      summary: List collections
+      description: |
+        Everything this user owns or belongs to, newest activity first. The
+        list is bounded at 200 rather than paged: a person curates tens of
+        collections, and one query serves the whole screen.
+      responses:
+        "200":
+          description: The user's collections.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createCollection
+      tags: [collections]
+      summary: Create a collection
+      description: |
+        Creates a collection, optionally filing saves into it in the same
+        transaction. Unknown or foreign reel ids are skipped, not errors: a
+        stale picker must not cost the user the rest of the batch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCollectionRequest" }
+      responses:
+        "200":
+          description: The new collection and how many saves were filed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}:
+    get:
+      operationId: getCollection
+      tags: [collections]
+      summary: Get a collection with one page of items
+      description: |
+        The signed-in view: the collection, one cursor page of item cards, and
+        whether this user may change it. Items are cards, not full reels; the
+        full reel is one `getReel` call away by the same id.
+
+        A collection this user cannot see answers 404, identically to one that
+        does not exist.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: The collection detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    patch:
+      operationId: updateCollection
+      tags: [collections]
+      summary: Rename or restyle a collection
+      description: |
+        Owner only. Absent fields keep their values. The cover must be a save
+        already in the collection; anything else is silently kept as-is.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCollectionRequest" }
+      responses:
+        "200":
+          description: The updated collection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      operationId: deleteCollection
+      tags: [collections]
+      summary: Delete a collection
+      description: |
+        Owner only. Items, members and invites go with it; the saves themselves
+        are untouched.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/items:
+    post:
+      operationId: addCollectionItems
+      tags: [collections]
+      summary: File saves into a collection
+      description: |
+        Owner or editor. Idempotent: re-adding a save changes nothing and is
+        not an error. Unknown and foreign ids are skipped.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionItemsRequest" }
+      responses:
+        "200":
+          description: The collection and how many saves were newly filed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/items/{reel_id}:
+    delete:
+      operationId: removeCollectionItem
+      tags: [collections]
+      summary: Remove one save from a collection
+      description: Owner or editor. The save itself is untouched.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+        - $ref: "#/components/parameters/ReelID"
+      responses:
+        "200":
+          description: Removed, or was never there.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/members:
+    get:
+      operationId: listCollectionMembers
+      tags: [collections]
+      summary: List collaborators
+      description: Any role may see who else can see the collection they are in.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: The owner and every member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMembers" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/members/{member_user_id}:
+    delete:
+      operationId: removeCollectionMember
+      tags: [collections]
+      summary: Remove a collaborator
+      description: Owner only.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+        - $ref: "#/components/parameters/MemberUserID"
+      responses:
+        "200":
+          description: Removed, or was never a member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/leave:
+    post:
+      operationId: leaveCollection
+      tags: [collections]
+      summary: Leave a collection
+      description: |
+        A member removing themselves. The owner cannot leave their own
+        collection; they delete it or keep it.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: Left.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/link:
+    post:
+      operationId: enableCollectionLink
+      tags: [collections]
+      summary: Mint a read-only share link
+      description: |
+        Owner only. The token is returned once and stored only as a hash.
+        Re-minting replaces the previous link, which revokes it. Links expire
+        after 30 days; re-mint to extend.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: The link. The raw token exists here and nowhere else.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionLink" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      operationId: disableCollectionLink
+      tags: [collections]
+      summary: Revoke the share link
+      description: Owner only. Revocation forgets the hash, immediately.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/invites:
+    post:
+      operationId: createCollectionInvite
+      tags: [collections]
+      summary: Mint an invite
+      description: |
+        Owner only. An invite grants editor or viewer membership to whoever
+        accepts it before it expires. The token is returned once.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionInviteRequest" }
+      responses:
+        "200":
+          description: The invite. The raw token exists here and nowhere else.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionInvite" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collection-invites/{token}/accept:
+    post:
+      operationId: acceptCollectionInvite
+      tags: [collections]
+      summary: Accept an invite
+      description: |
+        Turns the capability into membership. Accepting twice leaves one
+        membership and spends one use. Unknown, expired, revoked and exhausted
+        invites are all the same error: which one it was is exactly what a
+        token guesser wants to learn.
+      parameters:
+        - $ref: "#/components/parameters/ShareLinkToken"
+      responses:
+        "200":
+          description: The collection this user now belongs to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "400": { $ref: "#/components/responses/InviteInvalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/shared-collections/{token}:
+    get:
+      operationId: getSharedCollection
+      tags: [collections]
+      summary: Read a collection through its share link
+      description: |
+        The anonymous read-only view. The unguessable token in the path is the
+        whole authorization; it grants a view of the saves, never membership,
+        and the response carries no owner id and no member information.
+
+        Unknown, expired and revoked tokens answer the same 404.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ShareLinkToken"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: The shared view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SharedCollection" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+
 components:
   securitySchemes:
     supabaseBearer:
@@ -431,6 +761,22 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    CollectionID:
+      name: collection_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MemberUserID:
+      name: member_user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ShareLinkToken:
+      name: token
+      in: path
+      required: true
+      description: An unguessable capability token. Treat it as a secret.
+      schema: { type: string }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -481,6 +827,16 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     MethodNotAllowed:
       description: This path exists but does not accept that method.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    CollectionForbidden:
+      description: This user may read the collection but not make this change.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InviteInvalid:
+      description: The invite is unknown, expired, revoked or exhausted.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -728,3 +1084,175 @@ components:
         total_tags: { type: integer }
         total_categories: { type: integer }
         total_subcategories: { type: integer }
+
+    Collection:
+      type: object
+      required: [id, name, description, visibility, role, item_count, member_count]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        cover_reel_id: { type: string, nullable: true, format: uuid }
+        visibility: { type: string, enum: [private, link] }
+        role: { type: string, enum: [owner, editor, viewer] }
+        item_count: { type: integer }
+        member_count: { type: integer }
+        created_at: { type: string, nullable: true, format: date-time }
+        updated_at: { type: string, nullable: true, format: date-time }
+
+    CollectionList:
+      type: object
+      required: [collections]
+      properties:
+        collections:
+          type: array
+          items: { $ref: "#/components/schemas/Collection" }
+
+    CollectionMutation:
+      type: object
+      required: [collection, added_count]
+      properties:
+        collection: { $ref: "#/components/schemas/Collection" }
+        added_count:
+          type: integer
+          description: How many saves were newly filed. Re-adds count zero.
+
+    CollectionItem:
+      type: object
+      required: [reel_id, title, summary, url, source_platform]
+      description: |
+        One filed save, as a card. `reel_id` is the same id `getReel` accepts.
+      properties:
+        reel_id: { type: string, format: uuid }
+        title: { type: string }
+        summary: { type: string }
+        url: { type: string }
+        thumbnail_url: { type: string, nullable: true }
+        source_platform: { type: string }
+        saved_at: { type: string, nullable: true, format: date-time }
+        added_at: { type: string, nullable: true, format: date-time }
+        added_by: { type: string, nullable: true, format: uuid }
+
+    CollectionPage:
+      type: object
+      required: [next_cursor, has_more, limit]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` for the next page. Null on the last page.
+        has_more: { type: boolean }
+        limit: { type: integer }
+
+    CollectionDetail:
+      type: object
+      required: [collection, items, page, can_edit]
+      properties:
+        collection: { $ref: "#/components/schemas/Collection" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionItem" }
+        page: { $ref: "#/components/schemas/CollectionPage" }
+        can_edit: { type: boolean }
+
+    SharedCollection:
+      type: object
+      required: [collection, items, page]
+      description: |
+        The anonymous view. `member_count` is always zero here and `role` is
+        always `viewer`: the token grants a view of the saves, not of who can
+        see them.
+      properties:
+        collection: { $ref: "#/components/schemas/Collection" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionItem" }
+        page: { $ref: "#/components/schemas/CollectionPage" }
+
+    CollectionMember:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id: { type: string, format: uuid }
+        role: { type: string, enum: [editor, viewer] }
+        created_at: { type: string, nullable: true, format: date-time }
+
+    CollectionMembers:
+      type: object
+      required: [owner_id, members]
+      properties:
+        owner_id: { type: string, format: uuid }
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionMember" }
+
+    CollectionLink:
+      type: object
+      required: [url, token, expires_at]
+      properties:
+        url: { type: string }
+        token:
+          type: string
+          description: Returned once. It cannot be read back.
+        expires_at: { type: string, format: date-time }
+
+    CollectionInvite:
+      type: object
+      required: [url, token, role, expires_at]
+      properties:
+        url: { type: string }
+        token:
+          type: string
+          description: Returned once. It cannot be read back.
+        role: { type: string, enum: [editor, viewer] }
+        expires_at: { type: string, format: date-time }
+
+    OK:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+
+    CreateCollectionRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        reel_ids:
+          type: array
+          maxItems: 100
+          items: { type: string, format: uuid }
+
+    UpdateCollectionRequest:
+      type: object
+      additionalProperties: false
+      description: Absent fields keep their values.
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        cover_reel_id:
+          type: string
+          format: uuid
+          description: Must be a save already in this collection.
+
+    CollectionItemsRequest:
+      type: object
+      required: [reel_ids]
+      additionalProperties: false
+      properties:
+        reel_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { type: string, format: uuid }
+
+    CollectionInviteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [editor, viewer]
+          default: viewer

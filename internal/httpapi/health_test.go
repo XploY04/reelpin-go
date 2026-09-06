@@ -210,7 +210,7 @@ func TestFrameworkErrorsAreJSON(t *testing.T) {
 		wantCode   string
 	}{
 		{name: "unknown route", method: "GET", path: "/missing", wantStatus: http.StatusNotFound, wantCode: "not_found"},
-		{name: "unknown api route", method: "GET", path: "/api/v2/collections", wantStatus: http.StatusNotFound, wantCode: "not_found"},
+		{name: "unknown api route", method: "GET", path: "/api/v2/nothing-here", wantStatus: http.StatusNotFound, wantCode: "not_found"},
 		{name: "wrong method", method: "POST", path: "/api/v2/health/live", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
 		{name: "wrong method on a reel route", method: "DELETE", path: "/api/v2/reels/abc", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed"},
 	}

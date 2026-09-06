@@ -1,11 +1,95 @@
 {
   "note": "Generated from Server.routeTable(). A change here is an API change.",
-  "route_count": 14,
+  "route_count": 29,
   "routes": [
     {
       "method": "GET",
       "path": "/api/v2/account/library-stats",
       "operation_id": "getLibraryStats",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collection-invites/{token}/accept",
+      "operation_id": "acceptCollectionInvite",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/collections",
+      "operation_id": "listCollections",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections",
+      "operation_id": "createCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}",
+      "operation_id": "deleteCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/collections/{collection_id}",
+      "operation_id": "getCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v2/collections/{collection_id}",
+      "operation_id": "updateCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/invites",
+      "operation_id": "createCollectionInvite",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/items",
+      "operation_id": "addCollectionItems",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}/items/{reel_id}",
+      "operation_id": "removeCollectionItem",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/leave",
+      "operation_id": "leaveCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}/link",
+      "operation_id": "disableCollectionLink",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/link",
+      "operation_id": "enableCollectionLink",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/collections/{collection_id}/members",
+      "operation_id": "listCollectionMembers",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}/members/{member_user_id}",
+      "operation_id": "removeCollectionMember",
       "auth": "bearer"
     },
     {
@@ -85,6 +169,12 @@
       "path": "/api/v2/share/resolve",
       "operation_id": "resolveShare",
       "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/shared-collections/{token}",
+      "operation_id": "getSharedCollection",
+      "auth": "public-share"
     }
   ]
 }

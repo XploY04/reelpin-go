@@ -33,6 +33,8 @@ type Deps struct {
 	ShareTokens ShareTokenStore
 	// Resolver previews shared text without processing it.
 	Resolver ShareResolver
+	// Collections owns a user's arrangement of their own saves.
+	Collections Collections
 	// Limiter is nil outside production-shaped setups. Provider-costing
 	// endpoints fail closed without a decision; reads never consult it.
 	Limiter RateLimiter
