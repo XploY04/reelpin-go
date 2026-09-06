@@ -16,8 +16,8 @@ import (
 func testPrices(t *testing.T) Prices {
 	t.Helper()
 	prices, err := ParsePrices(
-		"gemini:gemini-2.0-flash-lite:input_mtok=0.075," +
-			"gemini:gemini-2.0-flash-lite:output_mtok=0.30," +
+		"gemini:gemini-3.5-flash-lite:input_mtok=0.075," +
+			"gemini:gemini-3.5-flash-lite:output_mtok=0.30," +
 			"gemini:gemini-embedding-2:call=0.0001," +
 			"apify:*:call=0.004")
 	if err != nil {
@@ -62,7 +62,7 @@ func TestCostUsesMeasuredTokensWhenTheProviderReportedThem(t *testing.T) {
 	prices := testPrices(t)
 
 	cost, priced := prices.Cost(Usage{
-		Provider: "gemini", Model: "gemini-2.0-flash-lite", Operation: "extract",
+		Provider: "gemini", Model: "gemini-3.5-flash-lite", Operation: "extract",
 		Calls: 1, InputTokens: 1_000_000, OutputTokens: 100_000, Measured: true,
 	})
 	if !priced {
@@ -126,7 +126,7 @@ func quietLedger(store Store, prices Prices, meters *metrics.Metrics) *Ledger {
 func TestLedgerStoresThePriceItComputed(t *testing.T) {
 	store := &recordingStore{}
 	quietLedger(store, testPrices(t), metrics.New()).Record(context.Background(), Usage{
-		Provider: "gemini", Model: "gemini-2.0-flash-lite", Operation: "categorize",
+		Provider: "gemini", Model: "gemini-3.5-flash-lite", Operation: "categorize",
 		Calls: 1, InputTokens: 2_000_000, Measured: true,
 	})
 
@@ -172,7 +172,7 @@ func TestAFailedInsertIsCountedAsUndercounting(t *testing.T) {
 	meters := metrics.New()
 	store := &recordingStore{err: errors.New("no connection")}
 	quietLedger(store, testPrices(t), meters).Record(context.Background(), Usage{
-		Provider: "gemini", Model: "gemini-2.0-flash-lite", Operation: "extract",
+		Provider: "gemini", Model: "gemini-3.5-flash-lite", Operation: "extract",
 		Calls: 1, InputTokens: 100, Measured: true,
 	})
 

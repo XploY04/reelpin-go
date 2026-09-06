@@ -25,7 +25,7 @@ type Prices map[string]Micros
 
 // ParsePrices reads the COST_GATE_PRICES form:
 //
-//	gemini:gemini-2.0-flash-lite:input_mtok=0.075,apify:instagram:call=0.004
+//	gemini:gemini-3.5-flash-lite:input_mtok=0.075,apify:instagram:call=0.004
 //
 // Amounts are US dollars. The model may be * to cover every model a provider
 // serves.
