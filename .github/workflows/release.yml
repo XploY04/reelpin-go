@@ -24,7 +24,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/${{ github.repository }}
+  IMAGE: ghcr.io/xploy04/reelpin-go
 
 jobs:
   build:
