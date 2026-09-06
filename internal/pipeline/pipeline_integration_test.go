@@ -79,6 +79,11 @@ func testPool(t *testing.T) (*pgxpool.Pool, string) {
 		CREATE TABLE auth.users (id UUID PRIMARY KEY, email TEXT, created_at TIMESTAMPTZ DEFAULT now())`); err != nil {
 		t.Fatalf("creating auth.users: %v", err)
 	}
+	// Every persist writes the legacy reel row too, so every pipeline test
+	// needs the table production already has.
+	if _, err := pool.Exec(ctx, legacyReelsTable); err != nil {
+		t.Fatalf("creating the legacy reels table: %v", err)
+	}
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
@@ -186,6 +191,15 @@ type harness struct {
 
 func newHarness(t *testing.T, subscribers ...string) *harness {
 	t.Helper()
+	h := newBareHarness(t)
+	h.runID, h.contentID = seedRun(t, h.pool, subscribers...)
+	return h
+}
+
+// newBareHarness is the pipeline and its fakes on a fresh database, with no run
+// seeded. A test that submits its own work sets runID from the submission.
+func newBareHarness(t *testing.T) *harness {
+	t.Helper()
 	pool, _ := testPool(t)
 
 	handler := &fakeHandler{prepared: platform.Prepared{
@@ -206,14 +220,11 @@ func newHarness(t *testing.T, subscribers ...string) *harness {
 		t.Fatalf("registry: %v", err)
 	}
 
-	runID, contentID := seedRun(t, pool, subscribers...)
 	return &harness{
 		pool:        pool,
 		handler:     handler,
 		extractor:   extractor,
 		categorizer: categorizer,
-		runID:       runID,
-		contentID:   contentID,
 		pipeline: New(Deps{
 			Pool:         pool,
 			Handlers:     registry,
