@@ -130,9 +130,15 @@ func (p *Pipeline) Handle(ctx context.Context, message queue.Message) (queue.Out
 		return queue.Outcome{Kind: queue.Retry, Attempt: 1}, err
 	}
 
-	err = p.process(ctx, held)
+	err = p.process(ctx, message, held)
 	switch {
 	case err == nil:
+		return queue.Outcome{Kind: queue.Done}, nil
+	case errors.Is(err, errEscalated):
+		// The light consumer found media and handed the work to the media
+		// queue. The transition and its event are committed, so this message
+		// is finished: acknowledging it is what frees this consumer.
+		p.deps.Logger.Info("escalated to the media queue", "run_id", held.RunID)
 		return queue.Outcome{Kind: queue.Done}, nil
 	case errors.Is(err, lease.ErrFenced):
 		// A newer claim owns the run. Discard everything; theirs counts.
@@ -145,7 +151,7 @@ func (p *Pipeline) Handle(ctx context.Context, message queue.Message) (queue.Out
 	}
 }
 
-func (p *Pipeline) process(ctx context.Context, held lease.Lease) error {
+func (p *Pipeline) process(ctx context.Context, message queue.Message, held lease.Lease) error {
 	state, err := p.load(ctx, held)
 	if err != nil {
 		return p.applyFailure(ctx, held, stagePrepare, Classify(err))
@@ -173,6 +179,21 @@ func (p *Pipeline) process(ctx context.Context, held lease.Lease) error {
 			}
 			return p.applyFailure(ctx, held, stage, Classify(err))
 		}
+
+		// A light consumer that has just discovered media must not download it
+		// inline: that is the 180 seconds the two-queue split exists to keep
+		// off this channel. The transition and its event commit together, and
+		// the media consumer resumes from the checkpoint prepare just wrote.
+		if stage == stagePrepare && state.Prepared.NeedsMedia &&
+			message.EventType == queue.EventProcessLight {
+			if err := p.escalate(ctx, held, state); err != nil {
+				if errors.Is(err, lease.ErrFenced) {
+					return err
+				}
+				return p.applyFailure(ctx, held, stage, Classify(err))
+			}
+			return errEscalated
+		}
 	}
 
 	stageCtx, cancelPersist := context.WithTimeout(ctx, stageTimeouts[stagePersist])
@@ -184,6 +205,53 @@ func (p *Pipeline) process(ctx context.Context, held lease.Lease) error {
 		return p.applyFailure(ctx, held, stagePersist, Classify(err))
 	}
 	return nil
+}
+
+// errEscalated is not a failure: the run moved to another queue and this
+// consumer is finished with it.
+var errEscalated = errors.New("run escalated to the media queue")
+
+// escalateNamespace makes an escalation event deterministic: one run at one
+// lease generation produces exactly one media event however often it is
+// redelivered.
+var escalateNamespace = uuid.MustParse("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+
+// escalate hands a run from the light queue to the media queue. The run goes
+// back to queued and the event is written in the same transaction, guarded by
+// the lease, so a fenced worker cannot escalate a run it no longer owns.
+func (p *Pipeline) escalate(ctx context.Context, held lease.Lease, state *run) error {
+	transaction, err := p.deps.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("starting the escalation: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	if err := lease.GuardedExec(ctx, transaction, held, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE reelpin.processing_runs
+			SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL,
+			    stage = $2, updated_at = now()
+			WHERE id = $1`, state.ID, stageDownload); err != nil {
+			return fmt.Errorf("requeueing for media: %w", err)
+		}
+
+		eventID := uuid.NewSHA1(escalateNamespace,
+			[]byte(fmt.Sprintf("escalate:%s:%d", state.ID, held.Generation))).String()
+		payload := fmt.Sprintf(`{"run_id":%q,"dispatch_generation":%d}`,
+			state.ID, held.Generation)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO reelpin.outbox_events
+				(event_id, event_type, routing_key, schema_version, payload)
+			VALUES ($1, $2, $3, 1, $4::jsonb)
+			ON CONFLICT (event_id) DO NOTHING`,
+			eventID, queue.EventProcessMedia, queue.QueueMedia, payload); err != nil {
+			return fmt.Errorf("writing the escalation event: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return transaction.Commit(ctx)
 }
 
 func (p *Pipeline) renew(ctx context.Context, held lease.Lease, cancel context.CancelFunc) {

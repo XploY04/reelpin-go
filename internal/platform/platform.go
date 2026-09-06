@@ -38,16 +38,33 @@ type Handler interface {
 	Download(ctx context.Context, identity sourceidentity.SourceIdentity, workDir string) ([]ai.Media, error)
 }
 
-// Registry holds one handler per platform. Duplicate registration is a
-// programming error and fails construction rather than shadowing silently.
+// Fallback is the name a handler registers under to serve every source no
+// named handler claims.
+//
+// A generic link's identity carries its hostname as the platform — there are
+// as many "platforms" as there are websites — so an exact-match registry can
+// never route one. The fallback is that route.
+const Fallback = "*"
+
+// Registry holds one handler per platform, plus an optional fallback.
+// Duplicate registration is a programming error and fails construction rather
+// than shadowing silently.
 type Registry struct {
 	handlers map[string]Handler
+	fallback Handler
 }
 
 func NewRegistry(handlers ...Handler) (*Registry, error) {
 	registry := &Registry{handlers: map[string]Handler{}}
 	for _, handler := range handlers {
 		name := handler.Platform()
+		if name == Fallback {
+			if registry.fallback != nil {
+				return nil, fmt.Errorf("two fallback handlers are registered")
+			}
+			registry.fallback = handler
+			continue
+		}
 		if _, duplicate := registry.handlers[name]; duplicate {
 			return nil, fmt.Errorf("platform %q is registered twice", name)
 		}
@@ -59,6 +76,13 @@ func NewRegistry(handlers ...Handler) (*Registry, error) {
 // Get returns the handler for a platform. A missing handler is not an error
 // here: the pipeline classifies it as terminal for the run, with its own code.
 func (r *Registry) Get(platform string) (Handler, bool) {
-	handler, ok := r.handlers[platform]
-	return handler, ok
+	if handler, ok := r.handlers[platform]; ok {
+		return handler, true
+	}
+	// A named handler always wins; the fallback catches the long tail of
+	// ordinary web links, whose platform is whatever host they came from.
+	if r.fallback != nil {
+		return r.fallback, true
+	}
+	return nil, false
 }
