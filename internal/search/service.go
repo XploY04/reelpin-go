@@ -30,6 +30,15 @@ type Service struct {
 	// constant because the right cutoff depends on the embedding model, and
 	// tuning it is how the arm is calibrated against a real library.
 	MaxDistance float64
+	// Metrics is optional: nil counts nothing, which is what the tests and the
+	// evaluation harness run with.
+	Metrics SearchMeters
+}
+
+// SearchMeters is the slice of the metrics registry search touches. It is an
+// interface so the domain does not import the Prometheus client.
+type SearchMeters interface {
+	ObserveSearch(mode string, total int, elapsed time.Duration)
 }
 
 func NewService(pool *pgxpool.Pool, embedder embed.Embedder, logger *slog.Logger, now func() time.Time) *Service {
@@ -46,7 +55,18 @@ func NewService(pool *pgxpool.Pool, embedder embed.Embedder, logger *slog.Logger
 }
 
 // Search runs the three arms, fuses them, and returns display reels.
-func (s *Service) Search(ctx context.Context, userID, query string, filters Filters, limit int) (Response, error) {
+func (s *Service) Search(ctx context.Context, userID, query string, filters Filters, limit int) (response Response, err error) {
+	started := s.now()
+	// Named returns and a deferred observation, so the two paths that answer
+	// nothing are counted too. An empty result is exactly what the relevance
+	// alert watches for, and both of those returns sit above the fusion code
+	// where the obvious call site would be.
+	defer func() {
+		if err == nil && s.Metrics != nil {
+			s.Metrics.ObserveSearch(response.SearchMode, response.Total, s.now().Sub(started))
+		}
+	}()
+
 	normalized := NormalizeQuery(query)
 	if len([]rune(normalized)) < MinQueryRunes {
 		return Response{Query: normalized, SearchMode: "empty", Results: []Result{}}, nil

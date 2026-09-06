@@ -36,6 +36,8 @@ type Metrics struct {
 	StageResults  *prometheus.CounterVec
 
 	ProviderFailures *prometheus.CounterVec
+	SearchDuration   *prometheus.HistogramVec
+	SearchResults    *prometheus.CounterVec
 
 	PushDelivery *prometheus.CounterVec
 
@@ -119,6 +121,17 @@ func New() *Metrics {
 			Help: "Stage failures blamed on a provider, by platform and failure class.",
 		}, []string{"platform", "class"}),
 
+		SearchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "reelpin_search_duration_seconds",
+			Help:    "Search latency by the arms that answered.",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"mode"}),
+
+		SearchResults: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "reelpin_search_results_total",
+			Help: "Searches by whether they returned anything.",
+		}, []string{"mode", "outcome"}),
+
 		PushDelivery: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "reelpin_push_delivery_total",
 			Help: "Push notification delivery attempts by outcome.",
@@ -140,6 +153,7 @@ func New() *Metrics {
 		m.QueuePublished, m.QueueConsumed, m.QueueRetried, m.DeadLettered,
 		m.OutboxAgeSeconds, m.OldestQueuedJobAge,
 		m.StageDuration, m.StageResults, m.ProviderFailures,
+		m.SearchDuration, m.SearchResults,
 		m.PushDelivery, m.TempDiskBytes, m.LiveWorkers,
 	)
 	return m
@@ -173,6 +187,21 @@ func (m *Metrics) ObserveRequest(route, method string, status int, elapsed time.
 	}
 	m.RequestsTotal.WithLabelValues(route, method, strconv.Itoa(status)).Inc()
 	m.RequestDuration.WithLabelValues(route, method).Observe(elapsed.Seconds())
+}
+
+// ObserveSearch records one finished search. The outcome is "empty" or "hit"
+// rather than the count, because the question the alert asks is how often the
+// library answers nothing, and a count would be a label per result.
+func (m *Metrics) ObserveSearch(mode string, total int, elapsed time.Duration) {
+	if m == nil {
+		return
+	}
+	outcome := "hit"
+	if total == 0 {
+		outcome = "empty"
+	}
+	m.SearchDuration.WithLabelValues(mode).Observe(elapsed.Seconds())
+	m.SearchResults.WithLabelValues(mode, outcome).Inc()
 }
 
 // ObserveStage records one pipeline stage attempt. Outcome is "ok" or the

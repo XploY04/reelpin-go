@@ -126,6 +126,21 @@ groups:
             Every share from this platform is being deferred. A refusal that
             does not clear usually means credentials or cookies, not rate limits.
 
+      - alert: SearchReturningNothing
+        expr: |
+          sum(rate(reelpin_search_results_total{outcome="empty"}[1h]))
+            / clamp_min(sum(rate(reelpin_search_results_total[1h])), 0.001) > 0.4
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: More than two in five searches find nothing
+          description: >-
+            Either the embedding index has fallen behind the saves it should
+            cover, or the dense arm's relevance gate is cutting too deep. Check
+            reelpin_search_duration_seconds by mode first: an hour of nothing
+            but lexical means the embedder is down, not that the gate is wrong.
+
       - alert: TempDiskGrowing
         expr: reelpin_worker_temp_bytes > 5e9
         for: 15m
