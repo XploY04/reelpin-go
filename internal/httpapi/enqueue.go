@@ -210,7 +210,7 @@ func (s *Server) respondToSubmission(w http.ResponseWriter, result enqueue.Resul
 	case errors.Is(err, enqueue.ErrActiveJobLimit):
 		writeError(w, http.StatusTooManyRequests, errorBody{
 			Code:      "active_job_limit",
-			Message:   "Two submissions are already processing. Wait for one to finish.",
+			Message:   "Five submissions are already processing. Wait for one to finish.",
 			Retryable: true,
 		})
 		return

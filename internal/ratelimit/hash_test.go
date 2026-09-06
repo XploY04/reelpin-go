@@ -37,13 +37,15 @@ func TestAnEmptyPolicyAllowsEverything(t *testing.T) {
 }
 
 func TestPlanPolicies(t *testing.T) {
-	// The values come from the implementation plan. Changing one is a product
-	// decision, not a refactor.
-	if Submission.Requests != 5 || Submission.Window.Hours() != 1 {
-		t.Errorf("submission = %+v, want 5 per hour", Submission)
+	// Changing one is a product decision, not a refactor, which is why they are
+	// pinned here rather than merely defined once.
+	if Submission.Requests != 30 || Submission.Window.Hours() != 1 {
+		t.Errorf("submission = %+v, want 30 per hour", Submission)
 	}
-	if SubmissionIP.Requests != 20 || SubmissionIP.Window.Hours() != 1 {
-		t.Errorf("submission_ip = %+v, want 20 per hour", SubmissionIP)
+	// Twice the per-user number. Any lower and this becomes the binding limit
+	// for one person, and the per-user figure stops meaning anything.
+	if SubmissionIP.Requests != 60 || SubmissionIP.Window.Hours() != 1 {
+		t.Errorf("submission_ip = %+v, want 60 per hour", SubmissionIP)
 	}
 	if Search.Requests != 30 || Search.Window.Minutes() != 1 {
 		t.Errorf("search = %+v, want 30 per minute", Search)

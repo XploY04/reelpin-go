@@ -5,6 +5,7 @@ package enqueue_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -334,25 +335,29 @@ func TestAlreadySavedAnswersTheReelAndNothingChanges(t *testing.T) {
 	}
 }
 
-func TestTheActiveJobCapRefusesTheThird(t *testing.T) {
+// Reads MaxActiveJobs rather than hard-coding it, so raising the cap does not
+// silently stop testing it: fill exactly the cap, then prove the next one is
+// refused.
+func TestTheActiveJobCapRefusesTheOneAfterIt(t *testing.T) {
 	service, _ := testService(t)
 	ctx := context.Background()
 
-	submit(t, service, userA, "https://www.instagram.com/reel/FIRST11/")
-	submit(t, service, userA, "https://www.instagram.com/reel/SECOND2/")
+	for i := 0; i < enqueue.MaxActiveJobs; i++ {
+		submit(t, service, userA, fmt.Sprintf("https://www.instagram.com/reel/FILL%04d/", i))
+	}
 
 	_, err := service.Submit(ctx, enqueue.Request{
 		UserID:         userA,
-		URL:            "https://www.instagram.com/reel/THIRD33/",
+		URL:            "https://www.instagram.com/reel/OVERCAP/",
 		IdempotencyKey: uuid.NewString(),
 		Endpoint:       "processing-jobs/reels",
 	})
 	if !errors.Is(err, enqueue.ErrActiveJobLimit) {
-		t.Fatalf("third submission err = %v, want the cap", err)
+		t.Fatalf("submission %d err = %v, want the cap", enqueue.MaxActiveJobs+1, err)
 	}
 
 	// Another user is not affected by A's cap.
-	submit(t, service, userB, "https://www.instagram.com/reel/FOURTH4/")
+	submit(t, service, userB, "https://www.instagram.com/reel/OTHERU1/")
 }
 
 func TestIdempotencyReplaysAndConflicts(t *testing.T) {
