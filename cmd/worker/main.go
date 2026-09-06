@@ -17,6 +17,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/lease"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/platform"
@@ -46,8 +47,9 @@ func main() {
 // handlers maps event types to their processing. An unknown type is poison by
 // design — it dead-letters and waits for code that understands it, rather than
 // being acknowledged into nothing.
-func handlers(processor *pipeline.Pipeline, logger *slog.Logger) map[string]queue.Handler {
+func handlers(processor *pipeline.Pipeline, notifications queue.Handler, logger *slog.Logger) map[string]queue.Handler {
 	return map[string]queue.Handler{
+		queue.EventNotification: notifications,
 		queue.EventProcessMedia: processor.Handle,
 		queue.EventProcessLight: processor.Handle,
 		"run.resume":            processor.Handle,
@@ -129,7 +131,12 @@ func run(logger *slog.Logger) error {
 		WorkerID:     cfg.WorkerID,
 	})
 
-	registry := handlers(processor, logger)
+	// Firebase is optional in development: without it a run still completes and
+	// the notification is recorded as having nowhere to go.
+	var sender notify.Sender = notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0)
+	notifications := notify.NewService(pool, sender, logger, time.Now)
+
+	registry := handlers(processor, notificationHandler(pool, notifications, logger), logger)
 	handle := func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
 		handler, ok := registry[message.EventType]
 		if !ok {

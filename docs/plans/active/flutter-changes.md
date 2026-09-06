@@ -130,6 +130,53 @@ in-app URL preview. The extensions must not call it any more.
 | `GET /api/v1/account/library-stats` | `GET /api/v2/account/library-stats` | none |
 | `GET /api/v1/account/entitlements` | **not in v2 yet** | stays on v1 until a v2 decision; do not migrate this call |
 
+## Collections (built)
+
+15 operations under `/api/v2/collections`, all bearer except the shared view.
+Item ids in requests and responses are `reel_id` and are unchanged save ids, so
+existing local caches keep working. What changed beyond the envelope:
+
+- **Detail shape**: `{collection, items, page:{next_cursor,has_more,limit},
+  can_edit}`. `items` are **cards** (`reel_id, title, summary, url,
+  thumbnail_url, source_platform, saved_at, added_at, added_by`), not full
+  reels — fetch the full reel from `GET /api/v2/reels/{reel_id}`. The old
+  `reels[]` plus `pagination{offset,total_count}` shape is gone.
+- **Item paging is opaque cursors**, same rule as the library: pass
+  `next_cursor` as `cursor`, never construct one; a v1-style offset is a `422`.
+- **Shared view** moves to `GET /api/v2/shared-collections/{token}`, is
+  unauthenticated, and no longer returns `owner_id`, `owner_name` or
+  `member_count`.
+- **Invite accept** moves to `POST /api/v2/collection-invites/{token}/accept`.
+- **Links expire.** `enableCollectionLink` and `createCollectionInvite` return
+  `expires_at` (links default to 30 days); the UI should surface that a link
+  needs re-minting.
+- **Member responses drop `display_name`** — there is no profiles table in the
+  canonical schema yet. Show ids or resolve names client-side.
+- New codes to match: `collection_not_found` (404), `collection_forbidden`
+  (403), `collection_invite_invalid` (400).
+- Request bodies reject unknown fields, so a misspelled key now fails loudly
+  instead of being silently ignored.
+
+`collection_ids` on submission stays rejected until enqueue and collections
+share a trunk; this file will say when it is accepted.
+
+## Notifications (built)
+
+- `POST /api/v2/device-push-tokens` with `{"token": "...", "platform":
+  "ios"|"android"|"web"}` — `platform` is now validated, so the old free-text
+  value fails with `422`. Registering the same token again moves it to the
+  current user, which is what makes a shared phone behave.
+- `DELETE /api/v2/device-push-tokens` with the same body. Another user's token
+  answers `404 device_token_not_found`.
+- `POST /api/v2/notifications/{notification_id}/opened` — a second open, and
+  another user's notification, both answer `404`.
+- **The token is never echoed back** by any endpoint, so do not expect to read
+  it from a response.
+- **Campaign endpoints are gone from the product API.** Campaign sends are an
+  operator command now; a client token can no longer reach them.
+- One notification per job: the backend dedupes by job id, so a retried
+  delivery cannot buzz the phone twice.
+
 ## IDs and data
 
 - Reel ids do not change. `user_saves.id` keeps every existing

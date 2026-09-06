@@ -67,6 +67,10 @@ func (s *Server) routeTable() []Route {
 
 		bearer(http.MethodGet, "/api/v2/account/library-stats", "getLibraryStats", s.handleLibraryStats, true),
 
+		bearer(http.MethodPost, "/api/v2/device-push-tokens", "registerDeviceToken", s.handleRegisterPushToken, true),
+		bearer(http.MethodDelete, "/api/v2/device-push-tokens", "deleteDeviceToken", s.handleDeletePushToken, false),
+		bearer(http.MethodPost, "/api/v2/notifications/{notification_id}/opened", "markNotificationOpened", s.handleNotificationOpened, true),
+
 		// Declared now so a client can be generated against the whole surface.
 		// Each returns a stable 503 until its own task lands; see
 		// docs/decisions/0015-declare-the-whole-v2-surface.md.

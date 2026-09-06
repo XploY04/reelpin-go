@@ -1,6 +1,6 @@
 {
   "note": "Generated from Server.routeTable(). A change here is an API change.",
-  "route_count": 29,
+  "route_count": 32,
   "routes": [
     {
       "method": "GET",
@@ -93,6 +93,18 @@
       "auth": "bearer"
     },
     {
+      "method": "DELETE",
+      "path": "/api/v2/device-push-tokens",
+      "operation_id": "deleteDeviceToken",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/device-push-tokens",
+      "operation_id": "registerDeviceToken",
+      "auth": "bearer"
+    },
+    {
       "method": "GET",
       "path": "/api/v2/health/live",
       "operation_id": "getHealthLive",
@@ -109,6 +121,12 @@
       "path": "/api/v2/native-shares/reels",
       "operation_id": "submitNativeShare",
       "auth": "share-token"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/notifications/{notification_id}/opened",
+      "operation_id": "markNotificationOpened",
+      "auth": "bearer"
     },
     {
       "method": "GET",

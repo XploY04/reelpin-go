@@ -127,17 +127,18 @@ func (f *fakeJobs) Get(_ context.Context, userID string, id uuid.UUID) (jobs.Job
 
 func testDeps(pinger DatabasePinger) Deps {
 	return Deps{
-		DB:          pinger,
-		Enqueue:     &fakeSubmitter{},
-		ShareTokens: &fakeShareTokens{},
-		Resolver:    &sourceidentity.Resolver{},
-		Auth:        fakeAuth{userID: testUserID},
-		Reels:       &fakeReels{},
-		Jobs:        &fakeJobs{},
-		Collections: newFakeCollections(),
-		Logger:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Version:     "test",
-		Now:         func() time.Time { return testNow },
+		DB:            pinger,
+		Auth:          fakeAuth{userID: testUserID},
+		Reels:         &fakeReels{},
+		Jobs:          &fakeJobs{},
+		Enqueue:       &fakeSubmitter{},
+		ShareTokens:   &fakeShareTokens{},
+		Resolver:      &sourceidentity.Resolver{},
+		Collections:   newFakeCollections(),
+		Notifications: &fakeNotifications{},
+		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Version:       "test",
+		Now:           func() time.Time { return testNow },
 	}
 }
 
@@ -245,4 +246,33 @@ func (f *fakeShareTokens) RevokeAll(_ context.Context, userID string) (int, erro
 	f.revoked++
 	f.userID = userID
 	return 2, nil
+}
+
+// fakeNotifications records what the handlers asked for. It never keeps a
+// token beyond the call, mirroring the rule that a token is a credential.
+type fakeNotifications struct {
+	err          error
+	lastUserID   string
+	lastPlatform string
+	registered   int
+	deleted      int
+	opened       int
+}
+
+func (f *fakeNotifications) RegisterToken(_ context.Context, userID, _, platform string) error {
+	f.lastUserID, f.lastPlatform = userID, platform
+	f.registered++
+	return f.err
+}
+
+func (f *fakeNotifications) DeleteToken(_ context.Context, userID, _ string) error {
+	f.lastUserID = userID
+	f.deleted++
+	return f.err
+}
+
+func (f *fakeNotifications) MarkOpened(_ context.Context, userID, _ string) error {
+	f.lastUserID = userID
+	f.opened++
+	return f.err
 }

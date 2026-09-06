@@ -38,6 +38,12 @@ type Config struct {
 	RabbitMQURL string
 	// WorkerID names this process in leases and consumer tags.
 	WorkerID string
+
+	// Firebase sends push notifications. Absent outside production means a run
+	// still completes and its notification records that there was nowhere to
+	// send, rather than failing the job.
+	FirebaseCredentialsJSON string
+	FirebaseProjectID       string
 	// GeminiAPIKey is the worker's model credential. Empty means every
 	// provider call fails as unconfigured, which the pipeline surfaces as a
 	// retryable provider error rather than a crash.
@@ -70,10 +76,13 @@ func Load() (Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Version:     envOr("APP_VERSION", "dev"),
 
-		SupabaseURL:         strings.TrimSpace(os.Getenv("SUPABASE_URL")),
-		RabbitMQURL:         strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
-		WorkerID:            envOr("WORKER_ID", defaultWorkerID()),
-		SupabaseJWTAudience: envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
+		SupabaseURL: strings.TrimSpace(os.Getenv("SUPABASE_URL")),
+		RabbitMQURL: strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+		WorkerID:    envOr("WORKER_ID", defaultWorkerID()),
+
+		FirebaseCredentialsJSON: strings.TrimSpace(os.Getenv("FIREBASE_CREDENTIALS_JSON")),
+		FirebaseProjectID:       strings.TrimSpace(os.Getenv("FIREBASE_PROJECT_ID")),
+		SupabaseJWTAudience:     envOr("SUPABASE_JWT_AUDIENCE", "authenticated"),
 
 		RedisURL:       strings.TrimSpace(os.Getenv("REDIS_URL")),
 		RedisKeyPrefix: envOr("REDIS_KEY_PREFIX", "reelpin"),
