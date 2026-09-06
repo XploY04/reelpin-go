@@ -87,6 +87,39 @@ type Config struct {
 	// provider call fails as unconfigured, which the pipeline surfaces as a
 	// retryable provider error rather than a crash.
 	GeminiAPIKey string
+
+	// ApifyToken pays for the actor runs that reach what a plain fetch cannot.
+	// ApifyActors maps a platform to its actor id and is read as a raw string
+	// because parsing it belongs to internal/apify, which config may not
+	// import. Either one empty means every actor rung reports itself
+	// unconfigured: the handlers take their free paths instead, and the ones
+	// with no free path fail as a provider being unavailable.
+	ApifyToken  string
+	ApifyActors string
+
+	// Reddit's application credentials. They are read so a deployment can be
+	// complete, but the client that mints a token from them is not in this
+	// repository yet: until it is, the Reddit handler reads the public JSON
+	// view, which Reddit throttles hard from datacenter addresses.
+	RedditClientID     string
+	RedditClientSecret string
+
+	// SupabaseServiceKey writes thumbnails to Supabase Storage, into
+	// ThumbnailBucket. Empty means no thumbnail is stored, which is cosmetic:
+	// a run completes and saves without one.
+	SupabaseServiceKey string
+	ThumbnailBucket    string
+
+	// InstagramCookies is base64 Netscape cookie data per slot, keyed by the
+	// slot names internal/cookies knows. Empty means the authenticated
+	// download rung is skipped and Instagram gets whatever the free rungs
+	// reach.
+	InstagramCookies map[string]string
+
+	// The external binaries the media stages run. They default to the names on
+	// PATH; a deployment that installs them elsewhere points at them here.
+	YTDLPPath  string
+	FFmpegPath string
 }
 
 // RedisOptions parses RedisURL and applies the service's timeouts. One place,
@@ -139,6 +172,20 @@ func Load() (Config, error) {
 		RateLimitSalt:  strings.TrimSpace(os.Getenv("RATE_LIMIT_SALT")),
 
 		GeminiAPIKey: strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
+
+		ApifyToken:  strings.TrimSpace(os.Getenv("APIFY_API_TOKEN")),
+		ApifyActors: strings.TrimSpace(os.Getenv("APIFY_ACTORS")),
+
+		RedditClientID:     strings.TrimSpace(os.Getenv("REDDIT_CLIENT_ID")),
+		RedditClientSecret: strings.TrimSpace(os.Getenv("REDDIT_CLIENT_SECRET")),
+
+		SupabaseServiceKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
+		ThumbnailBucket:    envOr("REEL_THUMBNAIL_BUCKET", "reel-thumbnails"),
+
+		InstagramCookies: cookieSlots(),
+
+		YTDLPPath:  envOr("YT_DLP_PATH", "yt-dlp"),
+		FFmpegPath: envOr("FFMPEG_PATH", "ffmpeg"),
 
 		CostGateWarnUSD:   strings.TrimSpace(os.Getenv("COST_GATE_WARN_USD")),
 		CostGateStopUSD:   strings.TrimSpace(os.Getenv("COST_GATE_STOP_USD")),
@@ -256,6 +303,21 @@ func portFrom(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s %d is outside 1..65535", key, port)
 	}
 	return port, nil
+}
+
+// cookieSlots reads the standardized slots, in the order they are tried. The
+// slot names are repeated here rather than imported, because config depends on
+// nothing internal; internal/cookies looks them up by these names. The
+// deprecated single-slot variables are deliberately not read.
+func cookieSlots() map[string]string {
+	slots := map[string]string{}
+	for _, slot := range []string{"ACTIVE", "BACKUP", "TERTIARY"} {
+		value := strings.TrimSpace(os.Getenv("INSTAGRAM_" + slot + "_COOKIE_DATA_BASE64"))
+		if value != "" {
+			slots[strings.ToLower(slot)] = value
+		}
+	}
+	return slots
 }
 
 func envOr(key, fallback string) string {

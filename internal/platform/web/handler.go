@@ -11,13 +11,13 @@ import (
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 )
 
-// PlatformName is what this handler registers as.
+// PlatformName is what this handler registers as: the registry's fallback
+// slot, and this line is the only place that decides so.
 //
 // A generic link's identity platform is its hostname, so one registration
-// cannot cover every site a user shares. Registering this handler is the
-// registry's fallback slot, which the seam does not express yet; see the
-// package tests and the task report.
-const PlatformName = "web"
+// cannot cover every site a user shares. Registering under the fallback is
+// what routes all of them here.
+const PlatformName = platform.Fallback
 
 type Deps struct {
 	HTTP  *safehttp.Client

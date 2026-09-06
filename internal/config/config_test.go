@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestLoadDefaults(t *testing.T) {
 	for _, key := range configKeys {
@@ -27,12 +30,41 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SupabaseJWTAudience != "authenticated" {
 		t.Errorf("SupabaseJWTAudience = %q, want authenticated", cfg.SupabaseJWTAudience)
 	}
+	if cfg.ThumbnailBucket != "reel-thumbnails" {
+		t.Errorf("ThumbnailBucket = %q, want reel-thumbnails", cfg.ThumbnailBucket)
+	}
+	if cfg.YTDLPPath != "yt-dlp" || cfg.FFmpegPath != "ffmpeg" {
+		t.Errorf("media tools = %q and %q, want the names on PATH", cfg.YTDLPPath, cfg.FFmpegPath)
+	}
+	if len(cfg.InstagramCookies) != 0 {
+		t.Errorf("InstagramCookies = %v, want no slots", cfg.InstagramCookies)
+	}
 }
 
 var configKeys = []string{
 	"ENVIRONMENT", "PORT", "DATABASE_URL", "APP_VERSION",
 	"SUPABASE_URL", "SUPABASE_JWT_AUDIENCE",
 	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
+	"REEL_THUMBNAIL_BUCKET", "YT_DLP_PATH", "FFMPEG_PATH",
+	"INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64",
+	"INSTAGRAM_BACKUP_COOKIE_DATA_BASE64",
+	"INSTAGRAM_TERTIARY_COOKIE_DATA_BASE64",
+}
+
+// TestCookieSlotsUseTheNamesTheJarKnows guards a mismatch nothing else would
+// catch: internal/cookies looks a slot up by name, so a slot read under the
+// wrong one is an authenticated download rung that silently never runs.
+func TestCookieSlotsUseTheNamesTheJarKnows(t *testing.T) {
+	for _, key := range configKeys {
+		t.Setenv(key, "")
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("# Netscape HTTP Cookie File"))
+	t.Setenv("INSTAGRAM_BACKUP_COOKIE_DATA_BASE64", encoded)
+
+	slots := cookieSlots()
+	if len(slots) != 1 || slots["backup"] != encoded {
+		t.Errorf("slots = %v, want the value under backup alone", slots)
+	}
 }
 
 func TestLoad(t *testing.T) {

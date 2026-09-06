@@ -95,3 +95,26 @@ func TestFailuresDoNotEchoTheActorBody(t *testing.T) {
 		t.Fatalf("the error echoes the actor body: %v", err)
 	}
 }
+
+func TestParseActors(t *testing.T) {
+	actors, err := ParseActors(" instagram=apify/instagram-scraper , youtube=streamers/youtube-scraper ")
+	if err != nil {
+		t.Fatalf("ParseActors: %v", err)
+	}
+	if actors["instagram"] != "apify/instagram-scraper" || actors["youtube"] != "streamers/youtube-scraper" {
+		t.Fatalf("actors = %v", actors)
+	}
+
+	// No actors is a deployment on the free paths, not a broken one.
+	empty, err := ParseActors("")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("ParseActors(\"\") = %v, %v", empty, err)
+	}
+
+	// A malformed pair is a platform that would silently have no actor.
+	for _, raw := range []string{"instagram", "instagram=", "=apify/scraper", "x=a/b,x=c/d"} {
+		if _, err := ParseActors(raw); err == nil {
+			t.Errorf("ParseActors(%q) was accepted", raw)
+		}
+	}
+}

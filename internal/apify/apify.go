@@ -55,6 +55,31 @@ func New(config Config) *Client {
 	return &Client{config: config, client: &http.Client{Timeout: config.Timeout}}
 }
 
+// ParseActors reads the configured actor map: comma-separated
+// platform=owner/actor pairs. An empty list is no actors rather than an error,
+// because a deployment without them still runs on the free paths, but a
+// malformed one fails at startup rather than silently leaving a platform
+// unconfigured.
+func ParseActors(raw string) (map[string]string, error) {
+	actors := map[string]string{}
+	for _, field := range strings.Split(raw, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		platform, actor, found := strings.Cut(field, "=")
+		platform, actor = strings.TrimSpace(platform), strings.TrimSpace(actor)
+		if !found || platform == "" || actor == "" {
+			return nil, fmt.Errorf("actor %q is not platform=owner/actor", field)
+		}
+		if _, duplicate := actors[platform]; duplicate {
+			return nil, fmt.Errorf("platform %s has two actors", platform)
+		}
+		actors[platform] = actor
+	}
+	return actors, nil
+}
+
 // Configured reports whether a platform has an actor, so a handler can choose
 // its fallback before spending a request.
 func (c *Client) Configured(platform string) bool {
