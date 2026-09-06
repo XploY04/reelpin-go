@@ -273,3 +273,11 @@ func contentHash(normalizedURL string) string {
 	sum := sha256.Sum256([]byte(normalizedURL))
 	return hex.EncodeToString(sum[:])[:16]
 }
+
+// URLHash is the normalized URL's form in reelpin.contents.normalized_url_hash.
+// Every writer of that column has to agree on it: two spellings of the hash are
+// two content rows for one link, and nothing would report the split.
+func URLHash(normalizedURL string) string {
+	sum := sha256.Sum256([]byte(normalizedURL))
+	return hex.EncodeToString(sum[:16])
+}

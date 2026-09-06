@@ -13,6 +13,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -259,8 +260,7 @@ func (e *Enqueue) replay(ctx context.Context, tx pgx.Tx, userID string, stored s
 
 func findOrCreateContent(ctx context.Context, tx pgx.Tx, submission enqueue.Submission) (string, error) {
 	identity := submission.Identity
-	urlHash := sha256.Sum256([]byte(identity.NormalizedURL))
-	normalizedHash := hex.EncodeToString(urlHash[:16])
+	normalizedHash := sourceidentity.URLHash(identity.NormalizedURL)
 
 	var contentID string
 	var err error
