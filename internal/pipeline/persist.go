@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/lease"
@@ -129,7 +130,8 @@ func (p *Pipeline) insertVersion(ctx context.Context, tx pgx.Tx, state *run) (st
 // this one run.
 func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *run) error {
 	rows, err := tx.Query(ctx, `
-		SELECT id::text, user_id::text, collection_ids::text[] FROM reelpin.processing_jobs
+		SELECT id::text, user_id::text, url, normalized_url, collection_ids::text[]
+		FROM reelpin.processing_jobs
 		WHERE run_id = $1 AND status IN ('queued', 'processing')
 		FOR UPDATE`, state.ID)
 	if err != nil {
@@ -137,12 +139,14 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 	}
 	type subscriber struct {
 		jobID, userID string
+		url           string
+		normalizedURL string
 		collectionIDs []string
 	}
 	subscribers := []subscriber{}
 	for rows.Next() {
 		var s subscriber
-		if err := rows.Scan(&s.jobID, &s.userID, &s.collectionIDs); err != nil {
+		if err := rows.Scan(&s.jobID, &s.userID, &s.url, &s.normalizedURL, &s.collectionIDs); err != nil {
 			rows.Close()
 			return fmt.Errorf("reading a subscriber: %w", err)
 		}
@@ -155,15 +159,33 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 
 	for _, s := range subscribers {
 		var saveID string
+		var savedAt time.Time
 		// A user who already saved this content keeps their save and its id.
 		err := tx.QueryRow(ctx, `
 			INSERT INTO reelpin.user_saves (user_id, content_id)
 			VALUES ($1, $2)
 			ON CONFLICT (user_id, content_id) DO UPDATE SET content_id = EXCLUDED.content_id
-			RETURNING id::text`,
-			s.userID, state.ContentID).Scan(&saveID)
+			RETURNING id::text, saved_at`,
+			s.userID, state.ContentID).Scan(&saveID, &savedAt)
 		if err != nil {
 			return fmt.Errorf("creating the save for job %s: %w", s.jobID, err)
+		}
+
+		// The legacy reel is what the app actually reads until Task 33 moves
+		// the reader to user_saves, so it is not a best-effort copy: a failure
+		// here rolls the whole persist back rather than completing a job whose
+		// id resolves to nothing. Nothing durable is lost by that. Every
+		// finished stage is checkpointed, so the retry replays the persist
+		// without paying a provider again, and it is the only failure mode
+		// that cannot leave the two halves disagreeing.
+		if err := writeLegacyReel(ctx, tx, state, legacySave{
+			ID:            saveID,
+			UserID:        s.userID,
+			URL:           s.url,
+			NormalizedURL: s.normalizedURL,
+			SavedAt:       savedAt,
+		}); err != nil {
+			return fmt.Errorf("mirroring the save for job %s: %w", s.jobID, err)
 		}
 
 		if _, err := tx.Exec(ctx, `
