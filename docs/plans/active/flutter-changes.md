@@ -177,6 +177,24 @@ share a trunk; this file will say when it is accepted.
 - One notification per job: the backend dedupes by job id, so a retried
   delivery cannot buzz the phone twice.
 
+## Map (built)
+
+- `GET /api/v2/map/pins?south=&west=&north=&east=` returns `{pins: [...]}`.
+  A pin is `{id, kind, name, address, latitude, longitude, reel_id,
+  confidence}`; `kind` is `content` (carries `reel_id`) or `manual` (does not).
+- **A box whose `west` is greater than `east` is valid** and means a viewport
+  crossing the antimeridian. Do not "normalise" it client-side; the backend
+  handles it as two boxes and a normalised box would return the whole world.
+- `GET /api/v2/map/nearby?latitude=&longitude=&radius_metres=&limit=` orders by
+  real distance in metres.
+- `POST /api/v2/map/manual-pins` returns `201` with the pin;
+  `DELETE /api/v2/map/manual-pins/{pin_id}` returns `204`.
+- `POST /api/v2/map/locations/{location_id}/hidden` with `{"hidden": true}`
+  hides a pin **for this user only**. Hidden pins are already excluded from the
+  responses above, so the client does not filter them.
+- A bad or missing coordinate is `422` with `error.details.field` naming it,
+  never a silent default that moves the map to the Gulf of Guinea.
+
 ## IDs and data
 
 - Reel ids do not change. `user_saves.id` keeps every existing

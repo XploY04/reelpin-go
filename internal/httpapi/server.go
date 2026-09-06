@@ -40,6 +40,8 @@ type Deps struct {
 	Notifications Notifications
 	// Lifecycle owns deletion: one save, or a whole account.
 	Lifecycle Lifecycle
+	// Map answers what is on the user's map.
+	Map MapView
 	// Limiter is nil outside production-shaped setups. Provider-costing
 	// endpoints fail closed without a decision; reads never consult it.
 	Limiter RateLimiter

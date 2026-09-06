@@ -1,6 +1,6 @@
 {
   "note": "Generated from Server.routeTable(). A change here is an API change.",
-  "route_count": 34,
+  "route_count": 39,
   "routes": [
     {
       "method": "DELETE",
@@ -121,6 +121,36 @@
       "path": "/api/v2/health/ready",
       "operation_id": "getHealthReady",
       "auth": "public"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/map/locations/{location_id}/hidden",
+      "operation_id": "setPinHidden",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/map/manual-pins",
+      "operation_id": "createManualPin",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/map/manual-pins/{pin_id}",
+      "operation_id": "deleteManualPin",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/nearby",
+      "operation_id": "listNearbyPins",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/pins",
+      "operation_id": "listMapPins",
+      "auth": "bearer"
     },
     {
       "method": "POST",

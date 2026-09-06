@@ -34,6 +34,8 @@ tags:
     description: Account-scoped reads.
   - name: sharing
     description: Native share tokens and share-text resolution.
+  - name: map
+    description: Places reachable through a user's saves, and their own pins.
   - name: collections
     description: Named sets of saves, shared by membership or link.
   - name: notifications
@@ -476,6 +478,129 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AccountDeletion" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/pins:
+    get:
+      operationId: listMapPins
+      tags: [map]
+      summary: Pins inside a viewport
+      description: |
+        Every place reachable through this user's saves that falls inside the
+        box, plus their own manual pins. A pin the user hid is not returned at
+        all.
+
+        A box whose `west` is greater than `east` crosses the antimeridian and
+        is handled as two boxes, so panning across the Pacific works.
+      parameters:
+        - { name: south, in: query, required: true, schema: { type: number } }
+        - { name: west, in: query, required: true, schema: { type: number } }
+        - { name: north, in: query, required: true, schema: { type: number } }
+        - { name: east, in: query, required: true, schema: { type: number } }
+      responses:
+        "200":
+          description: The pins in view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PinList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/nearby:
+    get:
+      operationId: listNearbyPins
+      tags: [map]
+      summary: Pins near a point, nearest first
+      description: |
+        Distance is metres on a sphere, not degrees on a plane, so the ordering
+        is the one a person would draw.
+      parameters:
+        - { name: latitude, in: query, required: true, schema: { type: number } }
+        - { name: longitude, in: query, required: true, schema: { type: number } }
+        - name: radius_metres
+          in: query
+          required: false
+          schema: { type: number, default: 5000, minimum: 1, maximum: 100000 }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: The nearest pins.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PinList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/manual-pins:
+    post:
+      operationId: createManualPin
+      tags: [map]
+      summary: Drop a pin of your own
+      description: A manual pin belongs to one user and is visible to nobody else.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManualPinRequest" }
+      responses:
+        "201":
+          description: The pin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/manual-pins/{pin_id}:
+    delete:
+      operationId: deleteManualPin
+      tags: [map]
+      summary: Remove one of your own pins
+      parameters:
+        - { name: pin_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/locations/{location_id}/hidden:
+    post:
+      operationId: setPinHidden
+      tags: [map]
+      summary: Hide or show a pin, for you only
+      description: |
+        A preference, not a deletion: the place stays, and no other user's map
+        changes. A location this user cannot reach through one of their own
+        saves answers 404, so this cannot be used to discover ids.
+      parameters:
+        - { name: location_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hidden]
+              additionalProperties: false
+              properties:
+                hidden: { type: boolean }
+      responses:
+        "200":
+          description: The new state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hidden]
+                properties:
+                  hidden: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
   /api/v2/account/library-stats:
@@ -1243,6 +1368,47 @@ components:
             processing_jobs: { type: integer }
             idempotency_keys: { type: integer }
             private_content: { type: integer }
+
+    PinList:
+      type: object
+      required: [pins]
+      properties:
+        pins:
+          type: array
+          items: { $ref: "#/components/schemas/Pin" }
+
+    Pin:
+      type: object
+      required: [id, kind, name, latitude, longitude]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [content, manual]
+          description: |
+            `content` came from something the user saved and carries `reel_id`;
+            `manual` is the user's own pin.
+        name: { type: string }
+        address: { type: string, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
+        reel_id: { type: string, format: uuid, nullable: true }
+        confidence:
+          type: number
+          nullable: true
+          description: |
+            How much to trust the place. An extraction guess and a geocoded
+            address are not the same claim.
+
+    ManualPinRequest:
+      type: object
+      required: [name, latitude, longitude]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        address: { type: string, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
 
     LibraryStats:
       type: object

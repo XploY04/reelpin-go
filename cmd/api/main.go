@@ -16,6 +16,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
@@ -94,6 +95,7 @@ func run(logger *slog.Logger) error {
 			Enqueue:       enqueue.New(postgres.NewEnqueue(pool), resolver),
 			ShareTokens:   shareTokens,
 			Resolver:      resolver,
+			Map:           mapview.New(pool, time.Now),
 			Notifications: notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 			Limiter:       limiter,
 			Logger:        logger,
