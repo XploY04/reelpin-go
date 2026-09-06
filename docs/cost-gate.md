@@ -32,7 +32,9 @@ actor run on YouTube and on the Instagram fallback. A YouTube video whose
 subtitles the actor returns skips the download and the transcribe call, so it
 lands closer to a light job than a media one. The models are `gemini-3.5-flash-lite` for
 every text call (`internal/ai/gemini.go`) and `gemini-embedding-2` for the index
-(`internal/config/config.go`).
+(`internal/config/config.go`). The text model replaced `gemini-2.0-flash-lite`,
+which the provider has removed; `docs/model-migration.md` has the measurements
+behind the choice, including the token counts below.
 
 The gap between the two is the transcribe call. It sends the audio inline as
 base64, so its input token count is the audio's, not a sentence's. That is why
@@ -96,8 +98,9 @@ assembled out of defaults is a limit nobody made.
 | Gemini price per million output tokens | **unknown** | Same. |
 | Gemini embedding price | **unknown** | Same. Price it per call if the provider does not bill embeddings by token. |
 | Apify price per actor run | **unknown** | Depends on the actors in `APIFY_ACTORS` and the plan on the account. |
-| Input tokens for a transcribe call | **unknown** | It is the audio, and it varies with clip length. Measure it: run twenty real media jobs on dev and read `reelpin_provider_tokens_total{operation="transcribe"}`. |
-| Input tokens for extract and categorize | **unknown** | Measure the same way. The categorize prompt grows with the taxonomy. |
+| Input tokens for a transcribe call | 37 prompt + about 25 per second of audio | Measured on one 10.3s clip: 294 input, 50 output, and the prompt counts 37 on its own (`docs/model-migration.md`). One clip is not a distribution. A 60-second reel works out near 1,540 input tokens, which is arithmetic, not a measurement. |
+| Input tokens for an extract call | 891 input, about 170 output, mean | Measured: 60 calls over 20 corpus reels (`docs/model-migration.md`). The prompt template counts 830 with no content in it, so that is the floor and a real transcript is nearly all of what sits above it. The corpus reels contribute about 60 tokens each; a real transcript contributes far more. |
+| Input tokens for a categorize call | 391 input, 20 output, mean | Measured the same way, against a 3-category, 9-subcategory taxonomy. It grows with the taxonomy, because the whole tree goes into every prompt. |
 | Submissions per day, p50 and p95 | **unknown** | The plan expects fewer than 100 per day. The real figures come from production. |
 | Searches per day | **unknown** | Comes from production. Watch `reelpin_search_results_total`. |
 
