@@ -167,6 +167,25 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    delete:
+      operationId: deleteReel
+      tags: [reels]
+      summary: Delete one saved reel
+      description: |
+        Removes this user's save and its collection memberships. The content it
+        was made from stays reusable: other people may still be reading the
+        same extraction, and a future share of the same link reuses it.
+
+        Content nobody can reach any more, and that was never public, is
+        removed with the save.
+      parameters:
+        - $ref: "#/components/parameters/ReelID"
+      responses:
+        "204":
+          description: The save is gone.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/AccountDeletionPending" }
 
   /api/v2/processing-jobs:
     get:
@@ -437,6 +456,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+  /api/v2/account:
+    delete:
+      operationId: deleteAccount
+      tags: [account]
+      summary: Delete this account
+      description: |
+        Records a durable deletion request, removes every row this user owns,
+        then deletes the sign-in identity.
+
+        The two halves cannot commit together, so the response reports them
+        separately. `pending: true` means the request is recorded and will be
+        retried until the identity is gone; treat the account as deleted and
+        the session as unusable either way.
+      responses:
+        "200":
+          description: What was removed, and which halves finished.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountDeletion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
   /api/v2/account/library-stats:
@@ -929,6 +968,12 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    AccountDeletionPending:
+      description: |
+        This account is being deleted, so no further changes are accepted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     ProcessingUnavailable:
       description: |
         A capability this endpoint needs is unavailable. Reads stay healthy;
@@ -1175,6 +1220,29 @@ components:
         platform:
           type: string
           enum: [ios, android, web]
+    AccountDeletion:
+      type: object
+      required: [data_deleted, identity_deleted, pending, removed]
+      properties:
+        data_deleted:
+          type: boolean
+          description: Every row this user owned has been removed.
+        identity_deleted:
+          type: boolean
+          description: |
+            The sign-in identity has been removed. False with `pending: true`
+            means the data is gone and removing the identity is still being
+            retried.
+        pending:
+          type: boolean
+          description: Some half of the deletion is unfinished and will be retried.
+        removed:
+          type: object
+          properties:
+            saves: { type: integer }
+            processing_jobs: { type: integer }
+            idempotency_keys: { type: integer }
+            private_content: { type: integer }
 
     LibraryStats:
       type: object

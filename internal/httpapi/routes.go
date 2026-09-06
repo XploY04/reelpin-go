@@ -70,6 +70,8 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodPost, "/api/v2/device-push-tokens", "registerDeviceToken", s.handleRegisterPushToken, true),
 		bearer(http.MethodDelete, "/api/v2/device-push-tokens", "deleteDeviceToken", s.handleDeletePushToken, false),
 		bearer(http.MethodPost, "/api/v2/notifications/{notification_id}/opened", "markNotificationOpened", s.handleNotificationOpened, true),
+		bearer(http.MethodDelete, "/api/v2/reels/{reel_id}", "deleteReel", s.handleDeleteReel, false),
+		bearer(http.MethodDelete, "/api/v2/account", "deleteAccount", s.handleDeleteAccount, true),
 
 		// Declared now so a client can be generated against the whole surface.
 		// Each returns a stable 503 until its own task lands; see

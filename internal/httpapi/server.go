@@ -38,6 +38,8 @@ type Deps struct {
 	// Notifications owns device tokens and open receipts. Campaigns are an
 	// operator command, not part of this surface.
 	Notifications Notifications
+	// Lifecycle owns deletion: one save, or a whole account.
+	Lifecycle Lifecycle
 	// Limiter is nil outside production-shaped setups. Provider-costing
 	// endpoints fail closed without a decision; reads never consult it.
 	Limiter RateLimiter

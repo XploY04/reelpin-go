@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/google/uuid"
 )
@@ -136,6 +137,7 @@ func testDeps(pinger DatabasePinger) Deps {
 		Resolver:      &sourceidentity.Resolver{},
 		Collections:   newFakeCollections(),
 		Notifications: &fakeNotifications{},
+		Lifecycle:     &fakeLifecycle{},
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
 		Now:           func() time.Time { return testNow },
@@ -275,4 +277,31 @@ func (f *fakeNotifications) MarkOpened(_ context.Context, userID, _ string) erro
 	f.lastUserID = userID
 	f.opened++
 	return f.err
+}
+
+// fakeLifecycle records what deletion was asked for and answers with whatever
+// the test set up.
+type fakeLifecycle struct {
+	deleteErr  error
+	report     lifecycle.Report
+	lastUserID string
+	lastReelID string
+	calls      int
+}
+
+func (f *fakeLifecycle) DeleteReel(_ context.Context, userID, reelID string) error {
+	f.calls++
+	f.lastUserID, f.lastReelID = userID, reelID
+	return f.deleteErr
+}
+
+func (f *fakeLifecycle) DeleteAccount(_ context.Context, userID string) (lifecycle.Report, error) {
+	f.calls++
+	f.lastUserID = userID
+	if f.deleteErr != nil {
+		return lifecycle.Report{}, f.deleteErr
+	}
+	report := f.report
+	report.UserID = userID
+	return report, nil
 }
