@@ -28,7 +28,11 @@ FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe6
 
 # ffmpeg turns a downloaded video into the small audio track a transcript needs.
 # No compiler and no package manager cache stay in the image.
+# The base is pinned by digest, so its preinstalled packages are frozen at
+# whatever that layer shipped. Upgrading is what picks up their security
+# patches; installing ffmpeg on top never touches them.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin reelpin

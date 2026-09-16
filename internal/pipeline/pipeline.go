@@ -40,8 +40,11 @@ const (
 )
 
 // Per-stage budgets and the whole run's lifetime, from the plan.
+// stagePrepare has to outlast the Apify actor call it makes, which the client
+// gives apify.DefaultTimeout. A shorter budget expires first, so the actor can
+// never return and the fallbacks never get a turn.
 var stageTimeouts = map[string]time.Duration{
-	stagePrepare:    30 * time.Second,
+	stagePrepare:    180 * time.Second,
 	stageDownload:   180 * time.Second,
 	stageTranscribe: 300 * time.Second,
 	stageExtract:    90 * time.Second,
