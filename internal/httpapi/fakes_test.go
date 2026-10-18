@@ -134,12 +134,24 @@ func (f *fakeJobs) Get(_ context.Context, userID string, id uuid.UUID) (jobs.Job
 	return jobs.JobRecord{}, jobs.ErrNotFound
 }
 
+// fakeEntitlements answers IsPro from a set a test installs, defaulting to Free.
+type fakeEntitlements struct {
+	pro        map[string]bool
+	lastUserID string
+}
+
+func (f *fakeEntitlements) IsPro(_ context.Context, userID string) bool {
+	f.lastUserID = userID
+	return f.pro[userID]
+}
+
 func testDeps(pinger Pinger) Deps {
 	return Deps{
 		DB:            pinger,
 		Auth:          fakeAuth{userID: testUserID},
 		Reels:         &fakeReels{},
 		Jobs:          &fakeJobs{},
+		Entitlements:  &fakeEntitlements{},
 		Enqueue:       &fakeSubmitter{},
 		ShareTokens:   &fakeShareTokens{},
 		Resolver:      &sourceidentity.Resolver{},

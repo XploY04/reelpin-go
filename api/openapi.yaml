@@ -617,6 +617,49 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/account/entitlements:
+    get:
+      operationId: getEntitlements
+      tags: [account]
+      summary: Plan, usage and limits
+      description: |
+        The authenticated user's plan, cumulative usage totals, limits, feature
+        flags, pricing and paywall copy. When the plan cannot be verified the
+        response is a restricted body with HTTP 200, not an error, so the client
+        degrades and retries rather than blanking the account view.
+      responses:
+        "200":
+          description: The user's entitlements.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Entitlements" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/discover:
+    get:
+      operationId: getDiscover
+      tags: [reels]
+      summary: The Discover tab
+      description: |
+        Recent saves, the dates that have saves, the reels on a chosen date, the
+        category grid and a few search prompts, for the authenticated user.
+
+        The recent-saves list pages by opaque cursor, the same as the reel list.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/SavedDate"
+      responses:
+        "200":
+          description: The Discover tab.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoverResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
   /api/v2/search:
     post:
       operationId: searchReels
@@ -1528,6 +1571,91 @@ components:
         total_tags: { type: integer }
         total_categories: { type: integer }
         total_subcategories: { type: integer }
+
+    PlanLimits:
+      type: object
+      properties:
+        saved_reels: { type: integer, nullable: true }
+        pinned_locations: { type: integer, nullable: true }
+        searches_per_month: { type: integer, nullable: true }
+        processing_jobs_per_hour: { type: integer, nullable: true }
+
+    Entitlements:
+      type: object
+      required: [user_id, current_entitlement, usage, limits, features, plan, is_premium]
+      properties:
+        user_id: { type: string }
+        current_entitlement:
+          type: object
+          required: [plan, is_premium, restricted]
+          properties:
+            plan: { type: string }
+            billing_interval: { type: string }
+            subscription_status: { type: string }
+            is_premium: { type: boolean }
+            restricted: { type: boolean }
+            error_message: { type: string, nullable: true }
+        usage:
+          type: object
+          properties:
+            saved_reels: { type: integer }
+            pinned_locations: { type: integer }
+            tags: { type: integer }
+            categories: { type: integer }
+            subcategories: { type: integer }
+        limits: { $ref: "#/components/schemas/PlanLimits" }
+        features:
+          type: object
+          additionalProperties: { type: boolean }
+        pricing:
+          type: object
+          additionalProperties: { type: string }
+        plan_cards:
+          type: array
+          items:
+            type: object
+            properties:
+              plan: { type: string }
+              name: { type: string }
+              billing_interval: { type: string }
+              price: { type: string }
+              features: { type: array, items: { type: string } }
+              limits: { $ref: "#/components/schemas/PlanLimits" }
+              cta_label: { type: string }
+        paywall_messages:
+          type: object
+          additionalProperties: { type: string }
+        plan: { type: string }
+        is_premium: { type: boolean }
+
+    DiscoverResponse:
+      type: object
+      required: [recent_saves, recent_saves_count, saved_dates, category_grid, quick_search_prompts, pagination]
+      properties:
+        recent_saves:
+          type: array
+          items: { type: object }
+        recent_saves_count: { type: integer }
+        saved_dates:
+          type: array
+          items: { type: string }
+        selected_date: { type: string, nullable: true }
+        reels_for_selected_date:
+          type: array
+          items: { type: object }
+        category_grid:
+          type: array
+          items: { type: object }
+        quick_search_prompts:
+          type: array
+          items: { type: string }
+        pagination:
+          type: object
+          properties:
+            next_cursor: { type: string, nullable: true }
+            has_more: { type: boolean }
+            limit: { type: integer }
+            total_count: { type: integer }
 
     Collection:
       type: object

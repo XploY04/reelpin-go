@@ -77,6 +77,9 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodGet, "/api/v2/processing-jobs/{job_id}", "getProcessingJob", s.handleGetJob, true, "Jobs", "Reels"),
 
 		bearer(http.MethodGet, "/api/v2/account/library-stats", "getLibraryStats", s.handleLibraryStats, true, "Reels"),
+		bearer(http.MethodGet, "/api/v2/account/entitlements", "getEntitlements", s.handleEntitlements, true, "Reels", "Entitlements"),
+
+		bearer(http.MethodGet, "/api/v2/discover", "getDiscover", s.handleDiscover, true, "Reels"),
 
 		bearer(http.MethodGet, "/api/v2/map/pins", "listMapPins", s.handleMapPins, true, "Map"),
 		bearer(http.MethodGet, "/api/v2/map/nearby", "listNearbyPins", s.handleMapNearby, true, "Map"),

@@ -38,6 +38,9 @@ type Deps struct {
 	Auth  auth.Authenticator
 	Reels reels.ReelReader
 	Jobs  jobs.JobReader
+	// Entitlements reports whether a user is on the paid plan. It is backed by
+	// a cache, so this never reaches the database on the request path.
+	Entitlements ProStatus
 	// Enqueue is the submission use case; ShareTokens authenticates and
 	// manages the native extensions' credential.
 	Enqueue     Submitter
