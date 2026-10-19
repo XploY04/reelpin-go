@@ -254,6 +254,51 @@ func pinPlace(deps Deps, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func TestPinningAPlaceIsMetered(t *testing.T) {
+	finder, calls := googleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a refused pin still asked google")
+	})
+	store := &fakePlaceStore{}
+	deps := placesDeps(store, finder)
+	deps.Limiter = denyingLimiter{}
+
+	rec := pinPlace(deps, `{"google_place_id":"ChIJ-airport"}`)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: a new pin costs a Google call", rec.Code)
+	}
+	if calls.Load() != 0 || len(store.upserted) != 0 {
+		t.Errorf("%d google calls, %d writes; want none", calls.Load(), len(store.upserted))
+	}
+}
+
+func TestPinningAPlaceFailsClosedWithoutAWorkingLimiter(t *testing.T) {
+	for name, limiter := range map[string]RateLimiter{
+		"no limiter configured": nil,
+		"redis unavailable":     unavailableLimiter{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			finder, calls := googleServer(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Error("an unmetered pin asked google")
+			})
+			deps := placesDeps(&fakePlaceStore{}, finder)
+			deps.Limiter = limiter
+
+			rec := pinPlace(deps, `{"google_place_id":"ChIJ-airport"}`)
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503", rec.Code)
+			}
+			if code := decodeError(t, rec).Error.Code; code != "map_unavailable" {
+				t.Errorf("error_code = %q", code)
+			}
+			if calls.Load() != 0 {
+				t.Error("an unmetered pin reached google")
+			}
+		})
+	}
+}
+
 func TestPinningAPlaceTwiceReturnsTheFirstPinWithoutAskingGoogle(t *testing.T) {
 	finder, calls := googleServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("google was asked for a place the user has already pinned")

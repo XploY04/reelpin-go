@@ -517,6 +517,10 @@ paths:
         `201`. A place Google does not know, or knows without coordinates,
         answers `404 place_not_found`, and so does every pin while the
         deployment has no Google key.
+
+        A new place can cost a Google call, so pinning is rate limited per
+        user and per IP and answers `503 map_unavailable` when it cannot be
+        metered.
       requestBody:
         required: true
         content:
@@ -536,6 +540,8 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
   /api/v2/map/search:

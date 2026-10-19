@@ -53,4 +53,10 @@ func TestPlanPolicies(t *testing.T) {
 	if SearchIP.Requests != 90 || SearchIP.Window.Minutes() != 1 {
 		t.Errorf("search_ip = %+v, want 90 per minute", SearchIP)
 	}
+	if MapPin.Requests != 20 || MapPin.Window.Hours() != 1 {
+		t.Errorf("map_pin = %+v, want 20 per hour", MapPin)
+	}
+	if MapPinIP.Requests != 60 || MapPinIP.Window.Hours() != 1 {
+		t.Errorf("map_pin_ip = %+v, want 60 per hour", MapPinIP)
+	}
 }

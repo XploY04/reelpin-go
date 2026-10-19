@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/ratelimit"
 )
 
 // MapPlaces is what the API needs to search for places and pin them.
@@ -77,7 +78,14 @@ func (s *Server) handlePinMapPlace(w http.ResponseWriter, r *http.Request) {
 		sessionToken = input.SessionTokenCamel
 	}
 
-	pin, created, err := s.deps.MapPlaces.PinPlace(r.Context(), requestUserID(r), mapview.PinPlaceParams{
+	// A new place id costs a Google Place Details call, so pinning is metered
+	// and fails closed like search.
+	userID := requestUserID(r)
+	if !s.allowMapPin(w, r, userID) {
+		return
+	}
+
+	pin, created, err := s.deps.MapPlaces.PinPlace(r.Context(), userID, mapview.PinPlaceParams{
 		GooglePlaceID: placeID,
 		SessionToken:  sessionToken,
 	})
@@ -95,4 +103,10 @@ func (s *Server) handlePinMapPlace(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, pin)
+}
+
+func (s *Server) allowMapPin(w http.ResponseWriter, r *http.Request, userID string) bool {
+	return s.allowMetered(w, r, userID, ratelimit.MapPin, ratelimit.MapPinIP,
+		errorBody{Code: "map_unavailable", Message: "Pinning places is unavailable right now.", Retryable: true},
+		"Too many pins. Try again later.")
 }
