@@ -141,6 +141,58 @@ func (r *Reels) Facets(ctx context.Context, userID string) ([]reels.FacetRow, er
 	return facets, rows.Err()
 }
 
+// Library returns the newest limit saves with only the columns the Discover
+// aggregates read: the saved date, the categories, and the fields the search
+// prompts count. It skips the text-heavy columns List selects.
+func (r *Reels) Library(ctx context.Context, userID string, limit int) ([]reels.ReelRecord, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.db.Query(ctx,
+		`SELECT id, source_platform, category, subcategory, secondary_categories,
+		        locations, people_mentioned, created_at
+		 FROM reels WHERE user_id = $1
+		 ORDER BY created_at DESC, id DESC LIMIT $2`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := []reels.ReelRecord{}
+	for rows.Next() {
+		var (
+			record       reels.ReelRecord
+			category     *string
+			subcategory  *string
+			secondaryRaw []byte
+			locationsRaw []byte
+			peopleRaw    []byte
+		)
+		if err := rows.Scan(&record.ID, &record.SourcePlatform, &category, &subcategory,
+			&secondaryRaw, &locationsRaw, &peopleRaw, &record.CreatedAt); err != nil {
+			return nil, err
+		}
+		record.Category = text(category)
+		record.Subcategory = text(subcategory)
+		for _, decode := range []struct {
+			raw    []byte
+			target any
+		}{
+			{secondaryRaw, &record.SecondaryCategories},
+			{locationsRaw, &record.Locations},
+			{peopleRaw, &record.PeopleMentioned},
+		} {
+			if err := decodeJSON(decode.raw, decode.target); err != nil {
+				return nil, err
+			}
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (r *Reels) Stats(ctx context.Context, userID string) (reels.LibraryStats, error) {
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()

@@ -646,6 +646,11 @@ paths:
         category grid and a few search prompts, for the authenticated user.
 
         The recent-saves list pages by opaque cursor, the same as the reel list.
+
+        The dates, the search prompts and the counts read the newest 5000 saves,
+        so `recent_saves_count` and `pagination.total_count` stop at 5000.
+        `reels_for_selected_date` is filtered by the database, so a date older
+        than those 5000 still returns its reels.
       parameters:
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
@@ -1635,7 +1640,9 @@ components:
         recent_saves:
           type: array
           items: { type: object }
-        recent_saves_count: { type: integer }
+        recent_saves_count:
+          type: integer
+          description: Saves counted, capped at 5000.
         saved_dates:
           type: array
           items: { type: string }
@@ -1655,7 +1662,9 @@ components:
             next_cursor: { type: string, nullable: true }
             has_more: { type: boolean }
             limit: { type: integer }
-            total_count: { type: integer }
+            total_count:
+              type: integer
+              description: Saves counted, capped at 5000.
 
     Collection:
       type: object

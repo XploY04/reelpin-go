@@ -233,3 +233,30 @@ func TestCacheReloadsOncePerExpiryUnderConcurrency(t *testing.T) {
 		t.Fatalf("reloads at one expiry = %d, want 1", got)
 	}
 }
+
+// ctxReader fails the way postgres does when the context it is handed is
+// already cancelled.
+type ctxReader struct {
+	active map[string]time.Time
+}
+
+func (r ctxReader) ActivePro(ctx context.Context) (map[string]time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return r.active, nil
+}
+
+func TestCacheReloadSurvivesACancelledTriggeringRequest(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	reader := ctxReader{active: map[string]time.Time{"pro-user": now.Add(time.Hour)}}
+	cache := NewCache(reader, time.Hour, func() time.Time { return now }, nil)
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cache.IsPro(cancelled, "pro-user")
+
+	if !cache.IsPro(context.Background(), "pro-user") {
+		t.Error("a client disconnect during the first reload left a Pro user reading Free")
+	}
+}

@@ -55,12 +55,15 @@ type fakeReels struct {
 	records []reels.ReelRecord
 	facets  []reels.FacetRow
 	stats   reels.LibraryStats
+	library []reels.ReelRecord
 	byID    map[string]reels.ReelRecord
 	err     error
 
 	lastUserID  string
 	lastOptions reels.ListOptions
 	lastGetID   uuid.UUID
+
+	lastLibraryLimit int
 }
 
 func (f *fakeReels) List(_ context.Context, userID string, options reels.ListOptions) ([]reels.ReelRecord, error) {
@@ -94,6 +97,18 @@ func (f *fakeReels) Facets(_ context.Context, userID string) ([]reels.FacetRow, 
 		return nil, f.err
 	}
 	return f.facets, nil
+}
+
+func (f *fakeReels) Library(_ context.Context, userID string, limit int) ([]reels.ReelRecord, error) {
+	f.lastUserID = userID
+	f.lastLibraryLimit = limit
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.library != nil {
+		return f.library, nil
+	}
+	return f.records, nil
 }
 
 func (f *fakeReels) Stats(_ context.Context, userID string) (reels.LibraryStats, error) {

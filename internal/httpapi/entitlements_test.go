@@ -20,15 +20,24 @@ func decodeEntitlements(t *testing.T, body []byte) entitlements.Entitlements {
 
 func TestEntitlementsFreePlan(t *testing.T) {
 	deps := testDeps(&fakePinger{})
-	deps.Reels = &fakeReels{stats: reels.LibraryStats{
+	fakeReader := &fakeReels{stats: reels.LibraryStats{
 		TotalReels: 7, TotalPinnedLocations: 3, TotalTags: 5,
 		TotalCategories: 2, TotalSubcategories: 4,
 	}}
-	deps.Entitlements = &fakeEntitlements{}
+	fakePlan := &fakeEntitlements{}
+	deps.Reels = fakeReader
+	deps.Entitlements = fakePlan
 
 	rec := serve(deps, "GET", "/api/v2/account/entitlements", "Bearer good.token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+
+	if fakeReader.lastUserID != testUserID {
+		t.Errorf("usage read as %q, want the token subject", fakeReader.lastUserID)
+	}
+	if fakePlan.lastUserID != testUserID {
+		t.Errorf("plan checked for %q, want the token subject", fakePlan.lastUserID)
 	}
 
 	ent := decodeEntitlements(t, rec.Body.Bytes())

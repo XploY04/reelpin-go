@@ -414,3 +414,32 @@ func TestJobsAreUserScoped(t *testing.T) {
 		t.Fatalf("cross-user Get error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestLibraryIsUserScopedNewestFirstAndCapped(t *testing.T) {
+	pool := testPool(t)
+	seed(t, pool)
+	reader := NewReels(pool)
+	ctx := context.Background()
+
+	records, err := reader.Library(ctx, userA, 2)
+	if err != nil {
+		t.Fatalf("Library: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want the limit of 2", len(records))
+	}
+	if records[0].ID != "aaaaaaaa-0000-4000-8000-000000000003" || records[1].ID != "aaaaaaaa-0000-4000-8000-000000000002" {
+		t.Errorf("order = %s, %s, want newest first", records[0].ID, records[1].ID)
+	}
+	if records[1].Category != "tech" || len(records[1].SecondaryCategories) != 1 || records[1].CreatedAt == nil {
+		t.Errorf("projection lost a column: %+v", records[1])
+	}
+
+	all, err := reader.Library(ctx, userA, 50)
+	if err != nil {
+		t.Fatalf("Library: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("records = %d, want only user A's 3", len(all))
+	}
+}

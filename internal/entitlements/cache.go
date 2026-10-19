@@ -70,7 +70,9 @@ func (c *Cache) refreshIfStale(ctx context.Context) {
 	c.loaded = true
 	c.mu.Unlock()
 
-	loaded, err := c.reader.ActivePro(ctx)
+	// The reload is shared by every caller in the window, so it must not die with
+	// the request that happened to trigger it.
+	loaded, err := c.reader.ActivePro(context.WithoutCancel(ctx))
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Warn("entitlements reload failed; keeping the last good set", "error", err)

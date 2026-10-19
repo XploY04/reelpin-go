@@ -273,6 +273,12 @@ func TestAccountDeletionRemovesEveryOwnedRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO reelpin.user_entitlements (user_id, pro_expires_at)
+		VALUES ($1, now() + interval '30 days')`, userA); err != nil {
+		t.Fatal(err)
+	}
+
 	report, err := service.DeleteAccount(ctx, userA)
 	if err != nil {
 		t.Fatalf("DeleteAccount: %v", err)
@@ -299,6 +305,15 @@ func TestAccountDeletionRemovesEveryOwnedRow(t *testing.T) {
 		if n := count(t, pool, check.query, userA); n != 0 {
 			t.Errorf("%s left behind: %d", check.name, n)
 		}
+	}
+
+	// The stub identity deleter does not touch auth.users, so remove the identity
+	// here: the entitlement row goes with it by foreign key, as in production.
+	if _, err := pool.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userA); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM reelpin.user_entitlements WHERE user_id = $1`, userA); n != 0 {
+		t.Errorf("entitlements left behind after the identity went: %d", n)
 	}
 
 	// User B is untouched, and the content they share is still there.

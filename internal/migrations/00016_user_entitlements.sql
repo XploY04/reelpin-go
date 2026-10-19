@@ -2,9 +2,10 @@
 
 -- A user's Pro grant. There is no subscriptions system yet: Pro is granted by
 -- hand (store = 'manual'), and the API treats a row whose pro_expires_at is in
--- the future as Pro. One row per user; a renewal overwrites it.
+-- the future as Pro. One row per user; a renewal overwrites it, and deleting
+-- the identity deletes the row.
 CREATE TABLE reelpin.user_entitlements (
-    user_id        TEXT PRIMARY KEY,
+    user_id        UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     pro_expires_at TIMESTAMPTZ,
     product_id     TEXT,
     store          TEXT,

@@ -29,11 +29,19 @@ func discoverReader() *fakeReels {
 
 func TestDiscover(t *testing.T) {
 	deps := testDeps(&fakePinger{})
-	deps.Reels = discoverReader()
+	fake := discoverReader()
+	deps.Reels = fake
 
 	rec := serve(deps, "GET", "/api/v2/discover", "Bearer good.token")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+
+	if fake.lastUserID != testUserID {
+		t.Errorf("discover read as %q, want the token subject", fake.lastUserID)
+	}
+	if fake.lastLibraryLimit != reels.DiscoverScanLimit {
+		t.Errorf("library scan limit = %d, want %d", fake.lastLibraryLimit, reels.DiscoverScanLimit)
 	}
 
 	response := decodeDiscover(t, rec.Body.Bytes())
@@ -66,7 +74,11 @@ func TestDiscover(t *testing.T) {
 
 func TestDiscoverSelectedDate(t *testing.T) {
 	deps := testDeps(&fakePinger{})
-	deps.Reels = discoverReader()
+	fake := discoverReader()
+	// The scan holds nothing for the date: the reels must still come from the
+	// reader's saved-date filter, not from filtering the scan.
+	fake.library = []reels.ReelRecord{}
+	deps.Reels = fake
 
 	rec := serve(deps, "GET", "/api/v2/discover?saved_date=2026-09-02", "Bearer good.token")
 	if rec.Code != http.StatusOK {
@@ -79,6 +91,12 @@ func TestDiscoverSelectedDate(t *testing.T) {
 	}
 	if len(response.ReelsForSelectedDate) != 1 {
 		t.Errorf("reels_for_selected_date = %d, want 1", len(response.ReelsForSelectedDate))
+	}
+	if fake.lastOptions.SavedDate != "2026-09-02" {
+		t.Errorf("reader saved_date = %q, want 2026-09-02", fake.lastOptions.SavedDate)
+	}
+	if fake.lastUserID != testUserID {
+		t.Errorf("discover read as %q, want the token subject", fake.lastUserID)
 	}
 }
 

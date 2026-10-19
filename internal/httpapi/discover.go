@@ -48,15 +48,28 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The aggregate sections (saved dates, the chosen date, the search prompts)
-	// read a larger scan of the library than one page.
-	scanned, err := s.deps.Reels.List(r.Context(), userID, reels.ListOptions{
-		Limit: reels.DiscoverScanLimit,
-	})
+	// The aggregate sections (saved dates, the search prompts) read a capped scan
+	// of the library, narrower than a page of full reels.
+	scanned, err := s.deps.Reels.Library(r.Context(), userID, reels.DiscoverScanLimit)
 	if err != nil {
 		s.deps.Logger.Error("discover library scan failed", "error", err)
 		internalError(w, "discover_failed", "Could not load discover right now.")
 		return
+	}
+
+	// The chosen date is filtered by the reader, so a date older than the scan
+	// still returns its reels.
+	var dateReels []reels.ReelRecord
+	if savedDate != "" {
+		dateReels, err = s.deps.Reels.List(r.Context(), userID, reels.ListOptions{
+			SavedDate: savedDate,
+			Limit:     reels.DiscoverScanLimit,
+		})
+		if err != nil {
+			s.deps.Logger.Error("discover selected date failed", "error", err)
+			internalError(w, "discover_failed", "Could not load discover right now.")
+			return
+		}
 	}
 
 	facets, err := s.deps.Reels.Facets(r.Context(), userID)
@@ -67,5 +80,5 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK,
-		reels.BuildDiscoverResponse(userID, recent, scanned, facets, savedDate, limit, s.now()))
+		reels.BuildDiscoverResponse(userID, recent, scanned, dateReels, facets, savedDate, limit, s.now()))
 }

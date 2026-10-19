@@ -31,14 +31,16 @@ type DiscoverResponse struct {
 }
 
 // DiscoverScanLimit is how many of a user's saves the aggregate sections read.
-// It matches the Python display query, which caps at 5000 before aggregating.
+// It matches the Python display query, which caps at 5000 before aggregating,
+// so recent_saves_count and total_count stop at this number.
 const DiscoverScanLimit = 5000
 
 // BuildDiscoverResponse assembles the tab from one over-fetched page of recent
-// saves, a larger scan of the library for the aggregates, and the facet rows for
-// the category grid. recentPage is fetched with limit+1 so the extra row answers
-// has_more, exactly like the reel list.
-func BuildDiscoverResponse(userID string, recentPage, scanned []ReelRecord, facets []FacetRow, selectedDate string, limit int, now time.Time) DiscoverResponse {
+// saves, a capped scan of the library for the aggregates, the facet rows for the
+// category grid, and the reels on selectedDate as the reader filtered them.
+// recentPage is fetched with limit+1 so the extra row answers has_more, exactly
+// like the reel list.
+func BuildDiscoverResponse(userID string, recentPage, scanned, dateReels []ReelRecord, facets []FacetRow, selectedDate string, limit int, now time.Time) DiscoverResponse {
 	hasMore := len(recentPage) > limit
 	page := recentPage
 	if hasMore {
@@ -52,13 +54,7 @@ func BuildDiscoverResponse(userID string, recentPage, scanned []ReelRecord, face
 	reelsForDate := []DisplayReel{}
 	if trimmed := strings.TrimSpace(selectedDate); trimmed != "" {
 		selected = &trimmed
-		onDate := make([]ReelRecord, 0)
-		for _, record := range library {
-			if key := SavedDateKey(record.CreatedAt); key != nil && *key == trimmed {
-				onDate = append(onDate, record)
-			}
-		}
-		reelsForDate = displayReels(onDate, now)
+		reelsForDate = displayReels(DedupeRecords(dateReels), now)
 	}
 
 	pagination := DiscoverPagination{HasMore: hasMore, Limit: limit, TotalCount: len(library)}

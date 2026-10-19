@@ -31,7 +31,7 @@ func TestBuildDiscoverResponseSections(t *testing.T) {
 		{Category: strPtr("travel"), Subcategory: strPtr("beaches"), Count: 1},
 	}
 
-	response := BuildDiscoverResponse("user-1", records, records, facets, "", 25, discoverNow)
+	response := BuildDiscoverResponse("user-1", records, records, nil, facets, "", 25, discoverNow)
 
 	if response.RecentSavesCount != 3 {
 		t.Errorf("recent_saves_count = %d, want 3", response.RecentSavesCount)
@@ -58,7 +58,7 @@ func TestBuildDiscoverResponseSelectedDate(t *testing.T) {
 		discoverRecord("b", "travel", "beaches", 1),
 	}
 
-	response := BuildDiscoverResponse("user-1", records, records, nil, "2026-09-03", 25, discoverNow)
+	response := BuildDiscoverResponse("user-1", records, records, records[1:], nil, "2026-09-03", 25, discoverNow)
 
 	if response.SelectedDate == nil || *response.SelectedDate != "2026-09-03" {
 		t.Fatalf("selected_date = %v, want 2026-09-03", response.SelectedDate)
@@ -77,7 +77,7 @@ func TestBuildDiscoverResponsePaginates(t *testing.T) {
 		discoverRecord("c", "food", "x", 2),
 	}
 
-	response := BuildDiscoverResponse("user-1", records, records, nil, "", 2, discoverNow)
+	response := BuildDiscoverResponse("user-1", records, records, nil, nil, "", 2, discoverNow)
 
 	if !response.Pagination.HasMore {
 		t.Error("has_more = false with an over-fetched page")
