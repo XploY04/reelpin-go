@@ -506,6 +506,89 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: pinMapPlace
+      tags: [map]
+      summary: Pin a Google place
+      description: |
+        Makes a manual pin from a place a map search offered with `can_pin`.
+        Idempotent per place: pinning a place this user already pinned returns
+        that pin with `200` and does not ask Google again. A new pin answers
+        `201`. A place Google does not know, or knows without coordinates,
+        answers `404 place_not_found`, and so does every pin while the
+        deployment has no Google key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PinPlaceRequest" }
+      responses:
+        "200":
+          description: The pin this user already had for the place.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "201":
+          description: The new pin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/search:
+    get:
+      operationId: searchMapPlaces
+      tags: [map]
+      summary: Find a place to pin
+      description: |
+        This user's own pins that match the query come first, as `existing`
+        results with `can_pin: false` and the pin in `map_item`. Google places
+        follow as `google` results with `can_pin: true`, minus any that are
+        one of those pins again by place id, coordinates or address.
+
+        `search_mode` is `existing`, `google` or `mixed` by where the results
+        came from, and `google` when there are none at all. Google failing, or
+        a deployment with no Google key, leaves the user's own pins as the
+        whole answer rather than failing the search.
+
+        A query can cost a Google call, so this shares the search rate limits
+        and answers `503 search_unavailable` when it cannot be metered.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+        - name: limit
+          in: query
+          required: false
+          description: The most results of each kind, so at most twice this in all.
+          schema: { type: integer, minimum: 1, maximum: 10, default: 8 }
+        - name: category
+          in: query
+          required: false
+          description: Only this user's pins in this category. Google results are not filtered.
+          schema: { type: string }
+        - name: session_token
+          in: query
+          required: false
+          description: |
+            A Google Places session token. Send the same one on the pin that
+            follows, so Google bills the search and the pin as one session.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The matches.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MapPlaceSearch" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
   /api/v2/map/nearby:
     get:
@@ -1508,6 +1591,76 @@ components:
           description: |
             How much to trust the place. An extraction guess and a geocoded
             address are not the same claim.
+        category:
+          type: string
+          nullable: true
+          description: |
+            A content pin's category from its save; `Other` on a pin made from
+            a Google place.
+        subcategory: { type: string, nullable: true }
+        google_place_id:
+          type: string
+          nullable: true
+          description: Set only on a manual pin made from a Google place.
+        google_maps_url: { type: string, nullable: true }
+        place_types:
+          type: array
+          items: { type: string }
+
+    PinPlaceRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        `google_place_id` is required. `googlePlaceId` and `sessionToken` are
+        accepted as the same fields under the spelling older app builds send.
+      properties:
+        google_place_id: { type: string }
+        googlePlaceId: { type: string }
+        session_token: { type: string }
+        sessionToken: { type: string }
+
+    MapPlaceSearch:
+      type: object
+      required: [query, search_mode, total, results]
+      properties:
+        query: { type: string }
+        search_mode:
+          type: string
+          enum: [empty, existing, google, mixed]
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/MapPlaceResult" }
+
+    MapPlaceResult:
+      type: object
+      required: [result_type, display_title, display_address, place_name, place_types, can_pin]
+      properties:
+        result_type:
+          type: string
+          enum: [existing, google]
+        source_type:
+          type: string
+          nullable: true
+          enum: [content, manual]
+          description: The pin's kind for an `existing` result; null for `google`.
+        map_item:
+          allOf: [{ $ref: "#/components/schemas/Pin" }]
+          nullable: true
+        google_place_id: { type: string, nullable: true }
+        display_title: { type: string }
+        display_address: { type: string }
+        place_name: { type: string }
+        latitude:
+          type: number
+          nullable: true
+          description: Null for a `google` result; pinning it fetches the coordinates.
+        longitude: { type: number, nullable: true }
+        google_maps_url: { type: string, nullable: true }
+        place_types:
+          type: array
+          items: { type: string }
+        can_pin: { type: boolean }
 
     ManualPinRequest:
       type: object

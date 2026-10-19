@@ -35,6 +35,57 @@ type Pin struct {
 	// ReelID is the save this pin came from. Null for a manual pin.
 	ReelID     *string  `json:"reel_id"`
 	Confidence *float64 `json:"confidence"`
+	// Category comes from the save's extraction for a content pin and is
+	// assigned when a manual pin is made from a Google place.
+	Category    *string `json:"category"`
+	Subcategory *string `json:"subcategory"`
+	// The Google fields are set only on a manual pin made from a place.
+	GooglePlaceID *string  `json:"google_place_id"`
+	GoogleMapsURL *string  `json:"google_maps_url"`
+	PlaceTypes    []string `json:"place_types"`
+}
+
+// contentPinColumns and manualPinColumns are one row shape in the order
+// pinTargets scans it, so every query that answers pins answers the same Pin.
+// A content row needs v, the version its location came from.
+const (
+	contentPinColumns = `l.id::text, 'content', l.name, l.address,
+		ST_Y(l.point::geometry), ST_X(l.point::geometry), s.id::text, l.confidence,
+		v.raw_extraction->>'category', v.raw_extraction->>'subcategory',
+		NULL::text, NULL::text, '{}'::text[]`
+	manualPinColumns = `m.id::text, 'manual', m.name, m.address,
+		ST_Y(m.point::geometry), ST_X(m.point::geometry), NULL::text, NULL::real,
+		m.category, m.subcategory,
+		m.google_place_id, m.google_maps_url, m.place_types`
+)
+
+func pinTargets(pin *Pin) []any {
+	return []any{&pin.ID, &pin.Kind, &pin.Name, &pin.Address,
+		&pin.Latitude, &pin.Longitude, &pin.ReelID, &pin.Confidence,
+		&pin.Category, &pin.Subcategory,
+		&pin.GooglePlaceID, &pin.GoogleMapsURL, &pin.PlaceTypes}
+}
+
+// collectPins reads rows of the shared shape. A list field is never null on
+// the wire.
+func collectPins(rows pgx.Rows) ([]Pin, error) {
+	defer rows.Close()
+	pins := []Pin{}
+	for rows.Next() {
+		var pin Pin
+		if err := rows.Scan(pinTargets(&pin)...); err != nil {
+			return nil, fmt.Errorf("reading a pin: %w", err)
+		}
+		pins = append(pins, pin.withLists())
+	}
+	return pins, rows.Err()
+}
+
+func (p Pin) withLists() Pin {
+	if p.PlaceTypes == nil {
+		p.PlaceTypes = []string{}
+	}
+	return p
 }
 
 type Service struct {
@@ -64,11 +115,10 @@ func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds) ([
 	}
 
 	query := fmt.Sprintf(`
-		SELECT l.id::text, 'content', l.name, l.address,
-		       ST_Y(l.point::geometry), ST_X(l.point::geometry),
-		       s.id::text, l.confidence
+		SELECT %[2]s
 		FROM reelpin.content_locations l
 		JOIN reelpin.contents c ON c.current_version_id = l.content_version_id
+		JOIN reelpin.content_versions v ON v.id = l.content_version_id
 		JOIN reelpin.user_saves s ON s.content_id = c.id AND s.user_id = $5
 		LEFT JOIN reelpin.user_pin_preferences p
 		       ON p.location_id = l.id AND p.user_id = $5
@@ -76,31 +126,18 @@ func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds) ([
 
 		UNION ALL
 
-		SELECT m.id::text, 'manual', m.name, m.address,
-		       ST_Y(m.point::geometry), ST_X(m.point::geometry),
-		       NULL, NULL
+		SELECT %[3]s
 		FROM reelpin.user_manual_pins m
 		WHERE m.user_id = $5 AND ST_Intersects(m.point, %[1]s)
 
-		LIMIT $6`, envelope)
+		LIMIT $6`, envelope, contentPinColumns, manualPinColumns)
 
 	args = append(args, userID, MaxPins)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading map pins: %w", err)
 	}
-	defer rows.Close()
-
-	pins := []Pin{}
-	for rows.Next() {
-		var pin Pin
-		if err := rows.Scan(&pin.ID, &pin.Kind, &pin.Name, &pin.Address,
-			&pin.Latitude, &pin.Longitude, &pin.ReelID, &pin.Confidence); err != nil {
-			return nil, fmt.Errorf("reading a pin: %w", err)
-		}
-		pins = append(pins, pin)
-	}
-	return pins, rows.Err()
+	return collectPins(rows)
 }
 
 // Nearby orders this user's pins by distance from a point. The ordering is done
@@ -111,11 +148,10 @@ func (s *Service) Nearby(ctx context.Context, userID string, centre geo.Point, r
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT l.id::text, 'content', l.name, l.address,
-		       ST_Y(l.point::geometry), ST_X(l.point::geometry),
-		       s.id::text, l.confidence
+		SELECT `+contentPinColumns+`
 		FROM reelpin.content_locations l
 		JOIN reelpin.contents c ON c.current_version_id = l.content_version_id
+		JOIN reelpin.content_versions v ON v.id = l.content_version_id
 		JOIN reelpin.user_saves s ON s.content_id = c.id AND s.user_id = $1
 		LEFT JOIN reelpin.user_pin_preferences p
 		       ON p.location_id = l.id AND p.user_id = $1
@@ -127,18 +163,7 @@ func (s *Service) Nearby(ctx context.Context, userID string, centre geo.Point, r
 	if err != nil {
 		return nil, fmt.Errorf("reading nearby pins: %w", err)
 	}
-	defer rows.Close()
-
-	pins := []Pin{}
-	for rows.Next() {
-		var pin Pin
-		if err := rows.Scan(&pin.ID, &pin.Kind, &pin.Name, &pin.Address,
-			&pin.Latitude, &pin.Longitude, &pin.ReelID, &pin.Confidence); err != nil {
-			return nil, fmt.Errorf("reading a pin: %w", err)
-		}
-		pins = append(pins, pin)
-	}
-	return pins, rows.Err()
+	return collectPins(rows)
 }
 
 // CreateManualPin drops a pin of the user's own.
@@ -148,16 +173,15 @@ func (s *Service) CreateManualPin(ctx context.Context, userID, name string, addr
 	}
 	var pin Pin
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO reelpin.user_manual_pins (user_id, name, address, point)
+		INSERT INTO reelpin.user_manual_pins AS m (user_id, name, address, point)
 		VALUES ($1, $2, $3, ST_MakePoint($5, $4)::geography)
-		RETURNING id::text, 'manual', name, address,
-		          ST_Y(point::geometry), ST_X(point::geometry)`,
+		RETURNING `+manualPinColumns,
 		userID, name, address, point.Latitude, point.Longitude,
-	).Scan(&pin.ID, &pin.Kind, &pin.Name, &pin.Address, &pin.Latitude, &pin.Longitude)
+	).Scan(pinTargets(&pin)...)
 	if err != nil {
 		return Pin{}, fmt.Errorf("creating a manual pin: %w", err)
 	}
-	return pin, nil
+	return pin.withLists(), nil
 }
 
 // DeleteManualPin removes one of this user's own pins. Another user's pin is

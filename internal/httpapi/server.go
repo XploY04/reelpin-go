@@ -53,6 +53,8 @@ type Deps struct {
 	Lifecycle Lifecycle
 	// Map answers what is on the user's map.
 	Map MapView
+	// MapPlaces searches Google places and the user's pins, and pins a place.
+	MapPlaces MapPlaces
 	// Search is hybrid retrieval over one user's saves.
 	Search Searcher
 	// Limiter is nil outside production-shaped setups. Provider-costing
