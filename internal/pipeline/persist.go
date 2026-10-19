@@ -26,6 +26,7 @@ func (p *Pipeline) persist(ctx context.Context, state *run) error {
 	}
 	defer tx.Rollback(ctx)
 
+	var users []string
 	err = lease.GuardedExec(ctx, tx, state.Lease, func(guarded pgx.Tx) error {
 		// The run's own status is the idempotency anchor: a redelivered
 		// message after a committed persist finds it completed and stops.
@@ -52,7 +53,8 @@ func (p *Pipeline) persist(ctx context.Context, state *run) error {
 			return fmt.Errorf("moving the current version: %w", err)
 		}
 
-		if err := p.completeSubscribers(ctx, guarded, state); err != nil {
+		users, err = p.completeSubscribers(ctx, guarded, state)
+		if err != nil {
 			return err
 		}
 
@@ -84,7 +86,12 @@ func (p *Pipeline) persist(ctx context.Context, state *run) error {
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	p.deps.Outbox.Notify(ctx)
+	p.invalidate(ctx, users)
+	return nil
 }
 
 func (p *Pipeline) insertVersion(ctx context.Context, tx pgx.Tx, state *run) (string, error) {
@@ -127,15 +134,15 @@ func (p *Pipeline) insertVersion(ctx context.Context, tx pgx.Tx, state *run) (st
 
 // completeSubscribers creates one save per subscriber job and completes the
 // job pointing at it. Two users sharing one link each get their own save from
-// this one run.
-func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *run) error {
+// this one run. It returns the users it completed a job for.
+func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *run) ([]string, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, user_id::text, url, normalized_url, collection_ids::text[]
 		FROM reelpin.processing_jobs
 		WHERE run_id = $1 AND status IN ('queued', 'processing')
 		FOR UPDATE`, state.ID)
 	if err != nil {
-		return fmt.Errorf("finding subscriber jobs: %w", err)
+		return nil, fmt.Errorf("finding subscriber jobs: %w", err)
 	}
 	type subscriber struct {
 		jobID, userID string
@@ -148,15 +155,16 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 		var s subscriber
 		if err := rows.Scan(&s.jobID, &s.userID, &s.url, &s.normalizedURL, &s.collectionIDs); err != nil {
 			rows.Close()
-			return fmt.Errorf("reading a subscriber: %w", err)
+			return nil, fmt.Errorf("reading a subscriber: %w", err)
 		}
 		subscribers = append(subscribers, s)
 	}
 	rows.Close()
 	if rows.Err() != nil {
-		return fmt.Errorf("finding subscriber jobs: %w", rows.Err())
+		return nil, fmt.Errorf("finding subscriber jobs: %w", rows.Err())
 	}
 
+	users := make([]string, 0, len(subscribers))
 	for _, s := range subscribers {
 		var saveID string
 		var savedAt time.Time
@@ -168,7 +176,7 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 			RETURNING id::text, saved_at`,
 			s.userID, state.ContentID).Scan(&saveID, &savedAt)
 		if err != nil {
-			return fmt.Errorf("creating the save for job %s: %w", s.jobID, err)
+			return nil, fmt.Errorf("creating the save for job %s: %w", s.jobID, err)
 		}
 
 		// The legacy reel is what the app actually reads until Task 33 moves
@@ -185,7 +193,7 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 			NormalizedURL: s.normalizedURL,
 			SavedAt:       savedAt,
 		}); err != nil {
-			return fmt.Errorf("mirroring the save for job %s: %w", s.jobID, err)
+			return nil, fmt.Errorf("mirroring the save for job %s: %w", s.jobID, err)
 		}
 
 		if _, err := tx.Exec(ctx, `
@@ -193,11 +201,11 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 			SET status = 'completed', user_save_id = $2, progress_percent = 100,
 			    current_step = 'completed', completed_at = now(), updated_at = now()
 			WHERE id = $1`, s.jobID, saveID); err != nil {
-			return fmt.Errorf("completing job %s: %w", s.jobID, err)
+			return nil, fmt.Errorf("completing job %s: %w", s.jobID, err)
 		}
 
 		if err := fileIntoCollections(ctx, tx, s.userID, saveID, s.collectionIDs); err != nil {
-			return fmt.Errorf("filing job %s into its collections: %w", s.jobID, err)
+			return nil, fmt.Errorf("filing job %s into its collections: %w", s.jobID, err)
 		}
 
 		notifyID := uuid.NewSHA1(persistNamespace, []byte("notify:"+s.jobID)).String()
@@ -207,10 +215,11 @@ func (p *Pipeline) completeSubscribers(ctx context.Context, tx pgx.Tx, state *ru
 			VALUES ($1, $2, $3, 1, $4::jsonb)
 			ON CONFLICT (event_id) DO NOTHING`,
 			notifyID, queue.EventNotification, queue.QueueNotify, payload); err != nil {
-			return fmt.Errorf("writing the notification event for job %s: %w", s.jobID, err)
+			return nil, fmt.Errorf("writing the notification event for job %s: %w", s.jobID, err)
 		}
+		users = append(users, s.userID)
 	}
-	return nil
+	return users, nil
 }
 
 // fileIntoCollections honours the filing intent the submission recorded on the

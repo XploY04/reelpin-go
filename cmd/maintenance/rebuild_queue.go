@@ -9,8 +9,10 @@ import (
 
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // rebuildNamespace matches the sweeper's derivation, so a rebuild and a sweep
@@ -104,6 +106,9 @@ func runRebuildQueue(ctx context.Context, logger *slog.Logger, cfg config.Config
 	if err := transaction.Commit(ctx); err != nil {
 		return fmt.Errorf("committing the rebuild: %w", err)
 	}
+	if err := signalDispatcher(ctx, cfg, logger); err != nil {
+		return err
+	}
 
 	var pending int
 	if err := pool.QueryRow(ctx, `
@@ -116,5 +121,22 @@ func runRebuildQueue(ctx context.Context, logger *slog.Logger, cfg config.Config
 		"resume_events_written", rebuilt,
 		"events_pending_publish", pending,
 	)
+	return nil
+}
+
+// signalDispatcher wakes the running dispatchers, which ask Redis rather than
+// PostgreSQL whether the outbox has rows. Without Redis they poll and need no
+// signal.
+func signalDispatcher(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	if cfg.RedisURL == "" {
+		return nil
+	}
+	options, err := cfg.RedisOptions()
+	if err != nil {
+		return err
+	}
+	client := redis.NewClient(options)
+	defer client.Close()
+	outbox.NewSignal(client, cfg.RedisKeyPrefix, logger).Notify(ctx)
 	return nil
 }
