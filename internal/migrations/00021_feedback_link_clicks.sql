@@ -1,11 +1,11 @@
 -- migrate:up
 
--- Website feedback. user_id is set to NULL, not cascaded, when the account is
--- deleted: the message is not personal data once the link to the account is
--- gone.
+-- Website feedback. user_id is NULL for an anonymous message. A signed-in
+-- user's messages go with the account: they carry the email the user typed, so
+-- keeping them would keep personal data the deletion promised to remove.
 CREATE TABLE reelpin.feedback (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id    UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    user_id    UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     topic      TEXT NOT NULL
         CONSTRAINT feedback_topic_check CHECK (topic IN
             ('Feedback', 'Support', 'Partnership', 'Privacy request')),
