@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -104,6 +105,12 @@ type Config struct {
 	RedditClientID     string
 	RedditClientSecret string
 
+	// GoogleMapsAPIKey pays for place autocomplete and details. Empty means a
+	// map search answers the user's own pins alone and pinning a Google place
+	// answers not found.
+	GoogleMapsAPIKey  string
+	GoogleMapsTimeout time.Duration
+
 	// SupabaseServiceKey writes thumbnails to Supabase Storage, into
 	// ThumbnailBucket. Empty means no thumbnail is stored, which is cosmetic:
 	// a run completes and saves without one.
@@ -179,6 +186,8 @@ func Load() (Config, error) {
 		RedditClientID:     strings.TrimSpace(os.Getenv("REDDIT_CLIENT_ID")),
 		RedditClientSecret: strings.TrimSpace(os.Getenv("REDDIT_CLIENT_SECRET")),
 
+		GoogleMapsAPIKey: strings.TrimSpace(os.Getenv("GOOGLE_MAPS_API_KEY")),
+
 		SupabaseServiceKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
 		ThumbnailBucket:    envOr("REEL_THUMBNAIL_BUCKET", "reel-thumbnails"),
 
@@ -206,6 +215,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Port = port
+
+	googleMapsTimeout, err := secondsFrom("GOOGLE_MAPS_TIMEOUT_SECONDS", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.GoogleMapsTimeout = googleMapsTimeout
 
 	metricsPort, err := portFrom("METRICS_PORT", cfg.MetricsPort)
 	if err != nil {
@@ -303,6 +318,20 @@ func portFrom(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s %d is outside 1..65535", key, port)
 	}
 	return port, nil
+}
+
+// secondsFrom reads a timeout. The ceiling is the API's own write timeout:
+// waiting longer on a provider than the response may take helps nobody.
+func secondsFrom(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(seconds) || seconds <= 0 || seconds > 15 {
+		return 0, fmt.Errorf("%s %q is not a number of seconds between 0 and 15", key, raw)
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
 }
 
 // cookieSlots reads the standardized slots, in the order they are tried. The

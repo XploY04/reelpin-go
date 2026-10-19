@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/geo"
+	"github.com/XploY04/reelpin-go/internal/googleplaces"
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -337,5 +338,115 @@ func TestTheSpatialIndexIsUsed(t *testing.T) {
 
 	if !strings.Contains(plan, "content_locations_point_idx") {
 		t.Fatalf("the spatial index is not used:\n%s", plan)
+	}
+}
+
+func TestAPlacePinIsOnePerPlaceAndPerUser(t *testing.T) {
+	service, _ := testService(t)
+	ctx := context.Background()
+
+	place := PlacePin{
+		Place: googleplaces.Place{
+			ID: "ChIJ-artjuna", Name: "Artjuna", Address: "Anjuna, Goa",
+			Latitude: 15.5763, Longitude: 73.7408, MapsURL: "https://maps.google.com/?cid=1",
+			Types: []string{"cafe"},
+		},
+		Category: "Other", Subcategory: "Other",
+	}
+	first, err := service.UpsertPlacePin(ctx, userA, place)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if first.Kind != "manual" || first.GooglePlaceID == nil || *first.GooglePlaceID != "ChIJ-artjuna" ||
+		first.Category == nil || *first.Category != "Other" || len(first.PlaceTypes) != 1 {
+		t.Fatalf("pin = %+v", first)
+	}
+
+	place.Place.Name = "Artjuna Cafe"
+	second, err := service.UpsertPlacePin(ctx, userA, place)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second.ID != first.ID || second.Name != "Artjuna Cafe" {
+		t.Fatalf("second pin = %+v, want the first refreshed", second)
+	}
+
+	found, err := service.PinByPlace(ctx, userA, "ChIJ-artjuna")
+	if err != nil || found.ID != first.ID {
+		t.Fatalf("PinByPlace = %+v, %v", found, err)
+	}
+	if _, err := service.PinByPlace(ctx, userB, "ChIJ-artjuna"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another user found the pin: %v", err)
+	}
+
+	theirs, err := service.UpsertPlacePin(ctx, userB, place)
+	if err != nil {
+		t.Fatalf("another user pinning the same place: %v", err)
+	}
+	if theirs.ID == first.ID {
+		t.Fatal("two users share one pin")
+	}
+
+	// A pin dropped by hand has no place id, so any number of them coexist
+	// with the unique constraint.
+	point, _ := geo.NewPoint(15.58, 73.74)
+	for range 2 {
+		if _, err := service.CreateManualPin(ctx, userA, "My spot", nil, point); err != nil {
+			t.Fatalf("a hand-dropped pin: %v", err)
+		}
+	}
+
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+	pins, err := service.Pins(ctx, userA, bounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPlace := 0
+	for _, pin := range pins {
+		if pin.PlaceTypes == nil {
+			t.Errorf("pin %s has null place types", pin.ID)
+		}
+		if pin.GooglePlaceID != nil {
+			withPlace++
+		}
+	}
+	if len(pins) != 3 || withPlace != 1 {
+		t.Fatalf("viewport has %d pins, %d from a place; want 3 and 1", len(pins), withPlace)
+	}
+}
+
+func TestPlaceCandidatesAreTheUsersVisiblePins(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "MINE3", "Artjuna", 15.58, 73.74, userA)
+	hidden := seedLocation(t, pool, "MINE4", "Hidden cafe", 15.59, 73.75, userA)
+	seedLocation(t, pool, "THEIRS3", "Someone else's", 15.60, 73.76, userB)
+	if err := service.HidePin(ctx, userA, hidden, true); err != nil {
+		t.Fatal(err)
+	}
+	address := "Small Vagator, Goa"
+	point, _ := geo.NewPoint(15.60, 73.73)
+	if _, err := service.CreateManualPin(ctx, userA, "Thalassa", &address, point); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates, err := service.PlaceCandidates(ctx, userA)
+	if err != nil {
+		t.Fatalf("PlaceCandidates: %v", err)
+	}
+	byName := map[string]Candidate{}
+	for _, candidate := range candidates {
+		byName[candidate.Name] = candidate
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %v, want the visible content pin and the manual pin", byName)
+	}
+	content, manual := byName["Artjuna"], byName["Thalassa"]
+	if content.Kind != "content" || content.Title != "Artjuna" || content.ReelID == nil {
+		t.Errorf("content candidate = %+v", content)
+	}
+	if manual.Kind != "manual" || manual.Title != "Thalassa" || manual.Summary != address {
+		t.Errorf("manual candidate = %+v", manual)
 	}
 }

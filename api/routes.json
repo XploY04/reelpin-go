@@ -166,6 +166,18 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/map/pins",
+      "operation_id": "pinMapPlace",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/search",
+      "operation_id": "searchMapPlaces",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/native-shares/reels",
       "operation_id": "submitNativeShare",
       "auth": "share-token"

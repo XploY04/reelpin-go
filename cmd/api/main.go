@@ -18,6 +18,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/entitlements"
+	"github.com/XploY04/reelpin-go/internal/googleplaces"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
@@ -189,6 +190,16 @@ func run(logger *slog.Logger) error {
 	submissions := postgres.NewEnqueue(pool)
 	submissions.Outbox = outboxSignal
 
+	places := googleplaces.New(googleplaces.Config{
+		APIKey:  cfg.GoogleMapsAPIKey,
+		Timeout: cfg.GoogleMapsTimeout,
+		Metrics: meters,
+	})
+	if !places.Configured() {
+		logger.Warn("no GOOGLE_MAPS_API_KEY: map search answers the user's own pins only, and pinning a place answers not found")
+	}
+	mapService := mapview.New(pool, time.Now)
+
 	api, err := httpapi.New(httpapi.Deps{
 		DB:             pool,
 		Auth:           verifier,
@@ -200,7 +211,8 @@ func run(logger *slog.Logger) error {
 		Resolver:       resolver,
 		Collections:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
 		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), invalidator, logger),
-		Map:            mapview.New(pool, time.Now),
+		Map:            mapService,
+		MapPlaces:      mapview.NewPlaces(mapService, places, logger),
 		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 		Search:         searchService,
 		Limiter:        limiter,

@@ -86,6 +86,8 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodPost, "/api/v2/map/manual-pins", "createManualPin", s.handleCreateManualPin, true, "Map"),
 		bearer(http.MethodDelete, "/api/v2/map/manual-pins/{pin_id}", "deleteManualPin", s.handleDeleteManualPin, true, "Map"),
 		bearer(http.MethodPost, "/api/v2/map/locations/{location_id}/hidden", "setPinHidden", s.handleHidePin, true, "Map"),
+		bearer(http.MethodGet, "/api/v2/map/search", "searchMapPlaces", s.handleMapPlaceSearch, true, "MapPlaces"),
+		bearer(http.MethodPost, "/api/v2/map/pins", "pinMapPlace", s.handlePinMapPlace, false, "MapPlaces"),
 		bearer(http.MethodPost, "/api/v2/search", "searchReels", s.handleSearch, true, "Search"),
 
 		bearer(http.MethodPost, "/api/v2/device-push-tokens", "registerDeviceToken", s.handleRegisterPushToken, true, "Notifications"),

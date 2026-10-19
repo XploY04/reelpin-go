@@ -71,12 +71,16 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // reason submissions do: a query costs an embedding call, and an unmetered
 // provider call is worse than a stable 503.
 func (s *Server) allowSearch(w http.ResponseWriter, r *http.Request, userID string) bool {
+	return s.allowMetered(w, r, userID, ratelimit.Search, ratelimit.SearchIP,
+		errorBody{Code: "search_unavailable", Message: "Search is unavailable right now.", Retryable: true},
+		"Too many searches. Try again later.")
+}
+
+// allowMetered checks the user window, then the IP window, and answers the
+// refusal itself. A missing or unreachable limiter answers unavailable.
+func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID string, user, ip ratelimit.Policy, unavailableBody errorBody, limitedMessage string) bool {
 	unavailable := func() {
-		writeError(w, http.StatusServiceUnavailable, errorBody{
-			Code:      "search_unavailable",
-			Message:   "Search is unavailable right now.",
-			Retryable: true,
-		})
+		writeError(w, http.StatusServiceUnavailable, unavailableBody)
 	}
 
 	if s.deps.Limiter == nil {
@@ -88,8 +92,8 @@ func (s *Server) allowSearch(w http.ResponseWriter, r *http.Request, userID stri
 		policy  ratelimit.Policy
 		subject string
 	}{
-		{ratelimit.Search, userID},
-		{ratelimit.SearchIP, s.limitSubject(r)},
+		{user, userID},
+		{ip, s.limitSubject(r)},
 	} {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {
@@ -105,7 +109,7 @@ func (s *Server) allowSearch(w http.ResponseWriter, r *http.Request, userID stri
 			w.Header().Set("Retry-After", formatSeconds(decision.RetryAfter))
 			writeError(w, http.StatusTooManyRequests, errorBody{
 				Code:      "rate_limited",
-				Message:   "Too many searches. Try again later.",
+				Message:   limitedMessage,
 				Retryable: true,
 				Details:   map[string]any{"retry_after_seconds": int(decision.RetryAfter.Seconds())},
 			})

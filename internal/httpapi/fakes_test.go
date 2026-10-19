@@ -174,6 +174,7 @@ func testDeps(pinger Pinger) Deps {
 		Notifications: &fakeNotifications{},
 		Lifecycle:     &fakeLifecycle{},
 		Map:           &fakeMap{},
+		MapPlaces:     unconfiguredPlaces(&fakePlaceStore{}),
 		Search:        &fakeSearch{},
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
