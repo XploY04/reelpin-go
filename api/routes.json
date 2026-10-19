@@ -114,7 +114,7 @@
       "method": "POST",
       "path": "/api/v2/feedback",
       "operation_id": "submitFeedback",
-      "auth": "bearer"
+      "auth": "public"
     },
     {
       "method": "GET",

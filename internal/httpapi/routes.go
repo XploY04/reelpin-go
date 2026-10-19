@@ -109,7 +109,9 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodGet, "/api/v2/profile", "getProfile", s.handleGetProfile, false, "Profiles"),
 		bearer(http.MethodPut, "/api/v2/profile", "putProfile", s.handlePutProfile, true, "Profiles"),
 
-		bearer(http.MethodPost, "/api/v2/feedback", "submitFeedback", s.handleSubmitFeedback, true, "Website"),
+		// Public because the website's form is anonymous; a valid bearer token,
+		// when one is sent, attaches the message to that user.
+		public(http.MethodPost, "/api/v2/feedback", "submitFeedback", s.handleSubmitFeedback, true, "Auth", "Website"),
 		public(http.MethodPost, "/api/v2/link-clicks", "recordLinkClick", s.handleRecordLinkClick, true, "Website"),
 
 		bearer(http.MethodGet, "/api/v2/collections", "listCollections", s.handleListCollections, false, "Collections"),

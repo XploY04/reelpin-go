@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,15 +64,31 @@ func TestFeedbackValidation(t *testing.T) {
 	}
 }
 
-func TestFeedbackNeedsASession(t *testing.T) {
-	rec := post(webDeps(&fakeWebsite{}), "/api/v2/feedback",
-		`{"topic":"Feedback","message":"hi"}`, nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+func TestFeedbackWithoutAValidSessionIsAnonymous(t *testing.T) {
+	for name, tt := range map[string]struct {
+		auth    fakeAuth
+		headers map[string]string
+	}{
+		"no token":       {fakeAuth{userID: testUserID}, nil},
+		"rejected token": {fakeAuth{err: errors.New("token expired")}, map[string]string{"Authorization": "Bearer expired.token"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeWebsite{lastUserID: "unset"}
+			deps := webDeps(fake)
+			deps.Auth = tt.auth
+
+			rec := post(deps, "/api/v2/feedback", `{"topic":"Feedback","message":"hi"}`, tt.headers)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201 (%s)", rec.Code, rec.Body.String())
+			}
+			if fake.lastUserID != "" {
+				t.Errorf("stored for %q, want no user", fake.lastUserID)
+			}
+		})
 	}
 }
 
-func TestFeedbackIsRateLimitedPerUserAndPerIP(t *testing.T) {
+func TestFeedbackIsRateLimitedPerIPOnly(t *testing.T) {
 	limiter := &recordingLimiter{}
 	deps := webDeps(&fakeWebsite{})
 	deps.Limiter = limiter
@@ -80,17 +97,43 @@ func TestFeedbackIsRateLimitedPerUserAndPerIP(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if limiter.subjects[ratelimit.Feedback.Name] != testUserID {
-		t.Errorf("user window counted %q", limiter.subjects[ratelimit.Feedback.Name])
+	if got := limiter.subjects[ratelimit.FeedbackIP.Name]; got != "192.0.2.1" {
+		t.Errorf("the IP window counted %q, want the socket peer", got)
 	}
-	if limiter.subjects[ratelimit.FeedbackIP.Name] == "" {
-		t.Error("the IP window was not consulted")
+	if len(limiter.subjects) != 1 {
+		t.Errorf("windows consulted = %v, want only the IP window", limiter.subjects)
 	}
 
 	deps.Limiter = denyingLimiter{}
 	rec = postFeedback(deps, `{"topic":"Feedback","message":"hi"}`)
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("status = %d, Retry-After = %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestFeedbackCountsTheSignedBucketAndIgnoresAForgedOne(t *testing.T) {
+	const secret = "shared-with-the-web-boundary"
+	const bucket = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	for name, tt := range map[string]struct{ header, want string }{
+		"signed": {signedBucketHeader(secret, bucket, testNow), bucket},
+		"forged": {signedBucketHeader("not-the-secret", bucket, testNow), "192.0.2.1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			limiter := &recordingLimiter{}
+			deps := webDeps(&fakeWebsite{})
+			deps.Limiter = limiter
+			deps.IPBucketSecret = secret
+
+			rec := post(deps, "/api/v2/feedback", `{"topic":"Feedback","message":"hi"}`,
+				map[string]string{ratelimit.IPBucketHeader: tt.header})
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+			}
+			if got := limiter.subjects[ratelimit.FeedbackIP.Name]; got != tt.want {
+				t.Errorf("subject = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

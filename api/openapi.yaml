@@ -728,8 +728,13 @@ paths:
       tags: [website]
       summary: Send feedback
       description: |
-        Limited per user and per IP. Answers 503 `feedback_unavailable` when the
-        limiter cannot answer.
+        Public, no session required, because the website's form is anonymous.
+        A valid bearer token, when one is sent, stores the message against that
+        user; a missing or rejected token stores it with no user. Limited per
+        IP; the signed bucket the web boundary forwards is honoured, a forged
+        one is ignored. Answers 503 `feedback_unavailable` when the limiter
+        cannot answer.
+      security: []
       requestBody:
         required: true
         content:
@@ -745,7 +750,6 @@ paths:
                 required: [id]
                 properties:
                   id: { type: string, format: uuid }
-        "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }

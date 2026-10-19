@@ -21,11 +21,9 @@ var (
 	SearchIP = Policy{Name: "search_ip", Requests: 90, Window: time.Minute}
 )
 
-// The website's feedback form and store-link counter. Feedback keeps the
-// ten-minute window the form has always had; the click counter is per IP only
-// because it has no user.
+// The website's feedback form and store-link counter. Both are public, so
+// both are counted per IP only.
 var (
-	Feedback   = Policy{Name: "feedback", Requests: 5, Window: 10 * time.Minute}
 	FeedbackIP = Policy{Name: "feedback_ip", Requests: 20, Window: time.Hour}
 	LinkClick  = Policy{Name: "link_click_ip", Requests: 120, Window: time.Minute}
 )

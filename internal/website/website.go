@@ -112,7 +112,8 @@ func New(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// SubmitFeedback stores one message from a signed-in user and returns its id.
+// SubmitFeedback stores one message and returns its id. An empty userID is an
+// anonymous message and is stored with no user.
 func (s *Service) SubmitFeedback(ctx context.Context, userID string, feedback Feedback) (string, error) {
 	normalized, err := NormalizeFeedback(feedback)
 	if err != nil {
@@ -123,7 +124,7 @@ func (s *Service) SubmitFeedback(ctx context.Context, userID string, feedback Fe
 		INSERT INTO reelpin.feedback (user_id, topic, email, message)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id::text`,
-		userID, normalized.Topic, nullable(normalized.Email), normalized.Message,
+		nullable(userID), normalized.Topic, nullable(normalized.Email), normalized.Message,
 	).Scan(&id); err != nil {
 		return "", fmt.Errorf("saving feedback: %w", err)
 	}

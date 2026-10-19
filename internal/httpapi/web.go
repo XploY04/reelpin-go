@@ -74,17 +74,31 @@ func (s *Server) allowWebWrite(w http.ResponseWriter, r *http.Request, unavailab
 	return true
 }
 
+// optionalUserID is the token's user when a valid bearer token came with the
+// request, and empty otherwise. A missing or rejected token is not an error on
+// a public route; the write is simply anonymous.
+func (s *Server) optionalUserID(r *http.Request) string {
+	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		return ""
+	}
+	userID, err := s.deps.Auth.Authenticate(r.Context(), token)
+	if err != nil {
+		return ""
+	}
+	return userID
+}
+
 func (s *Server) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {
-	userID := requestUserID(r)
 	var input feedbackInput
 	if !decodeBody(w, r, &input) {
 		return
 	}
 	if !s.allowWebWrite(w, r, "feedback_unavailable",
-		limitCheck{ratelimit.Feedback, userID},
 		limitCheck{ratelimit.FeedbackIP, s.limitSubject(r)}) {
 		return
 	}
+	userID := s.optionalUserID(r)
 
 	id, err := s.deps.Website.SubmitFeedback(r.Context(), userID, website.Feedback{
 		Topic: input.Topic, Email: input.Email, Message: input.Message,
