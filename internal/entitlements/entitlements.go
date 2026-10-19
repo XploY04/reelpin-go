@@ -91,14 +91,14 @@ var (
 var (
 	planFeaturesFree = []string{
 		"Save up to 25 reels",
-		"Keyword search",
-		"Map with up to 10 pins",
+		"Search saved reels",
+		"View up to 10 pinned locations",
 	}
 	planFeaturesPro = []string{
-		"Unlimited saves",
-		"Unlimited map pins",
-		"Smart search across everything you save",
-		"Your full reel history",
+		"Unlimited saved reels",
+		"Unlimited search",
+		"Unlimited pinned locations",
+		"Full history and map access",
 	}
 )
 

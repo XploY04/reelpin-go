@@ -56,30 +56,29 @@ func (c *Cache) refreshIfStale(ctx context.Context) {
 		return
 	}
 
-	loaded, err := c.reader.ActivePro(ctx)
-
+	// Claim the window before querying so only one goroutine reloads per
+	// interval; the rest read the last good set. A failed reload keeps that set
+	// and the claim stands, so a sustained outage costs one query per window,
+	// not one per request. On a cold start with nothing cached, the set stays
+	// empty, which reads every user as Free until the first successful load.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Another goroutine may have reloaded while this one was querying.
 	if c.loaded && c.now().Sub(c.lastReload) < c.ttl {
+		c.mu.Unlock()
 		return
 	}
+	c.lastReload = c.now()
+	c.loaded = true
+	c.mu.Unlock()
 
-	// A failed reload keeps the last good set. The timestamp still advances so a
-	// sustained outage does not turn into a query per request; the next window
-	// retries. On a cold start with nothing cached, the set stays empty, which
-	// reads every user as Free until the first successful load.
+	loaded, err := c.reader.ActivePro(ctx)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Warn("entitlements reload failed; keeping the last good set", "error", err)
 		}
-		c.lastReload = c.now()
-		c.loaded = true
 		return
 	}
 
+	c.mu.Lock()
 	c.expiries = loaded
-	c.lastReload = c.now()
-	c.loaded = true
+	c.mu.Unlock()
 }

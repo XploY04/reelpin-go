@@ -122,6 +122,10 @@ var promptStopWords = map[string]bool{
 // beats a broad one: subcategory, category, location, source, tag, then person.
 // Within a kind the most frequent wins. Generic labels are dropped, and the
 // list is topped up from a fixed fallback so it is never empty.
+//
+// This is a deliberate simplification of the Python ranking (one per kind then a
+// global fill, composite "Category in Location" and "Platform ContentType"
+// prompts, keyword mining, weighted scores). It was not ported for v2.
 func buildQuickSearchPrompts(records []ReelRecord) []string {
 	subcategory := map[string]int{}
 	category := map[string]int{}
