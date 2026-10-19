@@ -277,3 +277,41 @@ func TestInsertIsIdempotentByEventID(t *testing.T) {
 		t.Fatalf("rows = %d, want the duplicate insert to change nothing", count)
 	}
 }
+
+// A failed publish backs the row off into the future, and no writer will
+// signal when it falls due: the dispatch has to report when that is.
+func TestADispatchReportsWhenTheNextRowFallsDue(t *testing.T) {
+	pool := testPool(t)
+	publisher := &recordingPublisher{fail: true}
+	dispatcher := NewDispatcher(pool, publisher, quiet(), 10)
+	ctx := context.Background()
+
+	_, next, err := dispatcher.dispatchOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != nil {
+		t.Fatalf("next due = %s on an empty outbox, want none", *next)
+	}
+
+	insertEvent(t, pool, "66666666-6666-4666-8666-666666666666")
+	_, next, err = dispatcher.dispatchOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first failure backs off 30 seconds.
+	if next == nil || *next < 25*time.Second || *next > 30*time.Second {
+		t.Fatalf("next due = %v, want about 30s", next)
+	}
+
+	publisher.fail = false
+	if _, err := pool.Exec(ctx, `UPDATE reelpin.outbox_events SET available_at = now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, next, err = dispatcher.dispatchOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if next != nil {
+		t.Errorf("next due = %s after everything was published, want none", *next)
+	}
+}

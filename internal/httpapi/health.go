@@ -41,7 +41,8 @@ func apiCheck(checkedAt string) ServiceHealthCheck {
 }
 
 func (s *Server) databaseCheck(ctx context.Context, checkedAt string) ServiceHealthCheck {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	// Long enough for a suspended database to wake on the first ping.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	start := time.Now()

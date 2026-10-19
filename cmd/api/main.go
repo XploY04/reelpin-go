@@ -22,8 +22,10 @@ import (
 	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
+	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/readcache"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
@@ -100,10 +102,15 @@ func run(logger *slog.Logger) error {
 
 	// Redis is optional outside production: without it there are no limits, and
 	// submissions fail closed while every read keeps serving.
+	// It also carries the read cache and the outbox signal, which is what
+	// lets an idle database suspend; without it both pass straight through.
 	var (
-		limiter     httpapi.RateLimiter
-		redisPinger httpapi.Pinger
-		liveWorkers metrics.WorkerCount
+		limiter      httpapi.RateLimiter
+		redisPinger  httpapi.Pinger
+		liveWorkers  metrics.WorkerCount
+		cache        *readcache.Cache
+		invalidator  lifecycle.CacheInvalidator
+		outboxSignal *outbox.Signal
 	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
@@ -120,6 +127,9 @@ func run(logger *slog.Logger) error {
 		liveWorkers = func(ctx context.Context) (int, error) {
 			return workerhealth.Live(ctx, client, cfg.RedisKeyPrefix)
 		}
+		cache = readcache.New(client, cfg.RedisKeyPrefix, logger)
+		invalidator = cache
+		outboxSignal = outbox.NewSignal(client, cfg.RedisKeyPrefix, logger)
 	} else {
 		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
 			"environment", cfg.Environment)
@@ -149,12 +159,13 @@ func run(logger *slog.Logger) error {
 	if cfg.AdminKey == "" {
 		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
 	}
-	go metrics.Sample(ctx, meters, pool, liveWorkers)
+	activity := metrics.NewActivity(pool)
+	go metrics.Sample(ctx, meters, activity, liveWorkers)
 
 	// The API is the one process that publishes the fleet's month-to-date
 	// spend, whether or not a gate is configured: watching it is how the
 	// limits get chosen.
-	go metrics.SampleSpend(ctx, meters, func(ctx context.Context) (float64, error) {
+	go metrics.SampleSpend(ctx, meters, activity, func(ctx context.Context) (float64, error) {
 		total, err := ledger.MonthToDateMicros(ctx)
 		return total.USD(), err
 	})
@@ -174,20 +185,24 @@ func run(logger *slog.Logger) error {
 		logger.Warn("no SUPABASE_SERVICE_ROLE_KEY: an account deletion removes the data, leaves the sign-in working, and stays pending")
 	}
 
+	submissions := postgres.NewEnqueue(pool)
+	submissions.Outbox = outboxSignal
+
 	api, err := httpapi.New(httpapi.Deps{
 		DB:             pool,
 		Auth:           verifier,
-		Reels:          postgres.NewReels(pool),
-		Jobs:           postgres.NewCombinedJobs(pool),
-		Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, optionalGate(gate)),
+		Reels:          readcache.CachedReels(postgres.NewReels(pool), cache),
+		Jobs:           readcache.CachedJobs(postgres.NewCombinedJobs(pool), cache),
+		Enqueue:        enqueue.New(submissions, resolver, optionalGate(gate)),
 		ShareTokens:    shareTokens,
 		Resolver:       resolver,
 		Collections:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
-		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), nil, logger),
+		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), invalidator, logger),
 		Map:            mapview.New(pool, time.Now),
 		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 		Search:         searchService,
 		Limiter:        limiter,
+		Cache:          invalidator,
 		Metrics:        meters,
 		AdminKey:       cfg.AdminKey,
 		IPBucketSecret: cfg.IPBucketSecret,

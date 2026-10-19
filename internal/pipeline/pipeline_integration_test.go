@@ -559,7 +559,7 @@ func TestAFencedPipelineDiscardsItsResult(t *testing.T) {
 	// The worker claims the run, then stalls long enough to lose its lease and
 	// have another worker take it. Simulate by claiming, then expiring and
 	// re-claiming under a different owner.
-	held, err := lease.Acquire(ctx, h.pool, h.runID, "worker-test")
+	held, err := lease.Acquire(ctx, h.pool, nil, h.runID, "worker-test")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestAFencedPipelineDiscardsItsResult(t *testing.T) {
 		SET lease_expires_at = now() - interval '1 second' WHERE id = $1`, h.runID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lease.Acquire(ctx, h.pool, h.runID, "worker-other"); err != nil {
+	if _, err := lease.Acquire(ctx, h.pool, nil, h.runID, "worker-other"); err != nil {
 		t.Fatalf("the second worker could not claim: %v", err)
 	}
 

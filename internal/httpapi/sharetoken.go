@@ -50,6 +50,6 @@ func (s *Server) shareTokenAuthenticated(next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 
-		next(w, r.WithContext(auth.WithUserID(r.Context(), userID)))
+		next(s.invalidatingWrites(w, r, userID), r.WithContext(auth.WithUserID(r.Context(), userID)))
 	}
 }

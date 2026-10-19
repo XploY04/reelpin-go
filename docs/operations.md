@@ -62,12 +62,16 @@ virtual hosts. Database rows do not carry an environment discriminator.
 
 Two endpoints, and the difference between them matters:
 
-- **`/api/v1/health/live`** never touches the database and always answers 200.
-  A failure here means the process is gone. This is what a container health
-  check and a process supervisor should call.
-- **`/api/v1/health/ready`** pings the database with a 2s bound and answers 503
-  when it fails. This is what a load balancer should call, because a replica
-  that cannot reach the database should stop receiving traffic.
+- **`/api/v2/health/live`** never touches the database and always answers 200.
+  A failure here means the process is gone. This is the only endpoint an
+  uptime monitor, a load balancer, a container health check or a process
+  supervisor should call.
+- **`/api/v2/health/ready`** pings the database with a 5s bound and answers 503
+  when it fails. Call it by hand, or once after a deploy, never on a schedule.
+  The database suspends after five idle minutes and every ping wakes it, so a
+  monitor polling readiness keeps it awake around the clock and spends the
+  month's compute hours on nothing. The 5s bound is there so the ping that
+  wakes it does not time out.
 
 The response reports `service: "ReelPin API"`. Readiness names its PostgreSQL
 dependency `database`.
@@ -103,7 +107,7 @@ The consequences worth knowing:
 - **401 on every request**: check `SUPABASE_URL` points at the right project and
   that the token's audience matches `SUPABASE_JWT_AUDIENCE`. The verification
   error is in the logs, never in the response.
-- **503 from readiness**: the database ping failed within 2s. The driver error
+- **503 from readiness**: the database ping failed within 5s. The driver error
   is logged; the response deliberately says nothing about it.
 - **A job the app polls forever**: look for `status = completed` with a null
   `result_reel_id`. This service presents it as failed and does not repair the

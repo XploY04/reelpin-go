@@ -66,6 +66,9 @@ type Deps struct {
 	// IPBucketSecret verifies the bucket the web boundary forwards. Empty means
 	// per-IP limits use the socket peer, which is the behaviour without a web.
 	IPBucketSecret string
+	// Cache is optional: when set, every successful write a user makes drops
+	// their cached reads before the response goes out.
+	Cache CacheInvalidator
 	// Redis and Workers are readiness inputs. Each is optional: a process
 	// without one is ready without it.
 	Redis   Pinger
@@ -225,9 +228,57 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok {
 			holder.hashedUser = metrics.Hash(userID)
 		}
-		next(w, r.WithContext(auth.WithUserID(r.Context(), userID)))
+		next(s.invalidatingWrites(w, r, userID), r.WithContext(auth.WithUserID(r.Context(), userID)))
 	}
 }
+
+// CacheInvalidator drops a user's cached reads.
+type CacheInvalidator interface {
+	InvalidateUser(ctx context.Context, userID string) error
+}
+
+// invalidatingWrites makes a write drop the caller's cached reads just before
+// its response starts, which is after the handler committed: a client that
+// reads again on seeing the response can never be served the state from before
+// its own write. Covering every write here, rather than in each handler, means
+// a new write route cannot forget.
+func (s *Server) invalidatingWrites(w http.ResponseWriter, r *http.Request, userID string) http.ResponseWriter {
+	if s.deps.Cache == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return w
+	}
+	return &invalidatingWriter{ResponseWriter: w, invalidate: func() {
+		if err := s.deps.Cache.InvalidateUser(r.Context(), userID); err != nil {
+			// The read cache expires on its own; a stale screen is the cost.
+			s.deps.Logger.Warn("invalidating the user's cache failed",
+				"request_id", w.Header().Get("X-Request-ID"), "error", err)
+		}
+	}}
+}
+
+type invalidatingWriter struct {
+	http.ResponseWriter
+	invalidate func()
+	started    bool
+}
+
+func (w *invalidatingWriter) WriteHeader(status int) {
+	if !w.started {
+		w.started = true
+		if status < http.StatusBadRequest {
+			w.invalidate()
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *invalidatingWriter) Write(body []byte) (int, error) {
+	if !w.started {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *invalidatingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func bearerToken(header string) string {
 	value := strings.TrimSpace(header)
