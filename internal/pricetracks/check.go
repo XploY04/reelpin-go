@@ -12,7 +12,7 @@ import (
 )
 
 // CheckInterval is how stale a track must be before a run reads it again.
-// It is shorter than a day on purpose: the timer's randomized start must not
+// It is shorter than a day on purpose: a run delivered a little late must not
 // push a track checked at 03:01 yesterday past today's 03:00 run.
 const CheckInterval = 20 * time.Hour
 

@@ -15,11 +15,11 @@ import (
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 )
 
-// runCheckPriceTracks is the daily price check the timer starts. It reads the
-// table only now, once a day, rather than a process sweeping it on a loop.
+// runCheckPriceTracks runs the daily price check by hand. The worker fleet
+// schedules the daily one; this is for an operator who wants one now.
 func runCheckPriceTracks(ctx context.Context, logger *slog.Logger, cfg config.Config, args []string) error {
 	flags := flag.NewFlagSet("check-price-tracks", flag.ContinueOnError)
-	concurrency := flags.Int("concurrency", 4, "product pages read at once")
+	concurrency := flags.Int("concurrency", pricetracks.CheckConcurrency, "product pages read at once")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

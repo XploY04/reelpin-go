@@ -2,8 +2,8 @@
 // to watch, and the daily check that tells them once when the price reaches
 // their target.
 //
-// The check is a scheduled maintenance run, not a sweep: it reads the table
-// only when the timer starts it, once a day.
+// The check is a scheduled run, not a sweep: the worker fleet parks one
+// delayed broker message per day, and the table is read only when it arrives.
 package pricetracks
 
 import (

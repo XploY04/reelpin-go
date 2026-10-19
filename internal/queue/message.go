@@ -38,7 +38,7 @@ func (m Message) Validate() error {
 	switch {
 	case m.EventID == "":
 		return fmt.Errorf("message has no event id")
-	case m.RunID == "" && m.EventType != EventNotification:
+	case m.RunID == "" && m.EventType != EventNotification && m.EventType != EventPriceCheck:
 		return fmt.Errorf("message has no run id")
 	case m.EventType == "":
 		return fmt.Errorf("message has no event type")
@@ -56,6 +56,9 @@ const (
 	EventProcessMedia = "run.process.media"
 	EventProcessLight = "run.process.light"
 	EventNotification = "notification.send"
+	// EventPriceCheck is the daily price check. It names no run: the check
+	// reads every stale track when it is delivered.
+	EventPriceCheck = "price_tracks.check"
 )
 
 func Decode(body []byte) (Message, error) {
