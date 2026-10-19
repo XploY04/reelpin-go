@@ -25,6 +25,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/queue"
+	"github.com/XploY04/reelpin-go/internal/reminders"
 	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -96,7 +97,10 @@ func run(logger *slog.Logger) error {
 
 	// Heartbeats are how readiness sees the fleet. Redis being optional in
 	// development means a worker without it simply is not counted.
-	var liveWorkers metrics.WorkerCount
+	var (
+		liveWorkers      metrics.WorkerCount
+		reminderSchedule reminders.Schedule
+	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
 		if err != nil {
@@ -111,6 +115,7 @@ func run(logger *slog.Logger) error {
 		liveWorkers = func(ctx context.Context) (int, error) {
 			return workerhealth.Live(ctx, redisClient, cfg.RedisKeyPrefix)
 		}
+		reminderSchedule = reminders.NewRedisSchedule(redisClient, cfg.RedisKeyPrefix)
 	} else {
 		logger.Warn("no REDIS_URL: this worker sends no heartbeats and readiness cannot see it")
 	}
@@ -189,7 +194,7 @@ func run(logger *slog.Logger) error {
 		return handler(ctx, message)
 	}
 
-	done := make(chan error, len(queue.WorkQueues)+3)
+	done := make(chan error, len(queue.WorkQueues)+4)
 	started := 0
 
 	started++
@@ -202,6 +207,14 @@ func run(logger *slog.Logger) error {
 
 	started++
 	go func() { done <- sweepLoop(ctx, logger, pool) }()
+
+	// Reminders are fired from Redis's due set, so without Redis there is
+	// nothing to read and the dispatcher does not run.
+	if reminderSchedule != nil {
+		dispatcher := reminders.NewDispatcher(postgres.NewReminders(pool), reminderSchedule, notifications, logger, time.Now)
+		started++
+		go func() { done <- dispatcher.Run(ctx, reminders.TickInterval) }()
+	}
 
 	for _, name := range queue.WorkQueues {
 		started++

@@ -55,6 +55,9 @@ type Deps struct {
 	Map MapView
 	// Search is hybrid retrieval over one user's saves.
 	Search Searcher
+	// Reminders and PriceTracks own what a user asked to be told about later.
+	Reminders   Reminders
+	PriceTracks PriceTracks
 	// Limiter is nil outside production-shaped setups. Provider-costing
 	// endpoints fail closed without a decision; reads never consult it.
 	Limiter RateLimiter

@@ -37,6 +37,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/ai/`, `internal/embed/`, `internal/search/`, `internal/taxonomy/` | Extraction and categorization, the embedding index, the three search arms and their fusion, and the category tree the prompt is built from. |
 | `internal/lifecycle/`, `internal/backfill/` | Deletion, retention and purge; and the resumable read of the legacy Python tables. |
 | `internal/notify/` | Push tokens and FCM delivery. |
+| `internal/reminders/`, `internal/pricetracks/` | Reminders fired from a Redis due set, and price watches read by the daily `check-price-tracks` timer. Neither polls PostgreSQL. |
 | `internal/media/`, `internal/storage/`, `internal/providers/`, `internal/apify/`, `internal/cookies/`, `internal/reddit/` | Bounded downloads, the temp workspace, provider budgets and cooldowns, and the Reddit application token. |
 | `internal/safehttp/`, `internal/ratelimit/` | The outbound SSRF guard and the Redis limiters. |
 | `internal/spend/` | The cost gate: what a provider call cost, and whether new submissions are still accepted. The amounts are configuration; see `docs/cost-gate.md`. |

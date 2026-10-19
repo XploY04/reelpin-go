@@ -23,7 +23,9 @@ import (
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/pricetracks"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/reminders"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
@@ -101,9 +103,10 @@ func run(logger *slog.Logger) error {
 	// Redis is optional outside production: without it there are no limits, and
 	// submissions fail closed while every read keeps serving.
 	var (
-		limiter     httpapi.RateLimiter
-		redisPinger httpapi.Pinger
-		liveWorkers metrics.WorkerCount
+		limiter          httpapi.RateLimiter
+		redisPinger      httpapi.Pinger
+		liveWorkers      metrics.WorkerCount
+		reminderSchedule reminders.Schedule
 	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
@@ -120,6 +123,7 @@ func run(logger *slog.Logger) error {
 		liveWorkers = func(ctx context.Context) (int, error) {
 			return workerhealth.Live(ctx, client, cfg.RedisKeyPrefix)
 		}
+		reminderSchedule = reminders.NewRedisSchedule(client, cfg.RedisKeyPrefix)
 	} else {
 		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
 			"environment", cfg.Environment)
@@ -187,6 +191,8 @@ func run(logger *slog.Logger) error {
 		Map:            mapview.New(pool, time.Now),
 		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 		Search:         searchService,
+		Reminders:      reminders.NewService(postgres.NewReminders(pool), reminderSchedule, logger),
+		PriceTracks:    pricetracks.NewService(postgres.NewPriceTracks(pool)),
 		Limiter:        limiter,
 		Metrics:        meters,
 		AdminKey:       cfg.AdminKey,
