@@ -46,6 +46,7 @@ func exported(t *testing.T) map[string]map[string]bool {
 	m.CostGateStopUSD.Set(1)
 	m.OutboxAgeSeconds.Set(1)
 	m.OldestQueuedJobAge.Set(1)
+	m.DatabaseGaugesStaleness.Set(1)
 	m.TempDiskBytes.Set(1)
 	m.LiveWorkers.Set(1)
 

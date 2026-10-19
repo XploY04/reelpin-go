@@ -84,7 +84,9 @@ type Dispatcher struct {
 	// signal is nil without Redis, and then Run polls PostgreSQL as it always
 	// has.
 	signal *Signal
-	now    func() time.Time
+	// afterWake is nil unless the caller has work to ride on a wake.
+	afterWake func()
+	now       func() time.Time
 	// dispatch is DispatchOnce plus how long until the next unpublished row
 	// is due; tests replace it to count database round trips.
 	dispatch func(ctx context.Context) (int, *time.Duration, error)
@@ -106,6 +108,14 @@ func (d *Dispatcher) WithSignal(signal *Signal) *Dispatcher {
 	return d
 }
 
+// WithAfterWake calls fn after every dispatch that a writer's mark or a due
+// row caused, so work that would otherwise wake an idle database on its own
+// can run while the dispatcher has it awake. It is not called while polling.
+func (d *Dispatcher) WithAfterWake(fn func()) *Dispatcher {
+	d.afterWake = fn
+	return d
+}
+
 // Run dispatches until the context is cancelled. With a signal it asks Redis
 // every interval and touches PostgreSQL only when a writer marked the outbox
 // dirty or a row it already knows about falls due; without one it polls.
@@ -118,17 +128,20 @@ func (d *Dispatcher) Run(ctx context.Context, interval time.Duration) error {
 
 	// Whatever was committed while no dispatcher was running goes out now.
 	var nextDue time.Time
-	run := true
+	run, woke := true, false
 	for {
 		if run {
 			nextDue = d.drain(ctx)
+			if woke && d.afterWake != nil {
+				d.afterWake()
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 		}
-		run = d.due(ctx, nextDue)
+		run, woke = d.due(ctx, nextDue)
 	}
 }
 
@@ -155,10 +168,12 @@ func (d *Dispatcher) drain(ctx context.Context) time.Time {
 	}
 }
 
-// due decides whether this tick touches PostgreSQL.
-func (d *Dispatcher) due(ctx context.Context, nextDue time.Time) bool {
+// due decides whether this tick touches PostgreSQL, and whether that is a
+// wake, caused by a writer's mark or a known row falling due, rather than a
+// poll.
+func (d *Dispatcher) due(ctx context.Context, nextDue time.Time) (dispatch, woke bool) {
 	if d.signal == nil {
-		return true
+		return true, false
 	}
 	dirty, err := d.signal.take(ctx)
 	if err != nil {
@@ -167,12 +182,13 @@ func (d *Dispatcher) due(ctx context.Context, nextDue time.Time) bool {
 		if !errors.Is(err, context.Canceled) {
 			d.logger.Warn("outbox signal unreadable, polling instead", "error", err)
 		}
-		return true
+		return true, false
 	}
 	if dirty {
-		return true
+		return true, true
 	}
-	return !nextDue.IsZero() && !d.now().Before(nextDue)
+	woke = !nextDue.IsZero() && !d.now().Before(nextDue)
+	return woke, woke
 }
 
 // DispatchOnce claims one bounded batch, publishes it, and marks what the

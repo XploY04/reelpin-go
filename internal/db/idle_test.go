@@ -29,8 +29,8 @@ var gatedTimers = map[string]struct {
 }{
 	"internal/outbox/outbox.go": {"d.signal.take(", 1,
 		"asks Redis every tick; PostgreSQL only when a writer marked the outbox or a known row falls due"},
-	"internal/lease/sweeper.go": {"s.inflight.active(", 1,
-		"sweeps only while the in-flight marker says a lease was recently held"},
+	"internal/lease/sweeper.go": {"s.inflight.active(", 2,
+		"sweeps only while the in-flight marker says a lease was recently held, plus one follow-up a lease after a startup that found no marker"},
 	"internal/metrics/sampler.go": {"runIfUsed(", 3,
 		"database gauges are read only after the pool was used; the temp-disk sampler never touches it"},
 	"internal/pipeline/pipeline.go": {"lease.Renew(", 1,

@@ -72,8 +72,10 @@ type WorkerCount func(ctx context.Context) (int, error)
 // It runs until the context is cancelled, and a failed query leaves the
 // previous value in place rather than reporting a zero that looks healthy.
 // The database gauges are only asked for when the pool was used since the
-// last sample: an idle pool means nothing they report has changed.
-func Sample(ctx context.Context, m *Metrics, activity *Activity, workers WorkerCount) {
+// last sample: an idle pool means nothing they report has changed. A receive
+// on now samples at once, so a caller that has just used the pool can refresh
+// the gauges without waiting for the tick; a nil channel never fires.
+func Sample(ctx context.Context, m *Metrics, activity *Activity, workers WorkerCount, now <-chan struct{}) {
 	if m == nil {
 		return
 	}
@@ -81,17 +83,19 @@ func Sample(ctx context.Context, m *Metrics, activity *Activity, workers WorkerC
 	defer ticker.Stop()
 
 	var last sampled
+	refreshed := time.Now()
 	for {
-		m.sampleOnce(ctx, activity, &last, workers)
+		m.sampleOnce(ctx, activity, &last, &refreshed, workers)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-now:
 		}
 	}
 }
 
-func (m *Metrics) sampleOnce(ctx context.Context, activity *Activity, last *sampled, workers WorkerCount) {
+func (m *Metrics) sampleOnce(ctx context.Context, activity *Activity, last *sampled, refreshed *time.Time, workers WorkerCount) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -102,7 +106,9 @@ func (m *Metrics) sampleOnce(ctx context.Context, activity *Activity, last *samp
 		m.DatabasePool.WithLabelValues("idle").Set(float64(stat.IdleConns()))
 		m.DatabasePool.WithLabelValues("max").Set(float64(stat.MaxConns()))
 
-		activity.runIfUsed(last, func() { m.sampleQueues(ctx, activity.pool) })
+		m.refreshQueues(activity, last, refreshed, time.Now(), func() bool {
+			return m.sampleQueues(ctx, activity.pool)
+		})
 	}
 
 	if workers != nil {
@@ -112,7 +118,22 @@ func (m *Metrics) sampleOnce(ctx context.Context, activity *Activity, last *samp
 	}
 }
 
-func (m *Metrics) sampleQueues(ctx context.Context, pool *pgxpool.Pool) {
+// refreshQueues reads the database gauges when the pool was used and reports
+// how long ago they last held a real answer. An idle pool leaves the last
+// values in place, and the staleness gauge is how a reader tells those apart
+// from current ones.
+func (m *Metrics) refreshQueues(activity *Activity, last *sampled, refreshed *time.Time, now time.Time, query func() bool) {
+	activity.runIfUsed(last, func() {
+		if query() {
+			*refreshed = now
+		}
+	})
+	m.DatabaseGaugesStaleness.Set(now.Sub(*refreshed).Seconds())
+}
+
+// sampleQueues reports whether both gauges were refreshed.
+func (m *Metrics) sampleQueues(ctx context.Context, pool *pgxpool.Pool) bool {
+	refreshed := true
 	var seconds float64
 	// The oldest unpublished event: the dispatcher falling behind shows up
 	// here before anything else notices.
@@ -121,6 +142,8 @@ func (m *Metrics) sampleQueues(ctx context.Context, pool *pgxpool.Pool) {
 		FROM reelpin.outbox_events
 		WHERE published_at IS NULL`).Scan(&seconds); err == nil {
 		m.OutboxAgeSeconds.Set(seconds)
+	} else {
+		refreshed = false
 	}
 
 	// Queued, not processing: this is time spent waiting for a worker.
@@ -129,7 +152,10 @@ func (m *Metrics) sampleQueues(ctx context.Context, pool *pgxpool.Pool) {
 		FROM reelpin.processing_jobs
 		WHERE status = 'queued'`).Scan(&seconds); err == nil {
 		m.OldestQueuedJobAge.Set(seconds)
+	} else {
+		refreshed = false
 	}
+	return refreshed
 }
 
 // MonthlySpendUSD reports provider spend so far this calendar month.

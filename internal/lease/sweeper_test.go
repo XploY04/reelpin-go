@@ -52,7 +52,7 @@ func countingSweeper(inflight *Inflight) (*Sweeper, *atomic.Int64) {
 	s := &Sweeper{inflight: inflight, logger: silent(), sweep: func(context.Context) (int, error) {
 		calls.Add(1)
 		return 0, nil
-	}}
+	}, followUp: time.Hour, wake: make(chan struct{}, 1)}
 	return s, calls
 }
 
@@ -77,6 +77,49 @@ func TestWithNothingInFlightTheSweeperOnlySweepsAtStartup(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Errorf("swept %d times with no lease in flight, want only the startup sweep", calls.Load())
 	}
+}
+
+// A host that comes back within a lease of dying finds its dead run's lease
+// still live, and a Redis without persistence has lost the marker that would
+// keep the sweeper looking. One more sweep a lease later finds it expired.
+func TestAStartupWithNoMarkerSweepsExactlyOnceMoreALeaseLater(t *testing.T) {
+	sweeper, calls := countingSweeper(NewInflight(&fakeMarker{}, "reelpin", silent()))
+	sweeper.followUp = 5 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+
+	if err := sweeper.Run(ctx, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("swept %d times, want the startup sweep and one follow-up", calls.Load())
+	}
+}
+
+func TestAWakeSweepsWithNothingInFlight(t *testing.T) {
+	sweeper, calls := countingSweeper(NewInflight(&fakeMarker{}, "reelpin", silent()))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- sweeper.Run(ctx, time.Millisecond) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the startup sweep never ran")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	sweeper.Wake()
+	for calls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("a wake never swept")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
 }
 
 func TestALeaseInFlightKeepsTheSweeperSweeping(t *testing.T) {

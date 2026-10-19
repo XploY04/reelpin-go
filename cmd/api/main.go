@@ -160,7 +160,7 @@ func run(logger *slog.Logger) error {
 		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
 	}
 	activity := metrics.NewActivity(pool)
-	go metrics.Sample(ctx, meters, activity, liveWorkers)
+	go metrics.Sample(ctx, meters, activity, liveWorkers, nil)
 
 	// The API is the one process that publishes the fleet's month-to-date
 	// spend, whether or not a gate is configured: watching it is how the

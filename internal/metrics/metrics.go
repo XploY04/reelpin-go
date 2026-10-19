@@ -29,8 +29,9 @@ type Metrics struct {
 	QueueRetried   *prometheus.CounterVec
 	DeadLettered   *prometheus.CounterVec
 
-	OutboxAgeSeconds   prometheus.Gauge
-	OldestQueuedJobAge prometheus.Gauge
+	OutboxAgeSeconds        prometheus.Gauge
+	OldestQueuedJobAge      prometheus.Gauge
+	DatabaseGaugesStaleness prometheus.Gauge
 
 	StageDuration *prometheus.HistogramVec
 	StageResults  *prometheus.CounterVec
@@ -112,6 +113,11 @@ func New() *Metrics {
 			Help: "Age of the oldest processing job still waiting for a worker.",
 		}),
 
+		DatabaseGaugesStaleness: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "reelpin_db_gauges_staleness_seconds",
+			Help: "Seconds since the outbox and queued-job age gauges were last read from the database. They are read only after the pool is used, so an idle process keeps reporting its last values.",
+		}),
+
 		StageDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "reelpin_pipeline_stage_duration_seconds",
 			Help:    "Pipeline stage latency by stage and platform.",
@@ -188,7 +194,7 @@ func New() *Metrics {
 	registry.MustRegister(
 		m.RequestsTotal, m.RequestDuration, m.DatabasePool,
 		m.QueuePublished, m.QueueConsumed, m.QueueRetried, m.DeadLettered,
-		m.OutboxAgeSeconds, m.OldestQueuedJobAge,
+		m.OutboxAgeSeconds, m.OldestQueuedJobAge, m.DatabaseGaugesStaleness,
 		m.StageDuration, m.StageResults, m.ProviderFailures,
 		m.SearchDuration, m.SearchResults,
 		m.ProviderCalls, m.ProviderTokens, m.ProviderSpendMonthUSD,

@@ -132,7 +132,12 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("worker temp directory: %w", err)
 	}
 
-	go metrics.Sample(ctx, meters, metrics.NewActivity(pool), liveWorkers)
+	// The dispatcher no longer polls, so an idle worker's database gauges hold
+	// their last values. Sampling and sweeping right behind each dispatch
+	// keeps them current at no cost: the dispatcher has just woken the
+	// database.
+	sampleNow := make(chan struct{}, 1)
+	go metrics.Sample(ctx, meters, metrics.NewActivity(pool), liveWorkers, sampleNow)
 	go metrics.SampleTempDisk(ctx, meters, tempRoot)
 
 	// The worker is where the money is spent, so it is what writes the ledger.
@@ -208,15 +213,20 @@ func run(logger *slog.Logger) error {
 	started++
 	go func() { done <- serveMetrics(ctx, meters, cfg.MetricsPort, cfg.AdminKey, logger) }()
 
-	started++
-	go func() {
-		done <- outbox.NewDispatcher(pool, publisher, logger, 100).WithSignal(outboxSignal).Run(ctx, time.Second)
-	}()
+	sweeper := lease.NewSweeper(pool, inflight, outboxSignal, queue.QueueLight, logger)
+	dispatcher := outbox.NewDispatcher(pool, publisher, logger, 100).WithSignal(outboxSignal).WithAfterWake(func() {
+		sweeper.Wake()
+		select {
+		case sampleNow <- struct{}{}:
+		default:
+		}
+	})
 
 	started++
-	go func() {
-		done <- lease.NewSweeper(pool, inflight, outboxSignal, queue.QueueLight, logger).Run(ctx, lease.SweepInterval)
-	}()
+	go func() { done <- dispatcher.Run(ctx, time.Second) }()
+
+	started++
+	go func() { done <- sweeper.Run(ctx, lease.SweepInterval) }()
 
 	for _, name := range queue.WorkQueues {
 		started++

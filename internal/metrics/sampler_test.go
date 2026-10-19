@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // fakePool counts acquires the way pgxpool does: every query is one.
@@ -98,5 +99,57 @@ func TestSpendIsReadOnlyAfterUse(t *testing.T) {
 	m.sampleSpendOnce(context.Background(), nil, &last, read)
 	if reads != 2 {
 		t.Errorf("spend read %d times with no activity gate, want every sample", reads)
+	}
+}
+
+func gaugeValue(t *testing.T, m *Metrics, name string) float64 {
+	t.Helper()
+	families, err := m.registry.Gather()
+	if err != nil {
+		t.Fatalf("gathering: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() == name {
+			return family.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	t.Fatalf("%s is not exported", name)
+	return 0
+}
+
+// An idle pool leaves the queue gauges at their last values, so the staleness
+// gauge has to keep growing until a real read lands.
+func TestStalenessGrowsWhileIdleAndResetsOnARealRead(t *testing.T) {
+	m := New()
+	pool := &fakePool{}
+	activity := pool.activity()
+	var last sampled
+	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	refreshed := start
+	read := func(ok bool) func() bool {
+		return func() bool { pool.query(); return ok }
+	}
+	staleness := func() float64 { return gaugeValue(t, m, "reelpin_db_gauges_staleness_seconds") }
+
+	m.refreshQueues(activity, &last, &refreshed, start, read(true))
+	if staleness() != 0 {
+		t.Errorf("staleness = %v right after a read, want 0", staleness())
+	}
+
+	m.refreshQueues(activity, &last, &refreshed, start.Add(45*time.Second), read(true))
+	if staleness() != 45 {
+		t.Errorf("staleness = %v after 45 idle seconds, want 45", staleness())
+	}
+
+	pool.query() // a dispatch
+	m.refreshQueues(activity, &last, &refreshed, start.Add(60*time.Second), read(true))
+	if staleness() != 0 {
+		t.Errorf("staleness = %v after a read that followed use, want 0", staleness())
+	}
+
+	pool.query()
+	m.refreshQueues(activity, &last, &refreshed, start.Add(90*time.Second), read(false))
+	if staleness() != 30 {
+		t.Errorf("staleness = %v after a failed read, want 30 since the last good one", staleness())
 	}
 }
