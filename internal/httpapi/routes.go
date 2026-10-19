@@ -83,6 +83,7 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodPost, "/api/v2/map/manual-pins", "createManualPin", s.handleCreateManualPin, true, "Map"),
 		bearer(http.MethodDelete, "/api/v2/map/manual-pins/{pin_id}", "deleteManualPin", s.handleDeleteManualPin, true, "Map"),
 		bearer(http.MethodPost, "/api/v2/map/locations/{location_id}/hidden", "setPinHidden", s.handleHidePin, true, "Map"),
+		bearer(http.MethodDelete, "/api/v2/map/items/{map_item_id}", "deleteMapItem", s.handleDeleteMapItem, true, "Map"),
 		bearer(http.MethodPost, "/api/v2/search", "searchReels", s.handleSearch, true, "Search"),
 
 		bearer(http.MethodPost, "/api/v2/device-push-tokens", "registerDeviceToken", s.handleRegisterPushToken, true, "Notifications"),
@@ -104,6 +105,12 @@ func (s *Server) routeTable() []Route {
 			handler: s.shareTokenAuthenticated(s.handleNativeShare), claimMethods: true,
 			requires: []string{"Logger", "ShareTokens", "Enqueue"},
 		},
+
+		bearer(http.MethodGet, "/api/v2/profile", "getProfile", s.handleGetProfile, false, "Profiles"),
+		bearer(http.MethodPut, "/api/v2/profile", "putProfile", s.handlePutProfile, true, "Profiles"),
+
+		bearer(http.MethodPost, "/api/v2/feedback", "submitFeedback", s.handleSubmitFeedback, true, "Website"),
+		public(http.MethodPost, "/api/v2/link-clicks", "recordLinkClick", s.handleRecordLinkClick, true, "Website"),
 
 		bearer(http.MethodGet, "/api/v2/collections", "listCollections", s.handleListCollections, false, "Collections"),
 		bearer(http.MethodPost, "/api/v2/collections", "createCollection", s.handleCreateCollection, true, "Collections"),

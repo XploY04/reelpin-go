@@ -17,6 +17,7 @@ type MapView interface {
 	CreateManualPin(ctx context.Context, userID, name string, address *string, point geo.Point) (mapview.Pin, error)
 	DeleteManualPin(ctx context.Context, userID, pinID string) error
 	HidePin(ctx context.Context, userID, locationID string, hidden bool) error
+	DeleteItem(ctx context.Context, userID, itemID string) error
 }
 
 // floatParam reads a required coordinate. An unparseable one is a validation
@@ -151,6 +152,20 @@ func (s *Server) handleDeleteManualPin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.deps.Logger.Error("deleting a manual pin failed", "error", err)
 		internalError(w, "map_failed", "Could not remove that pin right now.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDeleteMapItem(w http.ResponseWriter, r *http.Request) {
+	err := s.deps.Map.DeleteItem(r.Context(), requestUserID(r), r.PathValue("map_item_id"))
+	if errors.Is(err, mapview.ErrNotFound) {
+		notFoundError(w, "map_item_not_found")
+		return
+	}
+	if err != nil {
+		s.deps.Logger.Error("deleting a map item failed", "error", err)
+		internalError(w, "map_item_remove_failed", "Could not remove the map item right now.")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -339,3 +339,47 @@ func TestTheSpatialIndexIsUsed(t *testing.T) {
 		t.Fatalf("the spatial index is not used:\n%s", plan)
 	}
 }
+
+func TestDeleteItemHidesReelPinsAndDeletesManualOnes(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "ITEM1", "Shared cafe", 15.58, 73.74, userA, userB)
+	var saveID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM reelpin.user_saves WHERE user_id = $1`, userA).Scan(&saveID); err != nil {
+		t.Fatal(err)
+	}
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+
+	if err := service.DeleteItem(ctx, userA, "reel:"+saveID+":0"); err != nil {
+		t.Fatalf("hiding a reel item: %v", err)
+	}
+	if mine, _ := service.Pins(ctx, userA, bounds); len(mine) != 0 {
+		t.Fatalf("a removed reel item still appeared: %+v", mine)
+	}
+	if theirs, _ := service.Pins(ctx, userB, bounds); len(theirs) != 1 {
+		t.Fatal("removing an item changed another user's map")
+	}
+
+	for _, id := range []string{"reel:" + saveID + ":7", "reel:" + saveID + ":x"} {
+		if err := service.DeleteItem(ctx, userA, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: err = %v, want ErrNotFound", id, err)
+		}
+	}
+	if err := service.DeleteItem(ctx, userB, "reel:"+saveID+":0"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another user's save: err = %v, want ErrNotFound", err)
+	}
+
+	point, _ := geo.NewPoint(15.5, 73.7)
+	pin, err := service.CreateManualPin(ctx, userA, "Mine", nil, point)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteItem(ctx, userB, "manual:"+pin.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another user's manual pin: err = %v, want ErrNotFound", err)
+	}
+	if err := service.DeleteItem(ctx, userA, "manual:"+pin.ID); err != nil {
+		t.Fatalf("deleting a manual item: %v", err)
+	}
+}

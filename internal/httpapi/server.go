@@ -53,6 +53,10 @@ type Deps struct {
 	Lifecycle Lifecycle
 	// Map answers what is on the user's map.
 	Map MapView
+	// Profiles owns each user's display details.
+	Profiles Profiles
+	// Website records feedback and store-link taps from the marketing site.
+	Website Website
 	// Search is hybrid retrieval over one user's saves.
 	Search Searcher
 	// Limiter is nil outside production-shaped setups. Provider-costing
