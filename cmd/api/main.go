@@ -17,6 +17,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/entitlements"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
@@ -179,6 +180,7 @@ func run(logger *slog.Logger) error {
 		Auth:           verifier,
 		Reels:          postgres.NewReels(pool),
 		Jobs:           postgres.NewCombinedJobs(pool),
+		Entitlements:   entitlements.NewCache(postgres.NewEntitlements(pool), time.Minute, time.Now, logger),
 		Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, optionalGate(gate)),
 		ShareTokens:    shareTokens,
 		Resolver:       resolver,

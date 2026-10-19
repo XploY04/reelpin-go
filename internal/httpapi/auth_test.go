@@ -110,12 +110,3 @@ func TestBareRoutesAreNotRegistered(t *testing.T) {
 		})
 	}
 }
-
-func TestEntitlementsRouteIsNotRegistered(t *testing.T) {
-	for _, path := range []string{"/api/v2/account/entitlements", "/account/entitlements"} {
-		rec := serve(testDeps(&fakePinger{}), "GET", path, "Bearer good.token")
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s status = %d, want 404", path, rec.Code)
-		}
-	}
-}

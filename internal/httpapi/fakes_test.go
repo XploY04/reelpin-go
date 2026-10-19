@@ -55,12 +55,15 @@ type fakeReels struct {
 	records []reels.ReelRecord
 	facets  []reels.FacetRow
 	stats   reels.LibraryStats
+	library []reels.ReelRecord
 	byID    map[string]reels.ReelRecord
 	err     error
 
 	lastUserID  string
 	lastOptions reels.ListOptions
 	lastGetID   uuid.UUID
+
+	lastLibraryLimit int
 }
 
 func (f *fakeReels) List(_ context.Context, userID string, options reels.ListOptions) ([]reels.ReelRecord, error) {
@@ -94,6 +97,18 @@ func (f *fakeReels) Facets(_ context.Context, userID string) ([]reels.FacetRow, 
 		return nil, f.err
 	}
 	return f.facets, nil
+}
+
+func (f *fakeReels) Library(_ context.Context, userID string, limit int) ([]reels.ReelRecord, error) {
+	f.lastUserID = userID
+	f.lastLibraryLimit = limit
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.library != nil {
+		return f.library, nil
+	}
+	return f.records, nil
 }
 
 func (f *fakeReels) Stats(_ context.Context, userID string) (reels.LibraryStats, error) {
@@ -134,12 +149,24 @@ func (f *fakeJobs) Get(_ context.Context, userID string, id uuid.UUID) (jobs.Job
 	return jobs.JobRecord{}, jobs.ErrNotFound
 }
 
+// fakeEntitlements answers IsPro from a set a test installs, defaulting to Free.
+type fakeEntitlements struct {
+	pro        map[string]bool
+	lastUserID string
+}
+
+func (f *fakeEntitlements) IsPro(_ context.Context, userID string) bool {
+	f.lastUserID = userID
+	return f.pro[userID]
+}
+
 func testDeps(pinger Pinger) Deps {
 	return Deps{
 		DB:            pinger,
 		Auth:          fakeAuth{userID: testUserID},
 		Reels:         &fakeReels{},
 		Jobs:          &fakeJobs{},
+		Entitlements:  &fakeEntitlements{},
 		Enqueue:       &fakeSubmitter{},
 		ShareTokens:   &fakeShareTokens{},
 		Resolver:      &sourceidentity.Resolver{},

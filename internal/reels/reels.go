@@ -89,5 +89,6 @@ type ReelReader interface {
 	List(context.Context, string, ListOptions) ([]ReelRecord, error)
 	Get(context.Context, string, uuid.UUID) (ReelRecord, error)
 	Facets(context.Context, string) ([]FacetRow, error)
+	Library(context.Context, string, int) ([]ReelRecord, error)
 	Stats(context.Context, string) (LibraryStats, error)
 }
