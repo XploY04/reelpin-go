@@ -577,10 +577,20 @@ paths:
       tags: [map]
       summary: Remove an item from your map
       description: |
-        Accepts both id forms the map list uses. `manual:{pin_id}` deletes that
-        manual pin. `reel:{reel_id}:{index}` hides that reel-derived location
-        for you only, the same preference `setPinHidden` records. An id that is
-        malformed, unknown, or not reachable through your own saves answers 404.
+        Accepts exactly three id forms:
+
+        - `{location_id}`, a bare UUID: the id `listMapPins` and
+          `listNearbyPins` return for a content pin. Hides that location for
+          you only, the same preference `setPinHidden` records.
+        - `reel:{reel_id}:{index}`: hides the reel's location at that index for
+          you only, the same way.
+        - `manual:{pin_id}`: deletes that manual pin.
+
+        The map list returns the bare location UUID for a content pin, not the
+        `reel:` form. It returns a manual pin's bare UUID too, with
+        `kind: manual`; send that one as `manual:{pin_id}`, because a bare UUID
+        is always read as a location id. An id that is malformed, unknown, or
+        not reachable through your own saves answers 404.
       parameters:
         - { name: map_item_id, in: path, required: true, schema: { type: string } }
       responses:

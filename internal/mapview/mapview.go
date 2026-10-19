@@ -207,8 +207,8 @@ func (s *Service) HidePin(ctx context.Context, userID, locationID string, hidden
 	return nil
 }
 
-// DeleteItem removes one map item by the id the map list shows. A manual item
-// is deleted; a reel-derived one is hidden for this user only, the same
+// DeleteItem removes one map item. A manual item is deleted; a location, named
+// by its own id or by reel and index, is hidden for this user only, the same
 // preference HidePin records. Ids that do not parse, and ids this user cannot
 // reach, are both ErrNotFound.
 func (s *Service) DeleteItem(ctx context.Context, userID, itemID string) error {
@@ -218,6 +218,9 @@ func (s *Service) DeleteItem(ctx context.Context, userID, itemID string) error {
 	}
 	if item.Manual {
 		return s.DeleteManualPin(ctx, userID, item.ID)
+	}
+	if item.Location {
+		return s.HidePin(ctx, userID, item.ID, true)
 	}
 
 	var locationID string
@@ -238,18 +241,25 @@ func (s *Service) DeleteItem(ctx context.Context, userID, itemID string) error {
 	return s.HidePin(ctx, userID, locationID, true)
 }
 
-// Item is a parsed map item id: manual:{pin_id} or reel:{reel_id}:{ordinal}.
+// Item is a parsed map item id: a bare {location_id}, the id the map list
+// returns for a content pin; manual:{pin_id}; or reel:{reel_id}:{ordinal}.
 type Item struct {
-	Manual  bool
-	ID      string
-	Ordinal int
+	Manual   bool
+	Location bool
+	ID       string
+	Ordinal  int
 }
 
-// ParseItemID accepts only the two documented forms with UUID ids. Anything
+// ParseItemID accepts only the three documented forms with UUID ids. Anything
 // else is ErrNotFound so a malformed id cannot be told from a missing one.
 func ParseItemID(raw string) (Item, error) {
 	parts := strings.Split(strings.TrimSpace(raw), ":")
 	switch {
+	case len(parts) == 1:
+		if _, err := uuid.Parse(parts[0]); err != nil {
+			return Item{}, ErrNotFound
+		}
+		return Item{Location: true, ID: parts[0]}, nil
 	case len(parts) == 2 && parts[0] == "manual":
 		if _, err := uuid.Parse(parts[1]); err != nil {
 			return Item{}, ErrNotFound
