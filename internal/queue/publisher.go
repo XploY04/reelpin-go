@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -57,7 +58,20 @@ func NewPublisher(connection *amqp.Connection, confirmTimeout time.Duration) (*P
 // Publish sends one message to a routing key and waits for its confirm. The
 // outbox event id travels as MessageId, so a consumer can dedupe and an
 // operator can trace a delivery back to its row.
-func (p *Publisher) Publish(ctx context.Context, routingKey string, message Message) (err error) {
+func (p *Publisher) Publish(ctx context.Context, routingKey string, message Message) error {
+	return p.publish(ctx, routingKey, "", message)
+}
+
+// PublishDelayed parks a message in DelayQueue for the given delay, after
+// which the broker delivers it to QueueScheduled.
+func (p *Publisher) PublishDelayed(ctx context.Context, delay time.Duration, message Message) error {
+	if delay < 0 {
+		delay = 0
+	}
+	return p.publish(ctx, DelayQueue, strconv.FormatInt(delay.Milliseconds(), 10), message)
+}
+
+func (p *Publisher) publish(ctx context.Context, routingKey, expiration string, message Message) (err error) {
 	defer func() {
 		if p.Metrics != nil {
 			outcome := "confirmed"
@@ -94,6 +108,7 @@ func (p *Publisher) Publish(ctx context.Context, routingKey string, message Mess
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
 			MessageId:    message.EventID,
+			Expiration:   expiration,
 			Timestamp:    time.Now().UTC(),
 			Body:         body,
 		})

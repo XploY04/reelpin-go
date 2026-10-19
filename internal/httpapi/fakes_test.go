@@ -180,6 +180,8 @@ func testDeps(pinger Pinger) Deps {
 		Profiles:      &fakeProfiles{},
 		Website:       &fakeWebsite{},
 		Search:        &fakeSearch{},
+		Reminders:     &fakeReminders{},
+		PriceTracks:   &fakePriceTracks{},
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
 		Now:           func() time.Time { return testNow },

@@ -63,6 +63,15 @@ func TestANotificationNeedsNoRun(t *testing.T) {
 	}
 }
 
+func TestAPriceCheckNeedsNoRun(t *testing.T) {
+	message := validMessage()
+	message.EventType = EventPriceCheck
+	message.RunID = ""
+	if err := message.Validate(); err != nil {
+		t.Fatalf("a price check event was rejected: %v", err)
+	}
+}
+
 func TestDecodeBoundsItsInput(t *testing.T) {
 	if _, err := Decode([]byte(strings.Repeat("x", MaxMessageBytes+1))); err == nil {
 		t.Fatal("an oversized body was decoded")

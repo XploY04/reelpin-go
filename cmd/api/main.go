@@ -26,9 +26,11 @@ import (
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/pricetracks"
 	"github.com/XploY04/reelpin-go/internal/profiles"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/readcache"
+	"github.com/XploY04/reelpin-go/internal/reminders"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
@@ -109,12 +111,13 @@ func run(logger *slog.Logger) error {
 	// It also carries the read cache and the outbox signal, which is what
 	// lets an idle database suspend; without it both pass straight through.
 	var (
-		limiter      httpapi.RateLimiter
-		redisPinger  httpapi.Pinger
-		liveWorkers  metrics.WorkerCount
-		cache        *readcache.Cache
-		invalidator  lifecycle.CacheInvalidator
-		outboxSignal *outbox.Signal
+		limiter          httpapi.RateLimiter
+		redisPinger      httpapi.Pinger
+		liveWorkers      metrics.WorkerCount
+		cache            *readcache.Cache
+		invalidator      lifecycle.CacheInvalidator
+		outboxSignal     *outbox.Signal
+		reminderSchedule reminders.Schedule
 	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
@@ -134,6 +137,7 @@ func run(logger *slog.Logger) error {
 		cache = readcache.New(client, cfg.RedisKeyPrefix, logger)
 		invalidator = cache
 		outboxSignal = outbox.NewSignal(client, cfg.RedisKeyPrefix, logger)
+		reminderSchedule = reminders.NewRedisSchedule(client, cfg.RedisKeyPrefix)
 	} else {
 		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
 			"environment", cfg.Environment)
@@ -219,6 +223,8 @@ func run(logger *slog.Logger) error {
 		Website:        website.New(pool),
 		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 		Search:         searchService,
+		Reminders:      reminders.NewService(postgres.NewReminders(pool), reminderSchedule, logger),
+		PriceTracks:    pricetracks.NewService(postgres.NewPriceTracks(pool)),
 		Limiter:        limiter,
 		Cache:          invalidator,
 		Metrics:        meters,

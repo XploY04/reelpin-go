@@ -133,6 +133,14 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodDelete, "/api/v2/collections/{collection_id}/link", "disableCollectionLink", s.handleDisableCollectionLink, true, "Collections"),
 		bearer(http.MethodPost, "/api/v2/collections/{collection_id}/invites", "createCollectionInvite", s.handleCreateCollectionInvite, true, "Collections"),
 		bearer(http.MethodPost, "/api/v2/collection-invites/{token}/accept", "acceptCollectionInvite", s.handleAcceptCollectionInvite, true, "Collections"),
+
+		bearer(http.MethodGet, "/api/v2/reminders", "listReminders", s.handleListReminders, true, "Reminders"),
+		bearer(http.MethodPost, "/api/v2/reminders", "createReminder", s.handleCreateReminder, false, "Reminders"),
+		bearer(http.MethodDelete, "/api/v2/reminders/{reminder_id}", "deleteReminder", s.handleDeleteReminder, true, "Reminders"),
+		bearer(http.MethodGet, "/api/v2/price-tracks", "listPriceTracks", s.handleListPriceTracks, true, "PriceTracks"),
+		bearer(http.MethodPost, "/api/v2/price-tracks", "createPriceTrack", s.handleCreatePriceTrack, false, "PriceTracks"),
+		bearer(http.MethodDelete, "/api/v2/price-tracks/{track_id}", "deletePriceTrack", s.handleDeletePriceTrack, true, "PriceTracks"),
+
 		{
 			// The token in the path is the whole authorization: an unguessable
 			// capability granting a read-only view of one collection.

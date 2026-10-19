@@ -44,6 +44,8 @@ tags:
     description: The signed-in user's display details.
   - name: website
     description: Feedback and store-link taps from the marketing site.
+  - name: reminders
+    description: Pushes a user scheduled for later, and price watches on product pages.
 
 security:
   - supabaseBearer: []
@@ -1241,6 +1243,116 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/reminders:
+    get:
+      operationId: listReminders
+      tags: [reminders]
+      summary: List reminders
+      description: |
+        This user's reminders, soonest first, sent ones included. Bounded at
+        200 rather than paged.
+      responses:
+        "200":
+          description: The user's reminders.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReminderList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: createReminder
+      tags: [reminders]
+      summary: Schedule a reminder
+      description: |
+        Stores the reminder and schedules one push at `fire_at`. A `fire_at`
+        already in the past fires within seconds. `reel_id`, when given, must
+        be one of this user's saves; deleting that save deletes the reminder.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReminderRequest" }
+      responses:
+        "200":
+          description: The new reminder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reminder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/reminders/{reminder_id}:
+    delete:
+      operationId: deleteReminder
+      tags: [reminders]
+      summary: Delete a reminder
+      description: A pending reminder that is deleted never fires.
+      parameters:
+        - $ref: "#/components/parameters/ReminderID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/price-tracks:
+    get:
+      operationId: listPriceTracks
+      tags: [reminders]
+      summary: List price tracks
+      description: This user's price watches, newest first. Bounded at 200.
+      responses:
+        "200":
+          description: The user's price tracks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceTrackList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: createPriceTrack
+      tags: [reminders]
+      summary: Watch a product page's price
+      description: |
+        The page is read once a day from its structured data (Open Graph or
+        product meta tags, `itemprop=price`, or JSON-LD offers). When the
+        price is at or below `target_price` the user gets one push. The page
+        is not fetched when the track is created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePriceTrackRequest" }
+      responses:
+        "200":
+          description: The new price track.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceTrack" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/price-tracks/{track_id}:
+    delete:
+      operationId: deletePriceTrack
+      tags: [reminders]
+      summary: Stop watching a price
+      parameters:
+        - $ref: "#/components/parameters/PriceTrackID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
 
 components:
   securitySchemes:
@@ -1318,6 +1430,16 @@ components:
       schema: { type: string, format: uuid }
     MemberUserID:
       name: member_user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReminderID:
+      name: reminder_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PriceTrackID:
+      name: track_id
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -2112,6 +2234,82 @@ components:
       required: [ok]
       properties:
         ok: { type: boolean }
+
+    Reminder:
+      type: object
+      required: [id, title, body, fire_at, status, reel_id, created_at, sent_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        fire_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, sent] }
+        reel_id: { type: string, nullable: true, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+        sent_at: { type: string, nullable: true, format: date-time }
+
+    ReminderList:
+      type: object
+      required: [reminders]
+      properties:
+        reminders:
+          type: array
+          items: { $ref: "#/components/schemas/Reminder" }
+
+    CreateReminderRequest:
+      type: object
+      required: [title, fire_at]
+      additionalProperties: false
+      properties:
+        title: { type: string, description: Required after trimming whitespace. }
+        fire_at:
+          type: string
+          format: date-time
+          description: An RFC 3339 instant with an offset. The app converts the event's local time to it.
+        body: { type: string, default: "" }
+        reel_id: { type: string, nullable: true, format: uuid }
+
+    PriceTrack:
+      type: object
+      required: [id, url, title, target_price, currency, last_price, active,
+                 last_checked_at, notified_at, reel_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        title: { type: string }
+        target_price: { type: number }
+        currency: { type: string }
+        last_price:
+          type: number
+          nullable: true
+          description: What the last check read. Null when the page did not say.
+        active: { type: boolean }
+        last_checked_at: { type: string, nullable: true, format: date-time }
+        notified_at:
+          type: string
+          nullable: true
+          format: date-time
+          description: When the one price-drop push went out. Set at most once.
+        reel_id: { type: string, nullable: true, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+
+    PriceTrackList:
+      type: object
+      required: [price_tracks]
+      properties:
+        price_tracks:
+          type: array
+          items: { $ref: "#/components/schemas/PriceTrack" }
+
+    CreatePriceTrackRequest:
+      type: object
+      required: [url, target_price]
+      additionalProperties: false
+      properties:
+        url: { type: string, description: An http or https product page. }
+        target_price: { type: number, exclusiveMinimum: true, minimum: 0 }
+        title: { type: string, default: "" }
+        reel_id: { type: string, nullable: true, format: uuid }
 
     CreateCollectionRequest:
       type: object

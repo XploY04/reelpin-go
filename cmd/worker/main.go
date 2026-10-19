@@ -1,6 +1,6 @@
 // Command worker consumes the processing queues. One process runs one media,
-// one light and one notification consumer, the outbox dispatcher and the lease
-// sweeper; scaling is more processes, not more flags.
+// one light, one notification and one scheduled consumer, the outbox
+// dispatcher and the lease sweeper; scaling is more processes, not more flags.
 package main
 
 import (
@@ -24,8 +24,11 @@ import (
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/pricetracks"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/readcache"
+	"github.com/XploY04/reelpin-go/internal/reminders"
+	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -99,10 +102,12 @@ func run(logger *slog.Logger) error {
 	// Redis carries the hints that let an idle database suspend; without it
 	// the dispatcher and the sweeper poll PostgreSQL as they always have.
 	var (
-		liveWorkers  metrics.WorkerCount
-		outboxSignal *outbox.Signal
-		inflight     *lease.Inflight
-		invalidator  pipeline.CacheInvalidator
+		liveWorkers      metrics.WorkerCount
+		outboxSignal     *outbox.Signal
+		inflight         *lease.Inflight
+		invalidator      pipeline.CacheInvalidator
+		reminderSchedule reminders.Schedule
+		priceClaims      pricetracks.Claims
 	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
@@ -121,6 +126,8 @@ func run(logger *slog.Logger) error {
 		outboxSignal = outbox.NewSignal(redisClient, cfg.RedisKeyPrefix, logger)
 		inflight = lease.NewInflight(redisClient, cfg.RedisKeyPrefix, logger)
 		invalidator = readcache.New(redisClient, cfg.RedisKeyPrefix, logger)
+		reminderSchedule = reminders.NewRedisSchedule(redisClient, cfg.RedisKeyPrefix)
+		priceClaims = pricetracks.NewRedisClaims(redisClient)
 	} else {
 		logger.Warn("no REDIS_URL: this worker sends no heartbeats and readiness cannot see it")
 	}
@@ -207,7 +214,20 @@ func run(logger *slog.Logger) error {
 		return handler(ctx, message)
 	}
 
-	done := make(chan error, len(queue.WorkQueues)+3)
+	// The daily price check is scheduled behind a Redis claim, so without
+	// Redis no worker schedules it.
+	if priceClaims != nil {
+		checker := pricetracks.NewChecker(postgres.NewPriceTracks(pool),
+			pricetracks.PageFetcher{Client: safehttp.New(safehttp.Config{})},
+			notifications, logger, time.Now, pricetracks.CheckConcurrency)
+		daily := pricetracks.NewDaily(checker, priceClaims, publisher, cfg.RedisKeyPrefix, logger, time.Now)
+		registry[queue.EventPriceCheck] = daily.Handle
+		if err := daily.Start(ctx); err != nil {
+			return err
+		}
+	}
+
+	done := make(chan error, len(queue.WorkQueues)+4)
 	started := 0
 
 	started++
@@ -227,6 +247,14 @@ func run(logger *slog.Logger) error {
 
 	started++
 	go func() { done <- sweeper.Run(ctx, lease.SweepInterval) }()
+
+	// Reminders are fired from Redis's due set, so without Redis there is
+	// nothing to read and the dispatcher does not run.
+	if reminderSchedule != nil {
+		dispatcher := reminders.NewDispatcher(postgres.NewReminders(pool), reminderSchedule, notifications, logger, time.Now)
+		started++
+		go func() { done <- dispatcher.Run(ctx, reminders.TickInterval) }()
+	}
 
 	for _, name := range queue.WorkQueues {
 		started++
