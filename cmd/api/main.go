@@ -26,6 +26,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/profiles"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/readcache"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
@@ -33,6 +34,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/spend"
+	"github.com/XploY04/reelpin-go/internal/website"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/redis/go-redis/v9"
 )
@@ -213,6 +215,8 @@ func run(logger *slog.Logger) error {
 		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), invalidator, logger),
 		Map:            mapService,
 		MapPlaces:      mapview.NewPlaces(mapService, places, logger),
+		Profiles:       profiles.New(pool),
+		Website:        website.New(pool),
 		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 		Search:         searchService,
 		Limiter:        limiter,

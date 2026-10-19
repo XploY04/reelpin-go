@@ -58,6 +58,10 @@ type Deps struct {
 	Map MapView
 	// MapPlaces searches Google places and the user's pins, and pins a place.
 	MapPlaces MapPlaces
+	// Profiles owns each user's display details.
+	Profiles Profiles
+	// Website records feedback and store-link taps from the marketing site.
+	Website Website
 	// Search is hybrid retrieval over one user's saves.
 	Search Searcher
 	// Limiter is nil outside production-shaped setups. Provider-costing

@@ -40,6 +40,10 @@ tags:
     description: Named sets of saves, shared by membership or link.
   - name: notifications
     description: Device push tokens and open receipts.
+  - name: profile
+    description: The signed-in user's display details.
+  - name: website
+    description: Feedback and store-link taps from the marketing site.
 
 security:
   - supabaseBearer: []
@@ -656,6 +660,34 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/map/items/{map_item_id}:
+    delete:
+      operationId: deleteMapItem
+      tags: [map]
+      summary: Remove an item from your map
+      description: |
+        Accepts exactly three id forms:
+
+        - `{location_id}`, a bare UUID: the id `listMapPins` and
+          `listNearbyPins` return for a content pin. Hides that location for
+          you only, the same preference `setPinHidden` records.
+        - `reel:{reel_id}:{index}`: hides the reel's location at that index for
+          you only, the same way.
+        - `manual:{pin_id}`: deletes that manual pin.
+
+        The map list returns the bare location UUID for a content pin, not the
+        `reel:` form. It returns a manual pin's bare UUID too, with
+        `kind: manual`; send that one as `manual:{pin_id}`, because a bare UUID
+        is always read as a location id. An id that is malformed, unknown, or
+        not reachable through your own saves answers 404.
+      parameters:
+        - { name: map_item_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
   /api/v2/map/locations/{location_id}/hidden:
     post:
       operationId: setPinHidden
@@ -790,6 +822,97 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ProcessingUnavailable" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/profile:
+    get:
+      operationId: getProfile
+      tags: [profile]
+      summary: Read your profile
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    put:
+      operationId: putProfile
+      tags: [profile]
+      summary: Create or update your profile
+      description: |
+        An upsert for the user in the token. A field that is absent, null or
+        blank leaves the stored value as it is.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileRequest" }
+      responses:
+        "200":
+          description: The profile after the write.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/feedback:
+    post:
+      operationId: submitFeedback
+      tags: [website]
+      summary: Send feedback
+      description: |
+        Public, no session required, because the website's form is anonymous.
+        A valid bearer token, when one is sent, stores the message against that
+        user; a missing or rejected token stores it with no user. Limited per
+        IP; the signed bucket the web boundary forwards is honoured, a forged
+        one is ignored. Answers 503 `feedback_unavailable` when the limiter
+        cannot answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { description: The rate limiter cannot answer, so the write is refused. }
+
+  /api/v2/link-clicks:
+    post:
+      operationId: recordLinkClick
+      tags: [website]
+      summary: Count a store-link tap
+      description: |
+        Public, no session. Limited per IP; the signed bucket the web boundary
+        forwards is honoured, a forged one is ignored. Answers 503
+        `link_clicks_unavailable` when the limiter cannot answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LinkClickRequest" }
+      responses:
+        "204": { description: Counted. }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { description: The rate limiter cannot answer, so the write is refused. }
 
   /api/v2/collections:
     get:
@@ -1725,6 +1848,43 @@ components:
         address: { type: string, nullable: true }
         latitude: { type: number }
         longitude: { type: number }
+
+    Profile:
+      type: object
+      required: [id, email, full_name, avatar_url, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: The user id. }
+        email: { type: string, nullable: true }
+        full_name: { type: string, nullable: true }
+        avatar_url: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    ProfileRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        email: { type: string, nullable: true, maxLength: 254 }
+        full_name: { type: string, nullable: true, maxLength: 200 }
+        avatar_url: { type: string, nullable: true, maxLength: 2048, description: An http or https URL. }
+
+    FeedbackRequest:
+      type: object
+      required: [topic, message]
+      additionalProperties: false
+      properties:
+        topic: { type: string, enum: [Feedback, Support, Partnership, Privacy request] }
+        email: { type: string, maxLength: 254 }
+        message: { type: string, minLength: 1, maxLength: 2000 }
+
+    LinkClickRequest:
+      type: object
+      required: [target]
+      additionalProperties: false
+      properties:
+        target: { type: string, enum: [play, ios] }
+        referer: { type: string, maxLength: 500 }
+        user_agent: { type: string, maxLength: 500 }
+        country: { type: string, maxLength: 8 }
 
     LibraryStats:
       type: object

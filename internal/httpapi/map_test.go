@@ -123,3 +123,58 @@ func TestMapRoutesRequireASession(t *testing.T) {
 		}
 	}
 }
+
+func deleteItem(deps Deps, id, authorization string) *httptest.ResponseRecorder {
+	return serve(deps, "DELETE", "/api/v2/map/items/"+id, authorization)
+}
+
+func TestDeletingAMapItemReachesTheServiceForTheTokenUser(t *testing.T) {
+	for _, id := range []string{
+		"33333333-3333-4333-8333-333333333333",
+		"reel:22222222-2222-4222-8222-222222222222:0",
+		"manual:55555555-5555-4555-8555-555555555555",
+	} {
+		t.Run(id, func(t *testing.T) {
+			fake := &fakeMap{}
+			rec := deleteItem(mapDeps(fake), id, "Bearer good.token")
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204 (%s)", rec.Code, rec.Body.String())
+			}
+			if fake.lastUserID != testUserID || fake.lastItemID != id {
+				t.Errorf("service saw user %q item %q", fake.lastUserID, fake.lastItemID)
+			}
+		})
+	}
+}
+
+func TestAnUnknownOrForeignMapItemIs404(t *testing.T) {
+	rec := deleteItem(mapDeps(&fakeMap{err: mapview.ErrNotFound}),
+		"reel:22222222-2222-4222-8222-222222222222:9", "Bearer good.token")
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if code := decodeError(t, rec).Error.Code; code != "map_item_not_found" {
+		t.Errorf("code = %q", code)
+	}
+}
+
+func TestDeletingAMapItemNeedsASession(t *testing.T) {
+	rec := deleteItem(mapDeps(&fakeMap{}), "manual:55555555-5555-4555-8555-555555555555", "")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestADriverErrorDeletingAMapItemIsNotLeaked(t *testing.T) {
+	rec := deleteItem(mapDeps(&fakeMap{err: errFake}),
+		"manual:55555555-5555-4555-8555-555555555555", "Bearer good.token")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), errFake.Error()) {
+		t.Error("the driver error reached the body")
+	}
+}

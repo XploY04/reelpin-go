@@ -8,10 +8,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/geo"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -229,4 +231,73 @@ func (s *Service) HidePin(ctx context.Context, userID, locationID string, hidden
 	return nil
 }
 
-var _ = pgx.ErrNoRows
+// DeleteItem removes one map item. A manual item is deleted; a location, named
+// by its own id or by reel and index, is hidden for this user only, the same
+// preference HidePin records. Ids that do not parse, and ids this user cannot
+// reach, are both ErrNotFound.
+func (s *Service) DeleteItem(ctx context.Context, userID, itemID string) error {
+	item, err := ParseItemID(itemID)
+	if err != nil {
+		return err
+	}
+	if item.Manual {
+		return s.DeleteManualPin(ctx, userID, item.ID)
+	}
+	if item.Location {
+		return s.HidePin(ctx, userID, item.ID, true)
+	}
+
+	var locationID string
+	err = s.pool.QueryRow(ctx, `
+		SELECT l.id::text
+		FROM reelpin.user_saves s
+		JOIN reelpin.contents c ON c.id = s.content_id
+		JOIN reelpin.content_locations l
+		       ON l.content_version_id = c.current_version_id AND l.ordinal = $3
+		WHERE s.id = $1 AND s.user_id = $2`,
+		item.ID, userID, item.Ordinal).Scan(&locationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("finding the map item: %w", err)
+	}
+	return s.HidePin(ctx, userID, locationID, true)
+}
+
+// Item is a parsed map item id: a bare {location_id}, the id the map list
+// returns for a content pin; manual:{pin_id}; or reel:{reel_id}:{ordinal}.
+type Item struct {
+	Manual   bool
+	Location bool
+	ID       string
+	Ordinal  int
+}
+
+// ParseItemID accepts only the three documented forms with UUID ids. Anything
+// else is ErrNotFound so a malformed id cannot be told from a missing one.
+func ParseItemID(raw string) (Item, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	switch {
+	case len(parts) == 1:
+		if _, err := uuid.Parse(parts[0]); err != nil {
+			return Item{}, ErrNotFound
+		}
+		return Item{Location: true, ID: parts[0]}, nil
+	case len(parts) == 2 && parts[0] == "manual":
+		if _, err := uuid.Parse(parts[1]); err != nil {
+			return Item{}, ErrNotFound
+		}
+		return Item{Manual: true, ID: parts[1]}, nil
+	case len(parts) == 3 && parts[0] == "reel":
+		if _, err := uuid.Parse(parts[1]); err != nil {
+			return Item{}, ErrNotFound
+		}
+		ordinal, err := strconv.Atoi(parts[2])
+		if err != nil || ordinal < 0 {
+			return Item{}, ErrNotFound
+		}
+		return Item{ID: parts[1], Ordinal: ordinal}, nil
+	}
+	return Item{}, ErrNotFound
+}

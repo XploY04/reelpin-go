@@ -450,3 +450,90 @@ func TestPlaceCandidatesAreTheUsersVisiblePins(t *testing.T) {
 		t.Errorf("manual candidate = %+v", manual)
 	}
 }
+
+func TestDeleteItemHidesReelPinsAndDeletesManualOnes(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "ITEM1", "Shared cafe", 15.58, 73.74, userA, userB)
+	var saveID string
+	if err := pool.QueryRow(ctx,
+		`SELECT id::text FROM reelpin.user_saves WHERE user_id = $1`, userA).Scan(&saveID); err != nil {
+		t.Fatal(err)
+	}
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+
+	if err := service.DeleteItem(ctx, userA, "reel:"+saveID+":0"); err != nil {
+		t.Fatalf("hiding a reel item: %v", err)
+	}
+	if mine, _ := service.Pins(ctx, userA, bounds); len(mine) != 0 {
+		t.Fatalf("a removed reel item still appeared: %+v", mine)
+	}
+	if theirs, _ := service.Pins(ctx, userB, bounds); len(theirs) != 1 {
+		t.Fatal("removing an item changed another user's map")
+	}
+
+	for _, id := range []string{"reel:" + saveID + ":7", "reel:" + saveID + ":x"} {
+		if err := service.DeleteItem(ctx, userA, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: err = %v, want ErrNotFound", id, err)
+		}
+	}
+	if err := service.DeleteItem(ctx, userB, "reel:"+saveID+":0"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another user's save: err = %v, want ErrNotFound", err)
+	}
+
+	point, _ := geo.NewPoint(15.5, 73.7)
+	pin, err := service.CreateManualPin(ctx, userA, "Mine", nil, point)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteItem(ctx, userB, "manual:"+pin.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another user's manual pin: err = %v, want ErrNotFound", err)
+	}
+	if err := service.DeleteItem(ctx, userA, "manual:"+pin.ID); err != nil {
+		t.Fatalf("deleting a manual item: %v", err)
+	}
+}
+
+func TestDeleteItemHidesABareLocationIDForTheCallerOnly(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	shared := seedLocation(t, pool, "BARE1", "Shared cafe", 15.58, 73.74, userA, userB)
+	mineOnly := seedLocation(t, pool, "BARE2", "Artjuna", 15.59, 73.75, userA)
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+
+	pins, err := service.Pins(ctx, userA, bounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, pin := range pins {
+		listed = listed || pin.ID == shared
+	}
+	if !listed {
+		t.Fatalf("the map list does not return the bare location id %s: %+v", shared, pins)
+	}
+
+	if err := service.DeleteItem(ctx, userA, shared); err != nil {
+		t.Fatalf("hiding by bare location id: %v", err)
+	}
+	if mine, _ := service.Pins(ctx, userA, bounds); len(mine) != 1 || mine[0].ID != mineOnly {
+		t.Fatalf("pins after the delete = %+v, want only %s", mine, mineOnly)
+	}
+	if theirs, _ := service.Pins(ctx, userB, bounds); len(theirs) != 1 || theirs[0].ID != shared {
+		t.Fatal("removing an item changed another user's map")
+	}
+
+	for name, id := range map[string]string{
+		"another user's location": mineOnly,
+		"an unknown location":     "99999999-9999-4999-8999-999999999999",
+	} {
+		if err := service.DeleteItem(ctx, userB, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: err = %v, want ErrNotFound", name, err)
+		}
+	}
+	if mine, _ := service.Pins(ctx, userA, bounds); len(mine) != 1 {
+		t.Fatal("a stranger's delete hid the owner's pin")
+	}
+}

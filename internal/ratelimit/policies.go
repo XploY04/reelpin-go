@@ -24,3 +24,10 @@ var (
 	MapPin   = Policy{Name: "map_pin", Requests: 20, Window: time.Hour}
 	MapPinIP = Policy{Name: "map_pin_ip", Requests: 60, Window: time.Hour}
 )
+
+// The website's feedback form and store-link counter. Both are public, so
+// both are counted per IP only.
+var (
+	FeedbackIP = Policy{Name: "feedback_ip", Requests: 20, Window: time.Hour}
+	LinkClick  = Policy{Name: "link_click_ip", Requests: 120, Window: time.Minute}
+)
