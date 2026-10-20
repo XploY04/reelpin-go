@@ -3,7 +3,6 @@ package reels
 import (
 	"sort"
 	"strings"
-	"time"
 )
 
 // DiscoverPagination pages the recent-saves list forward with the same cursor
@@ -40,13 +39,13 @@ const DiscoverScanLimit = 5000
 // category grid, and the reels on selectedDate as the reader filtered them.
 // recentPage is fetched with limit+1 so the extra row answers has_more, exactly
 // like the reel list.
-func BuildDiscoverResponse(userID string, recentPage, scanned, dateReels []ReelRecord, facets []FacetRow, selectedDate string, limit int, now time.Time) DiscoverResponse {
+func BuildDiscoverResponse(userID string, recentPage, scanned, dateReels []ReelRecord, facets []FacetRow, selectedDate string, limit int, display Display) DiscoverResponse {
 	hasMore := len(recentPage) > limit
 	page := recentPage
 	if hasMore {
 		page = page[:limit]
 	}
-	recent := displayReels(DedupeRecords(page), now)
+	recent := displayReels(DedupeRecords(page), display)
 
 	library := DedupeRecords(scanned)
 
@@ -54,7 +53,7 @@ func BuildDiscoverResponse(userID string, recentPage, scanned, dateReels []ReelR
 	reelsForDate := []DisplayReel{}
 	if trimmed := strings.TrimSpace(selectedDate); trimmed != "" {
 		selected = &trimmed
-		reelsForDate = displayReels(DedupeRecords(dateReels), now)
+		reelsForDate = displayReels(DedupeRecords(dateReels), display)
 	}
 
 	pagination := DiscoverPagination{HasMore: hasMore, Limit: limit, TotalCount: len(library)}
@@ -79,12 +78,12 @@ func BuildDiscoverResponse(userID string, recentPage, scanned, dateReels []ReelR
 	}
 }
 
-func displayReels(records []ReelRecord, now time.Time) []DisplayReel {
-	display := make([]DisplayReel, 0, len(records))
+func displayReels(records []ReelRecord, display Display) []DisplayReel {
+	reels := make([]DisplayReel, 0, len(records))
 	for _, record := range records {
-		display = append(display, BuildDisplayReel(record, now))
+		reels = append(reels, BuildDisplayReel(record, display))
 	}
-	return display
+	return reels
 }
 
 // distinctSavedDates lists the saved-date keys newest first. The records arrive

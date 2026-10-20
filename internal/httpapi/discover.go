@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
@@ -23,62 +22,20 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	var after *reels.Cursor
-	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
-		cursor, err := reels.DecodeCursor(raw)
-		if err != nil {
-			validationError(w, "cursor", "is not a cursor this API issued")
-			return
-		}
-		after = &cursor
+	after, ok := cursorParam(w, query)
+	if !ok {
+		return
 	}
 
-	userID := requestUserID(r)
-
-	// The recent-saves page over-fetches by one to answer has_more, the same way
-	// the reel list does.
-	recent, err := s.deps.Reels.List(r.Context(), userID, reels.ListOptions{
-		After: after,
-		Limit: limit + 1,
+	response, err := s.reels.Discover(r.Context(), requestUserID(r), reels.DiscoverParams{
+		After:     after,
+		Limit:     limit,
+		SavedDate: savedDate,
 	})
 	if err != nil {
-		s.deps.Logger.Error("discover recent saves failed", "error", err)
+		s.deps.Logger.Error("discover failed", "error", err)
 		internalError(w, "discover_failed", "Could not load discover right now.")
 		return
 	}
-
-	// The aggregate sections (saved dates, the search prompts) read a capped scan
-	// of the library, narrower than a page of full reels.
-	scanned, err := s.deps.Reels.Library(r.Context(), userID, reels.DiscoverScanLimit)
-	if err != nil {
-		s.deps.Logger.Error("discover library scan failed", "error", err)
-		internalError(w, "discover_failed", "Could not load discover right now.")
-		return
-	}
-
-	// The chosen date is filtered by the reader, so a date older than the scan
-	// still returns its reels.
-	var dateReels []reels.ReelRecord
-	if savedDate != "" {
-		dateReels, err = s.deps.Reels.List(r.Context(), userID, reels.ListOptions{
-			SavedDate: savedDate,
-			Limit:     reels.DiscoverScanLimit,
-		})
-		if err != nil {
-			s.deps.Logger.Error("discover selected date failed", "error", err)
-			internalError(w, "discover_failed", "Could not load discover right now.")
-			return
-		}
-	}
-
-	facets, err := s.deps.Reels.Facets(r.Context(), userID)
-	if err != nil {
-		s.deps.Logger.Error("discover category grid failed", "error", err)
-		internalError(w, "discover_failed", "Could not load discover right now.")
-		return
-	}
-
-	writeJSON(w, http.StatusOK,
-		reels.BuildDiscoverResponse(userID, recent, scanned, dateReels, facets, savedDate, limit, s.now()))
+	writeJSON(w, http.StatusOK, response)
 }

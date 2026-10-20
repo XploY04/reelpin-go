@@ -162,7 +162,7 @@ func TestCompletedWithoutResultReelReadsAsFailed(t *testing.T) {
 }
 
 func TestBuildResponseFillsEmptyStepDurations(t *testing.T) {
-	response := BuildResponse(record(StatusQueued, "queued"), nil, now)
+	response := BuildResponse(record(StatusQueued, "queued"), nil, nil, now)
 	if response.StepDurations == nil {
 		t.Fatal("step_durations must serialize as an object, not null")
 	}
@@ -172,14 +172,14 @@ func TestBuildResponseFillsEmptyStepDurations(t *testing.T) {
 }
 
 func TestCollectionIDsAreNeverNull(t *testing.T) {
-	response := BuildResponse(record(StatusQueued, "queued"), nil, now)
+	response := BuildResponse(record(StatusQueued, "queued"), nil, nil, now)
 	if response.CollectionIDs == nil {
 		t.Fatal("collection_ids must serialize as an array, not null")
 	}
 
 	withIDs := record(StatusQueued, "queued")
 	withIDs.CollectionIDs = []string{"collection-1"}
-	if got := BuildResponse(withIDs, nil, now).CollectionIDs; len(got) != 1 || got[0] != "collection-1" {
+	if got := BuildResponse(withIDs, nil, nil, now).CollectionIDs; len(got) != 1 || got[0] != "collection-1" {
 		t.Errorf("collection_ids = %v, want [collection-1]", got)
 	}
 }

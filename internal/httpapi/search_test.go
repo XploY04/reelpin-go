@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/search"
 )
 
@@ -165,5 +166,18 @@ func TestSearchWithNoResultsSerializesAnEmptyList(t *testing.T) {
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `"results":[]`) {
 		t.Errorf("body = %s, want an empty list rather than null", body)
+	}
+}
+
+func TestSearchPassesTheViewThrough(t *testing.T) {
+	for query, want := range map[string]reels.View{"": reels.ViewDetailed, "?view=concise": reels.ViewConcise} {
+		fake := &fakeSearch{}
+		rec := request(searchDeps(fake), "POST", "/api/v2/search"+query, `{"query":"cafe"}`, "Bearer good.token")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+		}
+		if fake.lastView != want {
+			t.Errorf("%q: view = %q, want %q", query, fake.lastView, want)
+		}
 	}
 }

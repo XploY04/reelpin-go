@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,26 +9,6 @@ import (
 	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/reels"
 )
-
-// Collections is everything the API needs from the collections implementation.
-type Collections interface {
-	List(ctx context.Context, userID string) ([]collections.Collection, error)
-	Create(ctx context.Context, userID, name, description string, saveIDs []string) (collections.Collection, int, error)
-	Get(ctx context.Context, collectionID, userID string) (collections.Collection, error)
-	Update(ctx context.Context, collectionID, userID string, name, description, coverReelID *string) (collections.Collection, error)
-	Delete(ctx context.Context, collectionID, userID string) error
-	Detail(ctx context.Context, collectionID, userID string, after *reels.Cursor, limit int) (collections.Detail, error)
-	SharedByToken(ctx context.Context, token string, after *reels.Cursor, limit int) (collections.Shared, error)
-	AddItems(ctx context.Context, collectionID, userID string, saveIDs []string) (int, error)
-	RemoveItem(ctx context.Context, collectionID, userID, saveID string) error
-	EnableLink(ctx context.Context, collectionID, userID string) (string, string, time.Time, error)
-	DisableLink(ctx context.Context, collectionID, userID string) error
-	Members(ctx context.Context, collectionID, userID string) (string, []collections.Member, error)
-	RemoveMember(ctx context.Context, collectionID, userID, memberUserID string) error
-	Leave(ctx context.Context, collectionID, userID string) error
-	CreateInvite(ctx context.Context, collectionID, userID, role string) (string, string, string, time.Time, error)
-	AcceptInvite(ctx context.Context, token, userID string) (collections.Collection, error)
-}
 
 type collectionListResponse struct {
 	Collections []collections.Collection `json:"collections"`
@@ -105,7 +84,7 @@ func (s *Server) writeCollectionError(w http.ResponseWriter, r *http.Request, er
 }
 
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
-	list, err := s.deps.Collections.List(r.Context(), requestUserID(r))
+	list, err := s.collections.List(r.Context(), requestUserID(r))
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_list_failed", "Could not load collections right now.")
 		return
@@ -123,7 +102,7 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	collection, added, err := s.deps.Collections.Create(r.Context(), requestUserID(r),
+	collection, added, err := s.collections.Create(r.Context(), requestUserID(r),
 		input.Name, input.Description, input.ReelIDs)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_create_failed", "Could not create the collection right now.")
@@ -141,8 +120,14 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	// Items are cards and never carry the fields concise drops, so both views
+	// answer the same body. The value is still validated, as on every route
+	// that takes it.
+	if _, ok := viewParam(w, r.URL.Query()); !ok {
+		return
+	}
 
-	detail, err := s.deps.Collections.Detail(r.Context(), id.String(), requestUserID(r), after, limit)
+	detail, err := s.collections.Detail(r.Context(), id.String(), requestUserID(r), after, limit)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_detail_failed", "Could not load the collection right now.")
 		return
@@ -160,7 +145,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	collection, err := s.deps.Collections.Update(r.Context(), id.String(), requestUserID(r),
+	collection, err := s.collections.Update(r.Context(), id.String(), requestUserID(r),
 		input.Name, input.Description, input.CoverReelID)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_update_failed", "Could not update the collection right now.")
@@ -174,7 +159,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := s.deps.Collections.Delete(r.Context(), id.String(), requestUserID(r)); err != nil {
+	if err := s.collections.Delete(r.Context(), id.String(), requestUserID(r)); err != nil {
 		s.writeCollectionError(w, r, err, "collection_delete_failed", "Could not delete the collection right now.")
 		return
 	}
@@ -189,7 +174,7 @@ func (s *Server) handleSharedCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	shared, err := s.deps.Collections.SharedByToken(r.Context(), r.PathValue("token"), after, limit)
+	shared, err := s.collections.SharedByToken(r.Context(), r.PathValue("token"), after, limit)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_detail_failed", "Could not load the collection right now.")
 		return
@@ -211,12 +196,7 @@ func (s *Server) handleAddCollectionItems(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	added, err := s.deps.Collections.AddItems(r.Context(), id.String(), requestUserID(r), input.ReelIDs)
-	if err != nil {
-		s.writeCollectionError(w, r, err, "collection_items_failed", "Could not update the collection right now.")
-		return
-	}
-	collection, err := s.deps.Collections.Get(r.Context(), id.String(), requestUserID(r))
+	collection, added, err := s.collections.AddItems(r.Context(), id.String(), requestUserID(r), input.ReelIDs)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_items_failed", "Could not update the collection right now.")
 		return
@@ -234,7 +214,7 @@ func (s *Server) handleRemoveCollectionItem(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := s.deps.Collections.RemoveItem(r.Context(), id.String(), requestUserID(r), saveID.String()); err != nil {
+	if err := s.collections.RemoveItem(r.Context(), id.String(), requestUserID(r), saveID.String()); err != nil {
 		s.writeCollectionError(w, r, err, "collection_items_failed", "Could not update the collection right now.")
 		return
 	}
@@ -247,14 +227,14 @@ func (s *Server) handleEnableCollectionLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	url, token, expiresAt, err := s.deps.Collections.EnableLink(r.Context(), id.String(), requestUserID(r))
+	link, err := s.collections.EnableLink(r.Context(), id.String(), requestUserID(r))
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_link_failed", "Could not create a share link right now.")
 		return
 	}
 	// The raw token exists in this response and nowhere else.
 	writeJSON(w, http.StatusOK, collectionLinkResponse{
-		URL: url, Token: token, ExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano),
+		URL: link.URL, Token: link.Token, ExpiresAt: link.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	})
 }
 
@@ -263,7 +243,7 @@ func (s *Server) handleDisableCollectionLink(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	if err := s.deps.Collections.DisableLink(r.Context(), id.String(), requestUserID(r)); err != nil {
+	if err := s.collections.DisableLink(r.Context(), id.String(), requestUserID(r)); err != nil {
 		s.writeCollectionError(w, r, err, "collection_link_failed", "Could not update the share link right now.")
 		return
 	}
@@ -276,7 +256,7 @@ func (s *Server) handleCollectionMembers(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	ownerID, members, err := s.deps.Collections.Members(r.Context(), id.String(), requestUserID(r))
+	ownerID, members, err := s.collections.Members(r.Context(), id.String(), requestUserID(r))
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_members_failed", "Could not load collaborators right now.")
 		return
@@ -293,7 +273,7 @@ func (s *Server) handleRemoveCollectionMember(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	if err := s.deps.Collections.RemoveMember(r.Context(), id.String(), requestUserID(r),
+	if err := s.collections.RemoveMember(r.Context(), id.String(), requestUserID(r),
 		memberID.String()); err != nil {
 		s.writeCollectionError(w, r, err, "collection_member_remove_failed", "Could not remove the collaborator right now.")
 		return
@@ -306,7 +286,7 @@ func (s *Server) handleLeaveCollection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.deps.Collections.Leave(r.Context(), id.String(), requestUserID(r)); err != nil {
+	if err := s.collections.Leave(r.Context(), id.String(), requestUserID(r)); err != nil {
 		s.writeCollectionError(w, r, err, "collection_leave_failed", "Could not leave the collection right now.")
 		return
 	}
@@ -323,19 +303,19 @@ func (s *Server) handleCreateCollectionInvite(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	url, token, role, expiresAt, err := s.deps.Collections.CreateInvite(r.Context(), id.String(),
-		requestUserID(r), input.Role)
+	invite, err := s.collections.CreateInvite(r.Context(), id.String(), requestUserID(r), input.Role)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_invite_failed", "Could not create an invite right now.")
 		return
 	}
 	writeJSON(w, http.StatusOK, collectionInviteResponse{
-		URL: url, Token: token, Role: role, ExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano),
+		URL: invite.URL, Token: invite.Token, Role: invite.Role,
+		ExpiresAt: invite.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	})
 }
 
 func (s *Server) handleAcceptCollectionInvite(w http.ResponseWriter, r *http.Request) {
-	collection, err := s.deps.Collections.AcceptInvite(r.Context(), r.PathValue("token"), requestUserID(r))
+	collection, err := s.collections.AcceptInvite(r.Context(), r.PathValue("token"), requestUserID(r))
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_invite_accept_failed", "Could not accept this invite right now.")
 		return
@@ -351,13 +331,9 @@ func itemPageParams(w http.ResponseWriter, r *http.Request) (*reels.Cursor, int,
 	if !ok {
 		return nil, 0, false
 	}
-	if raw := strings.TrimSpace(query.Get("cursor")); raw != "" {
-		cursor, err := reels.DecodeCursor(raw)
-		if err != nil {
-			validationError(w, "cursor", "is not a cursor this API issued")
-			return nil, 0, false
-		}
-		return &cursor, limit, true
+	after, ok := cursorParam(w, query)
+	if !ok {
+		return nil, 0, false
 	}
-	return nil, limit, true
+	return after, limit, true
 }

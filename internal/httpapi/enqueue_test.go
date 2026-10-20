@@ -88,6 +88,52 @@ func TestAlreadySavedAnswersTwoHundredWithTheReel(t *testing.T) {
 	}
 }
 
+// A submission answers whether the user already had the content, and the
+// status says whether there is a reel to show or a job to poll.
+func TestSubmissionSaysWhetherTheContentWasAlreadySaved(t *testing.T) {
+	record := sampleReel(testReelID, testUserID)
+	step := "download"
+	running := &enqueue.Job{ID: testJobID, Status: "processing", CurrentStep: &step, CollectionIDs: []string{}}
+
+	tests := []struct {
+		name       string
+		result     enqueue.Result
+		wantStatus int
+		wantSaved  bool
+		wantID     string
+	}{
+		{name: "new work", result: enqueue.Result{Kind: enqueue.Accepted, Job: running},
+			wantStatus: http.StatusAccepted, wantSaved: false, wantID: testJobID},
+		{name: "a reel the user has", result: enqueue.Result{Kind: enqueue.AlreadySaved, Reel: &record},
+			wantStatus: http.StatusOK, wantSaved: true, wantID: testReelID},
+		{name: "a job the user has in flight", result: enqueue.Result{Kind: enqueue.InFlight, Job: running},
+			wantStatus: http.StatusOK, wantSaved: true, wantID: testJobID},
+		{name: "someone else's finished content, new to this user", result: enqueue.Result{Kind: enqueue.Reused, Reel: &record},
+			wantStatus: http.StatusOK, wantSaved: false, wantID: testReelID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := post(submitDeps(&fakeSubmitter{result: tt.result}), "/api/v2/processing-jobs/reels",
+				`{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+				map[string]string{"Authorization": "Bearer good.token", "Idempotency-Key": validKey})
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["already_saved"] != tt.wantSaved {
+				t.Errorf("already_saved = %v, want %v", body["already_saved"], tt.wantSaved)
+			}
+			if body["id"] != tt.wantID {
+				t.Errorf("id = %v, want %s", body["id"], tt.wantID)
+			}
+		})
+	}
+}
+
 func TestSubmissionRequiresAnIdempotencyKey(t *testing.T) {
 	// Retrying without one cannot be made safe, so it is refused rather than
 	// defaulted.

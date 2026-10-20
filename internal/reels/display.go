@@ -1,6 +1,7 @@
 package reels
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,9 +26,51 @@ type MappableLocation struct {
 	GoogleMapsURL        *string  `json:"google_maps_url"`
 }
 
+// View is how much of a reel a response carries. Detailed is everything the
+// app reads. Concise drops the long-form extraction, which an agent or a
+// browser card pays for in tokens and bytes without showing.
+type View string
+
+const (
+	ViewDetailed View = "detailed"
+	ViewConcise  View = "concise"
+)
+
+// ErrInvalidView is a view name this API does not know.
+var ErrInvalidView = errors.New("view must be concise or detailed")
+
+// ParseView reads a client's view. Absent means detailed, so a client that has
+// never heard of views sees exactly what it always did.
+func ParseView(raw string) (View, error) {
+	switch View(strings.TrimSpace(raw)) {
+	case "", ViewDetailed:
+		return ViewDetailed, nil
+	case ViewConcise:
+		return ViewConcise, nil
+	}
+	return "", ErrInvalidView
+}
+
+// Display is what presenting a reel needs that the record does not carry: the
+// clock relative dates are measured against, the public site its page lives
+// on, and how much of it to send.
+type Display struct {
+	Now        time.Time
+	WebBaseURL string
+	View       View
+}
+
+// WebURL is the reel's public page.
+func WebURL(baseURL, reelID string) string {
+	return strings.TrimSuffix(baseURL, "/") + "/r/" + reelID
+}
+
+// The four long-form fields are omitzero: the detailed view always fills them
+// with a list, empty or not, and only the concise view leaves them nil.
 type DisplayReel struct {
 	ID                   string             `json:"id"`
 	URL                  string             `json:"url"`
+	WebURL               string             `json:"web_url"`
 	ThumbnailURL         *string            `json:"thumbnail_url"`
 	SourcePlatform       *string            `json:"source_platform"`
 	SourceContentType    *string            `json:"source_content_type"`
@@ -47,10 +90,10 @@ type DisplayReel struct {
 	MappableLocations    []MappableLocation `json:"mappable_locations"`
 	PrimaryLocationLabel *string            `json:"primary_location_label"`
 	MapLocationCount     int                `json:"map_location_count"`
-	KeyFacts             []string           `json:"key_facts"`
-	PeopleMentioned      []string           `json:"people_mentioned"`
-	ActionableItems      []string           `json:"actionable_items"`
-	Events               []Event            `json:"events"`
+	KeyFacts             []string           `json:"key_facts,omitzero"`
+	PeopleMentioned      []string           `json:"people_mentioned,omitzero"`
+	ActionableItems      []string           `json:"actionable_items,omitzero"`
+	Events               []Event            `json:"events,omitzero"`
 }
 
 // Page size bounds are part of the contract, so they live with the type the
@@ -70,7 +113,7 @@ type ListResponse struct {
 	Reels      []DisplayReel `json:"reels"`
 }
 
-func BuildDisplayReel(record ReelRecord, now time.Time) DisplayReel {
+func BuildDisplayReel(record ReelRecord, display Display) DisplayReel {
 	locations := BuildMappableLocations(record)
 	category := cleanLabel(record.Category, "Other")
 	subcategory := cleanLabel(record.Subcategory, "Other")
@@ -91,9 +134,10 @@ func BuildDisplayReel(record ReelRecord, now time.Time) DisplayReel {
 		primaryLabel = &label
 	}
 
-	return DisplayReel{
+	reel := DisplayReel{
 		ID:                   record.ID,
 		URL:                  url,
+		WebURL:               WebURL(display.WebBaseURL, record.ID),
 		ThumbnailURL:         cleanOptional(record.ThumbnailURL),
 		SourcePlatform:       cleanOptional(record.SourcePlatform),
 		SourceContentType:    cleanOptional(record.SourceContentType),
@@ -107,40 +151,41 @@ func BuildDisplayReel(record ReelRecord, now time.Time) DisplayReel {
 		SubCategoryLabel:     Labelize(subcategory),
 		CreatedAt:            isoTimestamp(record.CreatedAt),
 		DisplayDate:          DisplayDate(record.CreatedAt),
-		RelativeDate:         RelativeDate(record.CreatedAt, now),
+		RelativeDate:         RelativeDate(record.CreatedAt, display.Now),
 		SavedDateKey:         SavedDateKey(record.CreatedAt),
 		HasMapLocations:      len(locations) > 0,
 		MappableLocations:    locations,
 		PrimaryLocationLabel: primaryLabel,
 		MapLocationCount:     len(locations),
-		KeyFacts:             nonNil(record.KeyFacts),
-		PeopleMentioned:      nonNil(record.PeopleMentioned),
-		ActionableItems:      nonNil(record.ActionableItems),
-		Events:               nonNilEvents(record.Events),
 	}
+	if display.View != ViewConcise {
+		reel.KeyFacts = nonNil(record.KeyFacts)
+		reel.PeopleMentioned = nonNil(record.PeopleMentioned)
+		reel.ActionableItems = nonNil(record.ActionableItems)
+		reel.Events = nonNilEvents(record.Events)
+	}
+	return reel
 }
 
-// BuildListResponse mirrors the Python pagination contract: the caller fetches
-// one extra row, trims it, and passes the estimated total.
 // BuildListResponse turns one over-fetched page into the wire shape. The caller
 // asks for limit+1 records; the extra one answers has_more and is then dropped,
 // which is one query rather than a page query plus a count query.
-func BuildListResponse(records []ReelRecord, limit int, now time.Time) ListResponse {
+func BuildListResponse(records []ReelRecord, limit int, display Display) ListResponse {
 	hasMore := len(records) > limit
 	if hasMore {
 		records = records[:limit]
 	}
 
 	deduped := DedupeRecords(records)
-	display := make([]DisplayReel, 0, len(deduped))
+	reels := make([]DisplayReel, 0, len(deduped))
 	for _, record := range deduped {
-		display = append(display, BuildDisplayReel(record, now))
+		reels = append(reels, BuildDisplayReel(record, display))
 	}
 
 	response := ListResponse{
 		HasMore: hasMore,
 		Limit:   limit,
-		Reels:   display,
+		Reels:   reels,
 	}
 	if hasMore && len(records) > 0 {
 		if cursor, ok := CursorFor(records[len(records)-1]); ok {
@@ -153,6 +198,77 @@ func BuildListResponse(records []ReelRecord, limit int, now time.Time) ListRespo
 		}
 	}
 	return response
+}
+
+// Reel is the full single-reel body, transcript included.
+type Reel struct {
+	ID                  string     `json:"id"`
+	UserID              string     `json:"user_id"`
+	URL                 string     `json:"url"`
+	WebURL              string     `json:"web_url"`
+	ThumbnailURL        *string    `json:"thumbnail_url"`
+	NormalizedURL       *string    `json:"normalized_url"`
+	SourcePlatform      *string    `json:"source_platform"`
+	SourceContentType   *string    `json:"source_content_type"`
+	SourceContentID     *string    `json:"source_content_id"`
+	ProcessingVersion   *string    `json:"processing_version"`
+	IngestionMethod     *string    `json:"ingestion_method"`
+	TranscriptSource    *string    `json:"transcript_source"`
+	Title               string     `json:"title"`
+	Summary             string     `json:"summary"`
+	ContentType         string     `json:"content_type"`
+	Transcript          string     `json:"transcript"`
+	Category            string     `json:"category"`
+	Subcategory         string     `json:"subcategory"`
+	SecondaryCategories []string   `json:"secondary_categories"`
+	KeyFacts            []string   `json:"key_facts"`
+	Locations           []Location `json:"locations"`
+	PeopleMentioned     []string   `json:"people_mentioned"`
+	ActionableItems     []string   `json:"actionable_items"`
+	CreatedAt           *string    `json:"created_at"`
+}
+
+// BuildReel presents one reel in full.
+func BuildReel(record ReelRecord, webBaseURL string) Reel {
+	category := record.Category
+	if strings.TrimSpace(category) == "" {
+		category = "Other"
+	}
+	subcategory := record.Subcategory
+	if strings.TrimSpace(subcategory) == "" {
+		subcategory = "Other"
+	}
+	locations := record.Locations
+	if locations == nil {
+		locations = []Location{}
+	}
+
+	return Reel{
+		ID:                  record.ID,
+		UserID:              record.UserID,
+		URL:                 record.URL,
+		WebURL:              WebURL(webBaseURL, record.ID),
+		ThumbnailURL:        cleanOptional(record.ThumbnailURL),
+		NormalizedURL:       record.NormalizedURL,
+		SourcePlatform:      record.SourcePlatform,
+		SourceContentType:   record.SourceContentType,
+		SourceContentID:     record.SourceContentID,
+		ProcessingVersion:   record.ProcessingVersion,
+		IngestionMethod:     record.IngestionMethod,
+		TranscriptSource:    record.TranscriptSource,
+		Title:               record.Title,
+		Summary:             record.Summary,
+		ContentType:         ShareCardContentType(record),
+		Transcript:          record.Transcript,
+		Category:            category,
+		Subcategory:         subcategory,
+		SecondaryCategories: nonNil(record.SecondaryCategories),
+		KeyFacts:            nonNil(record.KeyFacts),
+		Locations:           locations,
+		PeopleMentioned:     nonNil(record.PeopleMentioned),
+		ActionableItems:     nonNil(record.ActionableItems),
+		CreatedAt:           isoTimestamp(record.CreatedAt),
+	}
 }
 
 func ShareCardContentType(record ReelRecord) string {

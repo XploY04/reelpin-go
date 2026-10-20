@@ -11,6 +11,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/spend"
 )
@@ -241,16 +242,31 @@ func (s *Server) respondToSubmission(w http.ResponseWriter, result enqueue.Resul
 		return
 	}
 
-	if result.Kind == enqueue.AlreadySaved {
-		writeJSON(w, http.StatusOK, buildReelResponse(*result.Reel))
-		return
+	// already_saved says the user had this content before this submission,
+	// saved or still processing. A 200 without it is a reel saved just now
+	// from content someone else had already processed.
+	switch result.Kind {
+	case enqueue.AlreadySaved, enqueue.Reused:
+		writeJSON(w, http.StatusOK, submittedReel{
+			Reel:         s.reels.Present(*result.Reel),
+			AlreadySaved: result.WasAlreadySaved(),
+		})
+	case enqueue.InFlight:
+		writeJSON(w, http.StatusOK, presentJob(*result.Job, true))
+	default:
+		writeJSON(w, http.StatusAccepted, presentJob(*result.Job, false))
 	}
-	writeJSON(w, http.StatusAccepted, presentJob(*result.Job))
+}
+
+type submittedReel struct {
+	reels.Reel
+	AlreadySaved bool `json:"already_saved"`
 }
 
 // presentJob keeps the wire shape identical to the read side's job.
-func presentJob(job enqueue.Job) map[string]any {
+func presentJob(job enqueue.Job, alreadySaved bool) map[string]any {
 	return map[string]any{
+		"already_saved":    alreadySaved,
 		"id":               job.ID,
 		"status":           job.Status,
 		"url":              job.URL,

@@ -13,7 +13,7 @@ import (
 
 // Searcher is what the API needs from the search service.
 type Searcher interface {
-	Search(ctx context.Context, userID, query string, filters search.Filters, limit int) (search.Response, error)
+	Search(ctx context.Context, userID string, params search.Params) (search.Response, error)
 }
 
 type searchRequest struct {
@@ -47,18 +47,27 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	view, ok := viewParam(w, r.URL.Query())
+	if !ok {
+		return
+	}
 
 	userID := requestUserID(r)
 	if !s.allowSearch(w, r, userID) {
 		return
 	}
 
-	response, err := s.deps.Search.Search(r.Context(), userID, request.Query, search.Filters{
-		Platforms:   platforms,
-		Category:    request.Category,
-		Subcategory: request.Subcategory,
-		SavedDate:   savedDate,
-	}, request.Limit)
+	response, err := s.deps.Search.Search(r.Context(), userID, search.Params{
+		Query: request.Query,
+		Filters: search.Filters{
+			Platforms:   platforms,
+			Category:    request.Category,
+			Subcategory: request.Subcategory,
+			SavedDate:   savedDate,
+		},
+		Limit: request.Limit,
+		View:  view,
+	})
 	if err != nil {
 		s.deps.Logger.Error("search failed", "error", err)
 		internalError(w, "search_failed", "Could not search right now.")

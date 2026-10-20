@@ -53,6 +53,7 @@ const MaxSaveIDsPerRequest = 100
 // reel id, so the field keeps the name every client already uses.
 type Collection struct {
 	ID          string  `json:"id"`
+	WebURL      string  `json:"web_url"`
 	Name        string  `json:"name"`
 	Description string  `json:"description"`
 	CoverReelID *string `json:"cover_reel_id"`
@@ -73,6 +74,7 @@ type Item struct {
 	Title          string  `json:"title"`
 	Summary        string  `json:"summary"`
 	URL            string  `json:"url"`
+	WebURL         string  `json:"web_url"`
 	ThumbnailURL   *string `json:"thumbnail_url"`
 	SourcePlatform string  `json:"source_platform"`
 	SavedAt        *string `json:"saved_at"`

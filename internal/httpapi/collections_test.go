@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,5 +249,52 @@ func TestAServiceFailureIsA500WithoutDetail(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), errFake.Error()) {
 		t.Error("the driver error leaked into the response body")
+	}
+}
+
+func TestCollectionsLinkTheirPublicPages(t *testing.T) {
+	fake := newFakeCollections()
+	fake.detail.Items = []collections.Item{{ReelID: testReelID, Title: "Best cafes in Goa"}}
+
+	rec := request(collectionDeps(fake), "GET", "/api/v2/collections/"+testCollectionID, "", "Bearer good.token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var body collections.Detail
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if want := testWebBaseURL + "/c/" + testCollectionID; body.Collection.WebURL != want {
+		t.Errorf("collection web_url = %q, want %q", body.Collection.WebURL, want)
+	}
+	if len(body.Items) != 1 || body.Items[0].WebURL != testWebBaseURL+"/r/"+testReelID {
+		t.Errorf("items = %+v, want the item's web_url", body.Items)
+	}
+
+	list := request(collectionDeps(newFakeCollections()), "GET", "/api/v2/collections", "", "Bearer good.token")
+	if !strings.Contains(list.Body.String(), `"web_url":"`+testWebBaseURL+"/c/"+testCollectionID+`"`) {
+		t.Errorf("the list does not link the collection: %s", list.Body.String())
+	}
+}
+
+// Adding items answers the collection as it now stands, from a read after the
+// write, so the count a client shows includes what it just added.
+func TestAddingItemsAnswersTheCollectionAfterTheChange(t *testing.T) {
+	fake := newFakeCollections()
+	fake.added = 1
+	rec := request(collectionDeps(fake), "POST", "/api/v2/collections/"+testCollectionID+"/items",
+		`{"reel_ids":["`+testReelID+`"]}`, "Bearer good.token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Collection collections.Collection `json:"collection"`
+		AddedCount int                    `json:"added_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.AddedCount != 1 || body.Collection.ID != testCollectionID || body.Collection.WebURL == "" {
+		t.Errorf("body = %+v", body)
 	}
 }

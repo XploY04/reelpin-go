@@ -280,12 +280,16 @@ func (s *Service) Evaluate(ctx context.Context, userID string, set LabeledSet) (
 
 	for _, labeled := range set.Queries {
 		started := time.Now()
-		response, err := s.Search(ctx, userID, labeled.Query, Filters{
-			Platforms:   labeled.Filters.Platforms,
-			Category:    labeled.Filters.Category,
-			Subcategory: labeled.Filters.Subcategory,
-			SavedDate:   labeled.Filters.SavedDate,
-		}, MaxLimit)
+		response, err := s.Search(ctx, userID, Params{
+			Query: labeled.Query,
+			Filters: Filters{
+				Platforms:   labeled.Filters.Platforms,
+				Category:    labeled.Filters.Category,
+				Subcategory: labeled.Filters.Subcategory,
+				SavedDate:   labeled.Filters.SavedDate,
+			},
+			Limit: MaxLimit,
+		})
 		if err != nil {
 			return Report{}, nil, fmt.Errorf("query %q: %w", labeled.ID, err)
 		}

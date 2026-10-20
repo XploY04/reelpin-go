@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/auth"
+	"github.com/XploY04/reelpin-go/internal/collections"
+	"github.com/XploY04/reelpin-go/internal/entitlements"
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/reels"
@@ -40,7 +42,7 @@ type Deps struct {
 	Jobs  jobs.JobReader
 	// Entitlements reports whether a user is on the paid plan. It is backed by
 	// a cache, so this never reaches the database on the request path.
-	Entitlements ProStatus
+	Entitlements entitlements.ProStatus
 	// Enqueue is the submission use case; ShareTokens authenticates and
 	// manages the native extensions' credential.
 	Enqueue     Submitter
@@ -48,7 +50,7 @@ type Deps struct {
 	// Resolver previews shared text without processing it.
 	Resolver ShareResolver
 	// Collections owns a user's arrangement of their own saves.
-	Collections Collections
+	Collections collections.Store
 	// Notifications owns device tokens and open receipts. Campaigns are an
 	// operator command, not part of this surface.
 	Notifications Notifications
@@ -88,17 +90,37 @@ type Deps struct {
 	Logger  *slog.Logger
 	Version string
 	Now     func() time.Time
+	// PublicWebBaseURL is the site every reel and collection links to as its
+	// web_url.
+	PublicWebBaseURL string
+	// StageBudgets are the pipeline's stages in order, which a job's remaining
+	// time is estimated from. Nil means no job carries an estimate.
+	StageBudgets []jobs.StageBudget
 }
 
+// Server holds the use-case services the handlers call. They are built from
+// Deps here, so every handler reaches the same code path the website and the
+// MCP server reuse.
 type Server struct {
-	deps Deps
+	deps         Deps
+	reels        *reels.Service
+	jobs         *jobs.Service
+	entitlements *entitlements.Service
+	collections  *collections.Service
 }
 
 func New(deps Deps) (*Server, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	server := &Server{deps: deps}
+	reelService := reels.NewService(deps.Reels, deps.PublicWebBaseURL, deps.Now)
+	server := &Server{
+		deps:         deps,
+		reels:        reelService,
+		jobs:         jobs.NewService(deps.Jobs, reelService, deps.StageBudgets, deps.Now),
+		entitlements: entitlements.NewService(deps.Reels, deps.Entitlements),
+		collections:  collections.NewService(deps.Collections, deps.PublicWebBaseURL),
+	}
 	if err := checkDependencies(deps, server.routeTable()); err != nil {
 		return nil, err
 	}
