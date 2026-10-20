@@ -25,7 +25,7 @@ func TestARealRedisCarriesOneMarkPerWrite(t *testing.T) {
 	t.Cleanup(func() { client.Close() })
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
-		t.Skipf("redis is not reachable: %v", err)
+		t.Fatalf("redis is not reachable: %v", err)
 	}
 
 	signal := NewSignal(client, fmt.Sprintf("reelpin:test:%d", time.Now().UnixNano()), quiet())

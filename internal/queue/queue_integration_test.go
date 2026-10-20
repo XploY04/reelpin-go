@@ -24,7 +24,7 @@ func testConnection(t *testing.T) *amqp.Connection {
 	}
 	connection, err := amqp.Dial(url)
 	if err != nil {
-		t.Skipf("rabbitmq is not reachable: %v", err)
+		t.Fatalf("rabbitmq is not reachable: %v", err)
 	}
 	t.Cleanup(func() { connection.Close() })
 	return connection
