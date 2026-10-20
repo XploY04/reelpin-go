@@ -45,11 +45,23 @@ func NewCombinedJobs(db Querier) *CombinedJobs {
 	return &CombinedJobs{canonical: &CanonicalJobs{db: db}, legacy: NewJobs(db)}
 }
 
+const retryWaiting = `(r.status = 'retry_scheduled' AND j.status IN ('queued', 'processing'))`
+
+// canonicalJobColumns present a live job whose run is waiting to retry the way
+// the jobs package reads a retry: queued, at step retry_scheduled, due when the
+// run.resume event pipeline.scheduleRetry wrote becomes available. The job row
+// itself stays processing while the run waits.
 const canonicalJobColumns = `j.id::text, j.user_id::text, j.url, NULLIF(j.normalized_url, ''),
 	NULLIF(j.source_platform, ''), NULL::text, NULL::text, r.processor_version,
-	NULL::text, NULL::text, j.status, j.current_step, j.progress_percent,
-	j.failure_code, r.failure_message, j.user_save_id::text,
-	COALESCE(r.attempt_count, 0), COALESCE(r.max_attempts, 3), NULL::timestamptz,
+	NULL::text, NULL::text,
+	CASE WHEN ` + retryWaiting + ` THEN 'queued' ELSE j.status END,
+	CASE WHEN ` + retryWaiting + ` THEN 'retry_scheduled' ELSE j.current_step END,
+	j.progress_percent, j.failure_code, r.failure_message, j.user_save_id::text,
+	COALESCE(r.attempt_count, 0), COALESCE(r.max_attempts, 3),
+	CASE WHEN ` + retryWaiting + ` THEN (
+		SELECT max(o.available_at) FROM reelpin.outbox_events o
+		WHERE o.event_type = 'run.resume' AND o.payload->>'run_id' = r.id::text
+	) END,
 	'{}'::jsonb, to_jsonb(j.collection_ids), j.created_at, j.updated_at,
 	NULL::timestamptz, j.completed_at`
 

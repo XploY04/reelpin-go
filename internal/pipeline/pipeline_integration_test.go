@@ -12,13 +12,17 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/XploY04/reelpin-go/internal/platform"
+	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -480,6 +484,45 @@ func TestInvalidStructuredOutputCreatesNoVersion(t *testing.T) {
 	}
 	if resumes != 1 {
 		t.Fatalf("resume events = %d, want one scheduled retry", resumes)
+	}
+}
+
+// While the run waits to retry, the job row stays processing. Polling it must
+// still say it is waiting, and until when.
+func TestAJobWaitingToRetryIsPolledAsWaiting(t *testing.T) {
+	h := newHarness(t, userA)
+	h.extractor.err = errors.New("provider failed once")
+	ctx := context.Background()
+
+	if _, err := h.handle(t); err == nil {
+		t.Fatal("the failing extract completed the run")
+	}
+	if status := h.runStatus(t); status != "retry_scheduled" {
+		t.Fatalf("run status = %q, want retry_scheduled", status)
+	}
+
+	var jobID uuid.UUID
+	var resumeAt time.Time
+	if err := h.pool.QueryRow(ctx, `
+		SELECT j.id, o.available_at
+		FROM reelpin.processing_jobs j, reelpin.outbox_events o
+		WHERE j.run_id = $1 AND o.event_type = 'run.resume' AND o.payload->>'run_id' = $1::text`,
+		h.runID).Scan(&jobID, &resumeAt); err != nil {
+		t.Fatalf("reading the job and its resume event: %v", err)
+	}
+
+	record, err := postgres.NewCombinedJobs(h.pool).Get(ctx, userA, jobID)
+	if err != nil {
+		t.Fatalf("polling the job: %v", err)
+	}
+	if !jobs.RetryScheduled(record) {
+		t.Fatalf("job = status %q step %v, want a scheduled retry", record.Status, record.CurrentStep)
+	}
+	if record.NextRetryAt == nil || !record.NextRetryAt.Equal(resumeAt) {
+		t.Fatalf("next_retry_at = %v, want the resume event's %v", record.NextRetryAt, resumeAt)
+	}
+	if stage := jobs.Stage(record, StageBudgets()); stage != "Waiting to retry" {
+		t.Errorf("stage = %q, want Waiting to retry", stage)
 	}
 }
 
