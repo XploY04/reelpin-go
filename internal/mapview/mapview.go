@@ -116,7 +116,12 @@ func New(pool *pgxpool.Pool, now func() time.Time) *Service {
 // search apply. It is applied before the cap, so a filtered map is not the
 // first MaxPins of the unfiltered one with most of them thrown away. Empty
 // means every category.
-func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds, category string) ([]Pin, error) {
+//
+// Content and manual pins are ordered together, newest first and then by id,
+// so which pins survive the cap is the same on every request and a manual pin
+// is not dropped just for coming from the second arm. The bool reports that
+// more than MaxPins matched and the answer was cut.
+func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds, category string) ([]Pin, bool, error) {
 	// A box crossing the antimeridian is two boxes. ST_MakeEnvelope with west
 	// greater than east silently describes the rest of the world instead.
 	envelope := "ST_MakeEnvelope($2, $1, $4, $3, 4326)::geography"
@@ -128,7 +133,10 @@ func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds, ca
 	}
 
 	query := fmt.Sprintf(`
-		SELECT %[2]s
+		SELECT id, kind, name, address, latitude, longitude, reel_id, confidence,
+		       category, subcategory, google_place_id, google_maps_url, place_types
+		FROM (
+		SELECT %[2]s, l.created_at
 		FROM reelpin.content_locations l
 		JOIN reelpin.contents c ON c.current_version_id = l.content_version_id
 		JOIN reelpin.content_versions v ON v.id = l.content_version_id
@@ -140,19 +148,29 @@ func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds, ca
 
 		UNION ALL
 
-		SELECT %[3]s
+		SELECT %[3]s, m.created_at
 		FROM reelpin.user_manual_pins m
 		WHERE m.user_id = $5 AND ST_Intersects(m.point, %[1]s)
 		  AND ($7::text = '' OR coalesce(nullif(trim(m.category), ''), $8::text) = $7)
-
+		) u(id, kind, name, address, latitude, longitude, reel_id, confidence,
+		    category, subcategory, google_place_id, google_maps_url, place_types, created_at)
+		ORDER BY created_at DESC, id
 		LIMIT $6`, envelope, contentPinColumns, manualPinColumns)
 
-	args = append(args, userID, MaxPins, category, uncategorised)
+	// One row past the cap tells a full answer from a cut one.
+	args = append(args, userID, MaxPins+1, category, uncategorised)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("reading map pins: %w", err)
+		return nil, false, fmt.Errorf("reading map pins: %w", err)
 	}
-	return collectPins(rows)
+	pins, err := collectPins(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(pins) > MaxPins {
+		return pins[:MaxPins], true, nil
+	}
+	return pins, false, nil
 }
 
 // Nearby orders this user's pins by distance from a point. The ordering is done

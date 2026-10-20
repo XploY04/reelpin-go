@@ -21,7 +21,8 @@
         "sub_category": "cafes",
         "subcategory": "cafes"
       }
-    ]
+    ],
+    "truncated": false
   },
   "status": 200
 }

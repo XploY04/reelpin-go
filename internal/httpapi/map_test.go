@@ -195,3 +195,20 @@ func TestADriverErrorDeletingAMapItemIsNotLeaked(t *testing.T) {
 		t.Error("the driver error reached the body")
 	}
 }
+
+func TestMapPinsReportsTruncation(t *testing.T) {
+	for _, truncated := range []bool{false, true} {
+		fake := &fakeMap{truncated: truncated}
+		rec := serve(mapDeps(fake), "GET",
+			"/api/v2/map/pins?south=15&west=73&north=16&east=74", "Bearer good.token")
+		var body struct {
+			Truncated *bool `json:"truncated"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Truncated == nil || *body.Truncated != truncated {
+			t.Errorf("truncated = %v, want %v", body.Truncated, truncated)
+		}
+	}
+}

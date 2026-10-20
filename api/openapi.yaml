@@ -512,7 +512,8 @@ paths:
       description: |
         Every place reachable through this user's saves that falls inside the
         box, plus their own manual pins. A pin the user hid is not returned at
-        all.
+        all. Content and manual pins are ordered together, newest first, and
+        cut at 500; `truncated` says when that happened.
 
         A box whose `west` is greater than `east` crosses the antimeridian and
         is handled as two boxes, so panning across the Pacific works.
@@ -2064,6 +2065,12 @@ components:
         pins:
           type: array
           items: { $ref: "#/components/schemas/Pin" }
+        truncated:
+          type: boolean
+          description: |
+            True when more than 500 pins matched and the list was cut. The
+            list is ordered newest first, so the pins kept are the same on
+            every request; the client can ask the user to zoom in.
 
     Pin:
       type: object
