@@ -361,7 +361,8 @@ list the app sees is not fixed at build time.
   budgets; null once terminal or when the step is unknown) and `summary` (the
   first line of the saved reel's summary, null until completed).
 - Every reel, collection and collection item carries `web_url`, its public page:
-  `https://reelpin.in/r/{reel_id}` or `https://reelpin.in/c/{collection_id}`.
+  `https://reelpin.in/r/{reel_id}` or
+  `https://reelpin.in/collections/{collection_id}`.
 - `GET /reels`, `POST /search` and `GET /collections/{id}` accept
   `?view=concise`, which leaves out `key_facts`, `people_mentioned`,
   `actionable_items` and `events`. The default is `detailed`, which is what the

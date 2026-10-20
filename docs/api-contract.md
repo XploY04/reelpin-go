@@ -110,7 +110,9 @@ MCP server applies the same one.
 ## Public URLs
 
 Every reel and collection carries `web_url`, built on `PUBLIC_WEB_BASE_URL`:
-`/r/{reel_id}` and `/c/{collection_id}`.
+`/r/{reel_id}` and `/collections/{collection_id}`. `/c/` is not used: on
+`reelpin.in`, `link.reelpin.in` and the app's universal links it is the
+share-token route.
 
 ## Rate limits per client
 

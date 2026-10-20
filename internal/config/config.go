@@ -37,7 +37,7 @@ type Config struct {
 	ShareBaseURL string
 
 	// PublicWebBaseURL is the site every reel and collection names as its
-	// web_url: /r/{reel_id} and /c/{collection_id} on this origin.
+	// web_url: /r/{reel_id} and /collections/{collection_id} on this origin.
 	PublicWebBaseURL string
 
 	// AdminKey guards the Prometheus endpoints. Empty means neither process

@@ -42,7 +42,7 @@ func NewService(store Store, webBaseURL string) *Service {
 
 // WebURL is a collection's public page.
 func WebURL(baseURL, collectionID string) string {
-	return strings.TrimSuffix(baseURL, "/") + "/c/" + collectionID
+	return strings.TrimSuffix(baseURL, "/") + "/collections/" + collectionID
 }
 
 // Link is a minted share link or invite. The raw token exists in this value

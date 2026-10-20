@@ -264,7 +264,7 @@ func TestCollectionsLinkTheirPublicPages(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if want := testWebBaseURL + "/c/" + testCollectionID; body.Collection.WebURL != want {
+	if want := testWebBaseURL + "/collections/" + testCollectionID; body.Collection.WebURL != want {
 		t.Errorf("collection web_url = %q, want %q", body.Collection.WebURL, want)
 	}
 	if len(body.Items) != 1 || body.Items[0].WebURL != testWebBaseURL+"/r/"+testReelID {
@@ -272,7 +272,7 @@ func TestCollectionsLinkTheirPublicPages(t *testing.T) {
 	}
 
 	list := request(collectionDeps(newFakeCollections()), "GET", "/api/v2/collections", "", "Bearer good.token")
-	if !strings.Contains(list.Body.String(), `"web_url":"`+testWebBaseURL+"/c/"+testCollectionID+`"`) {
+	if !strings.Contains(list.Body.String(), `"web_url":"`+testWebBaseURL+"/collections/"+testCollectionID+`"`) {
 		t.Errorf("the list does not link the collection: %s", list.Body.String())
 	}
 }

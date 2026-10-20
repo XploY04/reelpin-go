@@ -2197,7 +2197,7 @@ components:
         id: { type: string, format: uuid }
         web_url:
           type: string
-          description: The collection's public page, `{PUBLIC_WEB_BASE_URL}/c/{id}`.
+          description: The collection's public page, `{PUBLIC_WEB_BASE_URL}/collections/{id}`.
         name: { type: string }
         description: { type: string }
         cover_reel_id: { type: string, nullable: true, format: uuid }
