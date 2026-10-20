@@ -203,7 +203,8 @@ func BuildListResponse(records []ReelRecord, limit int, display Display) ListRes
 // Reel is the full single-reel body, transcript included, with the display
 // projection a list item carries. Subcategory repeats SubCategory under the
 // name this shape sent before sub_category was the one name; it is deprecated
-// and goes after one release.
+// and goes after one release. The four long-form lists are omitzero for the
+// same reason as on DisplayReel: only a concise collection item leaves them nil.
 type Reel struct {
 	ID                  string     `json:"id"`
 	UserID              string     `json:"user_id"`
@@ -224,11 +225,11 @@ type Reel struct {
 	Category            string     `json:"category"`
 	Subcategory         string     `json:"subcategory"`
 	SecondaryCategories []string   `json:"secondary_categories"`
-	KeyFacts            []string   `json:"key_facts"`
+	KeyFacts            []string   `json:"key_facts,omitzero"`
 	Locations           []Location `json:"locations"`
-	PeopleMentioned     []string   `json:"people_mentioned"`
-	ActionableItems     []string   `json:"actionable_items"`
-	Events              []Event    `json:"events"`
+	PeopleMentioned     []string   `json:"people_mentioned,omitzero"`
+	ActionableItems     []string   `json:"actionable_items,omitzero"`
+	Events              []Event    `json:"events,omitzero"`
 	CreatedAt           *string    `json:"created_at"`
 
 	ParseStatus          string             `json:"parse_status"`
@@ -245,7 +246,8 @@ type Reel struct {
 }
 
 // BuildReel presents one reel in full. The display fields come from the same
-// BuildDisplayReel a list uses, so a reel reads the same in both places.
+// BuildDisplayReel a list uses, so a reel reads the same in both places, and a
+// collection item is built here too, so a save reads the same as its detail.
 func BuildReel(record ReelRecord, display Display) Reel {
 	category := record.Category
 	if strings.TrimSpace(category) == "" {
@@ -259,7 +261,6 @@ func BuildReel(record ReelRecord, display Display) Reel {
 	if locations == nil {
 		locations = []Location{}
 	}
-	display.View = ViewDetailed
 	card := BuildDisplayReel(record, display)
 
 	return Reel{
@@ -282,10 +283,10 @@ func BuildReel(record ReelRecord, display Display) Reel {
 		Category:            category,
 		Subcategory:         subcategory,
 		SecondaryCategories: nonNil(record.SecondaryCategories),
-		KeyFacts:            nonNil(record.KeyFacts),
+		KeyFacts:            card.KeyFacts,
 		Locations:           locations,
-		PeopleMentioned:     nonNil(record.PeopleMentioned),
-		ActionableItems:     nonNil(record.ActionableItems),
+		PeopleMentioned:     card.PeopleMentioned,
+		ActionableItems:     card.ActionableItems,
 		Events:              card.Events,
 		CreatedAt:           isoTimestamp(record.CreatedAt),
 

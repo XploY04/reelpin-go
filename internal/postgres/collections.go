@@ -330,11 +330,12 @@ func (c *Collections) SharedByToken(ctx context.Context, token string, query col
 	return collection, page, nil
 }
 
-// items loads one keyset page of filed saves from the canonical tables in one
-// query, each with the reel its save resolves to. The cursor is
-// (added_at, save_id), the same opaque shape the reel list uses. The save is
-// not scoped to the reader: the collection role or the link token already
-// decided who may see it, and that is the point of a shared collection.
+// items loads one keyset page of filed saves, each read from the same reels
+// table, with the same columns and the same scan, as Reels.Get, so an item and
+// getReel can never disagree about a save. The cursor is (added_at, save_id),
+// the same opaque shape the reel list uses. The save is not scoped to the
+// reader: the collection role or the link token already decided who may see
+// it, and that is the point of a shared collection.
 func (c *Collections) items(ctx context.Context, collectionID string, query collections.ItemQuery) (collections.ItemPage, error) {
 	where := "i.collection_id = $1"
 	args := []any{collectionID}
@@ -346,29 +347,21 @@ func (c *Collections) items(ctx context.Context, collectionID string, query coll
 
 	// The transcript is the one column a concise page never shows, and the
 	// largest, so it is not read for one.
-	transcript := "''"
+	columns := reelListColumns
 	if query.Transcripts {
-		transcript = "coalesce(v.transcript, '')"
+		columns += ", transcript"
 	}
 
+	// The subquery exposes only the item's own columns, so every reel column
+	// stays unqualified exactly as reelListColumns spells it.
 	rows, err := c.pool.Query(ctx, fmt.Sprintf(`
-		SELECT s.id::text, s.user_id::text, co.normalized_url,
-		       co.source_platform, co.source_content_type,
-		       v.title, v.summary, NULLIF(v.media->>'thumbnail_url', ''),
-		       v.raw_extraction->>'category', v.raw_extraction->>'subcategory',
-		       v.tags, v.key_facts,
-		       v.raw_extraction->'extraction'->'locations',
-		       v.raw_extraction->'extraction'->'people_mentioned',
-		       v.raw_extraction->'extraction'->'actionable_items',
-		       v.raw_extraction->'extraction'->'events',
-		       %s, s.saved_at, i.added_at, i.added_by::text
-		FROM reelpin.collection_items i
-		JOIN reelpin.user_saves s ON s.id = i.save_id
-		JOIN reelpin.contents co ON co.id = s.content_id
-		LEFT JOIN reelpin.content_versions v ON v.id = co.current_version_id
+		SELECT %s, i.added_at, i.added_by::text
+		FROM reels
+		JOIN (SELECT collection_id, save_id, added_at, added_by
+		      FROM reelpin.collection_items) i ON i.save_id = reels.id
 		WHERE %s
 		ORDER BY i.added_at DESC, i.save_id DESC
-		LIMIT $%d`, transcript, where, len(args)), args...)
+		LIMIT $%d`, columns, where, len(args)), args...)
 	if err != nil {
 		return collections.ItemPage{}, fmt.Errorf("reading collection items: %w", err)
 	}
@@ -377,9 +370,10 @@ func (c *Collections) items(ctx context.Context, collectionID string, query coll
 	items := []collections.ItemRecord{}
 	cursors := []reels.Cursor{}
 	for rows.Next() {
-		item, err := scanItem(rows)
+		var item collections.ItemRecord
+		item.Reel, err = scanReel(rows, query.Transcripts, &item.AddedAt, &item.AddedBy)
 		if err != nil {
-			return collections.ItemPage{}, err
+			return collections.ItemPage{}, fmt.Errorf("reading a collection item: %w", err)
 		}
 		items = append(items, item)
 		if item.AddedAt != nil {
@@ -403,49 +397,6 @@ func (c *Collections) items(ctx context.Context, collectionID string, query coll
 		}
 	}
 	return collections.ItemPage{Items: items, Page: page}, nil
-}
-
-// scanItem reads one row of the items query into the reel record every reel
-// shape is built from. The extraction lists ride the version's JSONB in the
-// shape the pipeline and the backfill both write.
-func scanItem(rows pgx.Rows) (collections.ItemRecord, error) {
-	var (
-		item                                  collections.ItemRecord
-		record                                reels.ReelRecord
-		title, summary, category, subcategory *string
-		locationsRaw, peopleRaw, actionsRaw   []byte
-		eventsRaw                             []byte
-		savedAt                               *time.Time
-	)
-	if err := rows.Scan(&record.ID, &record.UserID, &record.URL,
-		&record.SourcePlatform, &record.SourceContentType,
-		&title, &summary, &record.ThumbnailURL,
-		&category, &subcategory,
-		&record.SecondaryCategories, &record.KeyFacts,
-		&locationsRaw, &peopleRaw, &actionsRaw, &eventsRaw,
-		&record.Transcript, &savedAt, &item.AddedAt, &item.AddedBy); err != nil {
-		return collections.ItemRecord{}, fmt.Errorf("reading a collection item: %w", err)
-	}
-	record.Title = text(title)
-	record.Summary = text(summary)
-	record.Category = text(category)
-	record.Subcategory = text(subcategory)
-	record.CreatedAt = savedAt
-	for _, decode := range []struct {
-		raw    []byte
-		target any
-	}{
-		{locationsRaw, &record.Locations},
-		{peopleRaw, &record.PeopleMentioned},
-		{actionsRaw, &record.ActionableItems},
-		{eventsRaw, &record.Events},
-	} {
-		if err := decodeJSON(decode.raw, decode.target); err != nil {
-			return collections.ItemRecord{}, fmt.Errorf("decoding a collection item: %w", err)
-		}
-	}
-	item.Reel = record
-	return item, nil
 }
 
 // Members lists collaborators. Any role may see who else can see the

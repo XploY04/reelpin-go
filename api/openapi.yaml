@@ -2351,12 +2351,29 @@ components:
         One filed save as a full reel, plus when and by whom it was filed.
         `reel_id` and `id` are the same save id `getReel` accepts, but a
         collaborator or a link viewer cannot call `getReel` for a save that is
-        not theirs, so everything a detail view shows is here.
+        not theirs, so everything a detail view shows is here. Apart from
+        `reel_id`, `saved_at`, `added_at` and `added_by`, a detailed item is
+        exactly the object `getReel` answers for that save: the same record,
+        presented by the same code.
         `view=concise` leaves out `transcript`, `key_facts`,
         `people_mentioned`, `actionable_items` and `events`.
       properties:
         reel_id: { type: string, format: uuid }
         id: { type: string, format: uuid }
+        user_id:
+          type: string
+          format: uuid
+          description: The user whose save this is.
+        normalized_url: { type: string, nullable: true }
+        source_content_id: { type: string, nullable: true }
+        processing_version: { type: string, nullable: true }
+        ingestion_method: { type: string, nullable: true }
+        transcript_source: { type: string, nullable: true }
+        subcategory:
+          type: string
+          deprecated: true
+          description: The same value as `sub_category`, as `getReel` sends it. Read `sub_category`.
+        secondary_categories: { type: array, items: { type: string } }
         title: { type: string }
         summary: { type: string }
         url: { type: string }

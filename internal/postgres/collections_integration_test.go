@@ -4,9 +4,11 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,14 +30,49 @@ const (
 // included, as the detailed view asks.
 var firstPage = collections.ItemQuery{Limit: 25, Transcripts: true}
 
+// legacyReelsTable is the public.reels shape Supabase owns and no migration
+// here creates. Reels.Get and the collection items both read it, so an item
+// test needs it as production has it.
+const legacyReelsTable = `
+CREATE TABLE public.reels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    url TEXT NOT NULL,
+    normalized_url TEXT,
+    source_platform TEXT,
+    source_content_type TEXT,
+    source_content_id TEXT,
+    processing_version TEXT,
+    ingestion_method TEXT,
+    transcript_source TEXT,
+    thumbnail_url TEXT,
+    title TEXT NOT NULL DEFAULT 'Untitled',
+    summary TEXT DEFAULT '',
+    transcript TEXT DEFAULT '',
+    category TEXT DEFAULT 'Other',
+    subcategory TEXT DEFAULT 'Other',
+    secondary_categories JSONB DEFAULT '[]'::jsonb,
+    key_facts JSONB DEFAULT '[]'::jsonb,
+    locations JSONB DEFAULT '[]'::jsonb,
+    people_mentioned JSONB DEFAULT '[]'::jsonb,
+    actionable_items JSONB DEFAULT '[]'::jsonb,
+    events JSONB NOT NULL DEFAULT '[]'::jsonb,
+    parse_status TEXT NOT NULL DEFAULT 'parsed',
+    created_at TIMESTAMPTZ DEFAULT now()
+)`
+
 // collectionPool builds one throwaway database per test with a
-// production-shaped auth.users, then migrates it. Cleanup drops WITH (FORCE),
-// so a connection left open by a failure cannot hang the package.
+// production-shaped auth.users and public.reels, then migrates it. Cleanup
+// drops WITH (FORCE), so a connection left open by a failure cannot hang the
+// package.
 func collectionPool(t *testing.T) *Collections {
 	t.Helper()
 	pool := rawPool(t)
 
 	ctx := context.Background()
+	if _, err := pool.Exec(ctx, legacyReelsTable); err != nil {
+		t.Fatalf("creating the production-shaped public.reels: %v", err)
+	}
 	for _, id := range []string{ownerID, strangerID, collaborator} {
 		if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("seeding a user: %v", err)
@@ -106,6 +144,7 @@ func rawPool(t *testing.T) *pgxpool.Pool {
 }
 
 // seedSave creates one content, one version and one user's save of it, and
+// the public.reels row the pipeline writes beside them under the same id, and
 // returns the save id, which is the public reel id.
 func seedSave(t *testing.T, c *Collections, userID, sourceID string) string {
 	t.Helper()
@@ -137,6 +176,17 @@ func seedSave(t *testing.T, c *Collections, userID, sourceID string) string {
 		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2)
 		RETURNING id::text`, userID, contentID).Scan(&saveID); err != nil {
 		t.Fatalf("seeding a save: %v", err)
+	}
+	if _, err := c.pool.Exec(ctx, `
+		INSERT INTO public.reels
+			(id, user_id, url, normalized_url, source_platform, source_content_type,
+			 source_content_id, thumbnail_url, title, summary, created_at)
+		SELECT s.id, s.user_id, co.normalized_url, co.normalized_url, co.source_platform,
+		       co.source_content_type, co.source_content_id, 'https://cdn/x.jpg',
+		       'A title', 'A summary', s.saved_at
+		FROM reelpin.user_saves s JOIN reelpin.contents co ON co.id = s.content_id
+		WHERE s.id = $1`, saveID); err != nil {
+		t.Fatalf("seeding the legacy reel: %v", err)
 	}
 	return saveID
 }
@@ -583,41 +633,7 @@ func TestACollaboratorReadsTheFullReel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var contentID, versionID string
-	if err := c.pool.QueryRow(ctx, `
-		INSERT INTO reelpin.contents
-			(source_platform, source_content_type, source_content_id,
-			 normalized_url, normalized_url_hash, access_scope_hash)
-		VALUES ('instagram', 'reel', 'FULL1', 'https://www.instagram.com/reel/FULL1/', 'FULL1', 'public')
-		RETURNING id::text`).Scan(&contentID); err != nil {
-		t.Fatalf("seeding content: %v", err)
-	}
-	if err := c.pool.QueryRow(ctx, `
-		INSERT INTO reelpin.content_versions
-			(content_id, processor_version, prompt_version, schema_version, model_version,
-			 title, summary, transcript, tags, key_facts, raw_extraction, media)
-		VALUES ($1, 'v1', 'p1', 's1', 'm1', 'Best cafes in Goa', 'Three cafes.', 'spoken words',
-		        '{goa}', '{"Opens at 8am"}',
-		        '{"category": "food_and_drink", "subcategory": "cafes",
-		          "extraction": {
-		            "locations": [{"name": "Artjuna Cafe", "city": "Anjuna", "latitude": 15.58, "longitude": 73.74}],
-		            "people_mentioned": ["Rhea"],
-		            "actionable_items": ["Go early"],
-		            "events": [{"name": "Market", "date": "2026-09-05", "time": ""}]}}'::jsonb,
-		        '{"thumbnail_url": "https://cdn/x.jpg"}'::jsonb)
-		RETURNING id::text`, contentID).Scan(&versionID); err != nil {
-		t.Fatalf("seeding a version: %v", err)
-	}
-	if _, err := c.pool.Exec(ctx,
-		`UPDATE reelpin.contents SET current_version_id = $2 WHERE id = $1`, contentID, versionID); err != nil {
-		t.Fatal(err)
-	}
-	var saveID string
-	if err := c.pool.QueryRow(ctx, `
-		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2)
-		RETURNING id::text`, ownerID, contentID).Scan(&saveID); err != nil {
-		t.Fatal(err)
-	}
+	saveID := seedFullSave(t, c, ownerID, "FULL1")
 	if _, err := c.AddItems(ctx, collection.ID, ownerID, []string{saveID}); err != nil {
 		t.Fatal(err)
 	}
@@ -642,6 +658,8 @@ func TestACollaboratorReadsTheFullReel(t *testing.T) {
 	}
 	if len(reel.Locations) != 1 || reel.Locations[0].Latitude == nil || reel.Locations[0].Name != "Artjuna Cafe" {
 		t.Errorf("locations = %+v", reel.Locations)
+	} else if address := reel.Locations[0].Address; address == nil || *address != "Anjuna Beach Road" {
+		t.Errorf("location address = %v, want the stored one", address)
 	}
 	if reel.ThumbnailURL == nil || *reel.ThumbnailURL != "https://cdn/x.jpg" || reel.CreatedAt == nil {
 		t.Errorf("thumbnail %v, saved at %v", reel.ThumbnailURL, reel.CreatedAt)
@@ -657,4 +675,104 @@ func TestACollaboratorReadsTheFullReel(t *testing.T) {
 	if got := concise.Items[0].Reel.Transcript; got != "" {
 		t.Errorf("a concise page read the transcript: %q", got)
 	}
+}
+
+// seedFullSave is seedSave with the long-form extraction filled in on the
+// legacy row the reel reader resolves, a located place with an address
+// among it.
+func seedFullSave(t *testing.T, c *Collections, userID, sourceID string) string {
+	t.Helper()
+	saveID := seedSave(t, c, userID, sourceID)
+	if _, err := c.pool.Exec(context.Background(), `
+		UPDATE public.reels SET
+			title = 'Best cafes in Goa', summary = 'Three cafes.', transcript = 'spoken words',
+			category = 'food_and_drink', subcategory = 'cafes',
+			secondary_categories = '["goa"]', key_facts = '["Opens at 8am"]',
+			locations = '[{"name": "Artjuna Cafe", "address": "Anjuna Beach Road", "city": "Anjuna",
+			               "latitude": 15.58, "longitude": 73.74}]',
+			people_mentioned = '["Rhea"]', actionable_items = '["Go early"]',
+			events = '[{"name": "Market", "date": "2026-09-05", "time": ""}]'
+		WHERE id = $1`, saveID); err != nil {
+		t.Fatalf("filling the legacy reel: %v", err)
+	}
+	return saveID
+}
+
+// TestAnItemIsTheReelGetReelAnswers is the one-shape rule: a save filed in a
+// collection reads, through the collection page and the shared link alike,
+// exactly as getReel answers it, apart from the fields that belong to the
+// filing. Both build from the same record with reels.BuildReel.
+func TestAnItemIsTheReelGetReelAnswers(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+	now := func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
+
+	collection, _, err := c.Create(ctx, ownerID, "Trips", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, invite, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptInvite(ctx, invite, collaborator); err != nil {
+		t.Fatal(err)
+	}
+	saveID := seedFullSave(t, c, ownerID, "SAME1")
+	if _, err := c.AddItems(ctx, collection.ID, ownerID, []string{saveID}); err != nil {
+		t.Fatal(err)
+	}
+	_, link, _, err := c.EnableLink(ctx, collection.ID, ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reel, err := reels.NewService(NewReels(c.pool), "https://reelpin.in", now).Get(ctx, ownerID, uuid.MustParse(saveID))
+	if err != nil {
+		t.Fatalf("getReel: %v", err)
+	}
+	want := jsonObject(t, reel)
+
+	service := collections.NewService(c, "https://reelpin.in", now)
+	params := collections.ItemParams{Limit: 25, View: reels.ViewDetailed}
+	detail, err := service.Detail(ctx, collection.ID, collaborator, params)
+	if err != nil {
+		t.Fatalf("the collection page: %v", err)
+	}
+	shared, err := service.SharedByToken(ctx, link, params)
+	if err != nil {
+		t.Fatalf("the shared page: %v", err)
+	}
+
+	for name, items := range map[string][]collections.Item{"collection": detail.Items, "shared": shared.Items} {
+		if len(items) != 1 {
+			t.Fatalf("%s items = %d, want 1", name, len(items))
+		}
+		got := jsonObject(t, items[0])
+		for _, filing := range []string{"reel_id", "saved_at", "added_at", "added_by"} {
+			delete(got, filing)
+		}
+		if !reflect.DeepEqual(got, want) {
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(want)
+			t.Errorf("the %s item is not the reel getReel answers:\n item %s\n reel %s", name, gotJSON, wantJSON)
+		}
+		mappable := items[0].MappableLocations
+		if len(mappable) != 1 || mappable[0].Address == nil || *mappable[0].Address != "Anjuna Beach Road" {
+			t.Errorf("the %s item's mappable location lost its address: %+v", name, mappable)
+		}
+	}
+}
+
+func jsonObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := map[string]any{}
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		t.Fatal(err)
+	}
+	return object
 }

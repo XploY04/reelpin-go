@@ -124,6 +124,12 @@ fields a list item does (`category_label`, `sub_category_label`,
 `has_map_locations`, `mappable_locations`, `map_location_count`,
 `primary_location_label`), built by the same `reels.BuildDisplayReel`.
 
+A collection item is that same object. Both collection pages read each save
+from the table `GET /reels/{reel_id}` reads, with the same columns and scan,
+and build it with `reels.BuildReel`, so a detailed item equals the save's
+`getReel` body apart from `reel_id`, `saved_at`, `added_at` and `added_by`.
+`internal/postgres` tests this across all three endpoints.
+
 The subcategory is `sub_category` (and `sub_category_label`) in every
 reel-bearing response. The single-reel shape and map pins first sent it as
 `subcategory`; they keep that name beside `sub_category`, marked deprecated,

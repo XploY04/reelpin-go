@@ -289,7 +289,9 @@ func platformCondition(platforms []string, args *[]any) string {
 	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
-func scanReel(rows pgx.Rows, includeTranscript bool) (reels.ReelRecord, error) {
+// scanReel reads one row of reelListColumns, then the transcript when it was
+// selected, then any extra columns the caller selected after those.
+func scanReel(rows pgx.Rows, includeTranscript bool, extra ...any) (reels.ReelRecord, error) {
 	var (
 		record       reels.ReelRecord
 		title        *string
@@ -316,6 +318,7 @@ func scanReel(rows pgx.Rows, includeTranscript bool) (reels.ReelRecord, error) {
 	if includeTranscript {
 		targets = append(targets, &transcript)
 	}
+	targets = append(targets, extra...)
 	if err := rows.Scan(targets...); err != nil {
 		return reels.ReelRecord{}, err
 	}

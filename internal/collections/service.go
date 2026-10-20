@@ -194,23 +194,18 @@ func (s *Service) items(records []ItemRecord, view reels.View) []Item {
 	display := reels.Display{Now: s.now().UTC(), WebBaseURL: s.webBaseURL, View: view}
 	items := make([]Item, 0, len(records))
 	for _, record := range records {
-		locations := record.Reel.Locations
-		if locations == nil {
-			locations = []reels.Location{}
-		}
 		item := Item{
-			DisplayReel: reels.BuildDisplayReel(record.Reel, display),
-			ReelID:      record.Reel.ID,
-			Locations:   locations,
-			SavedAt:     ISOTime(record.Reel.CreatedAt),
-			AddedAt:     ISOTime(record.AddedAt),
-			AddedBy:     record.AddedBy,
+			Reel:    reels.BuildReel(record.Reel, display),
+			ReelID:  record.Reel.ID,
+			SavedAt: ISOTime(record.Reel.CreatedAt),
+			AddedAt: ISOTime(record.AddedAt),
+			AddedBy: record.AddedBy,
 		}
 		if record.Reel.SourcePlatform != nil {
 			item.SourcePlatform = *record.Reel.SourcePlatform
 		}
 		if view != reels.ViewConcise {
-			transcript := record.Reel.Transcript
+			transcript := item.Reel.Transcript
 			item.Transcript = &transcript
 		}
 		items = append(items, item)

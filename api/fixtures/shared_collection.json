@@ -28,6 +28,7 @@
         "display_date": "Sep 2, 2026",
         "has_map_locations": true,
         "id": "22222222-2222-4222-8222-222222222222",
+        "ingestion_method": null,
         "locations": [
           {
             "address": null,
@@ -68,20 +69,27 @@
             "state": null
           }
         ],
+        "normalized_url": null,
         "parse_status": "parsed",
         "primary_location_label": "Artjuna Cafe",
+        "processing_version": null,
         "reel_id": "22222222-2222-4222-8222-222222222222",
         "relative_date": "2 days ago",
         "saved_at": "2026-09-02T12:00:00Z",
         "saved_date_key": "2026-09-02",
+        "secondary_categories": [],
+        "source_content_id": null,
         "source_content_type": "reels",
         "source_platform": "instagram",
         "sub_category": "cafes",
         "sub_category_label": "Cafes",
+        "subcategory": "cafes",
         "summary": "Three cafes worth the ride.",
         "thumbnail_url": null,
         "title": "Best cafes in Goa",
+        "transcript_source": null,
         "url": "https://www.instagram.com/reel/abc/",
+        "user_id": "11111111-1111-4111-8111-111111111111",
         "web_url": "https://reelpin.in/r/22222222-2222-4222-8222-222222222222"
       }
     ],

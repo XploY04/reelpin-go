@@ -70,22 +70,22 @@ type Collection struct {
 }
 
 // Item is one filed save as a full reel. A collaborator or a link viewer
-// cannot call getReel for a save that is not theirs, so the item carries
-// everything the detail view needs: the display shape, the transcript and the
-// raw locations, plus when and by whom it was filed. Transcript is nil under
-// the concise view, which leaves it out.
+// cannot call getReel for a save that is not theirs, so the item is that reel,
+// built by the same reels.BuildReel from the same record getReel reads, plus
+// when and by whom it was filed. Transcript is nil under the concise view,
+// which leaves it out.
 //
-// SourcePlatform shadows the display shape's nullable one: an item's platform
-// has always been a non-null string, and the shallower field wins in JSON.
+// SourcePlatform and Transcript shadow the reel's, and the shallower field
+// wins in JSON: an item's platform has always been a non-null string, and the
+// concise view leaves the transcript out.
 type Item struct {
-	reels.DisplayReel
-	ReelID         string           `json:"reel_id"`
-	SourcePlatform string           `json:"source_platform"`
-	Transcript     *string          `json:"transcript,omitempty"`
-	Locations      []reels.Location `json:"locations"`
-	SavedAt        *string          `json:"saved_at"`
-	AddedAt        *string          `json:"added_at"`
-	AddedBy        *string          `json:"added_by"`
+	reels.Reel
+	ReelID         string  `json:"reel_id"`
+	SourcePlatform string  `json:"source_platform"`
+	Transcript     *string `json:"transcript,omitempty"`
+	SavedAt        *string `json:"saved_at"`
+	AddedAt        *string `json:"added_at"`
+	AddedBy        *string `json:"added_by"`
 }
 
 // ItemRecord is one filed save as storage reads it. Reel.CreatedAt is when the

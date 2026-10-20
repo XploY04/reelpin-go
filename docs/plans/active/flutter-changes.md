@@ -250,11 +250,12 @@ existing local caches keep working. What changed beyond the envelope:
   is gone.
 - **Each item is a full reel.** `GET /api/v2/reels/{reel_id}` only answers the
   save's owner, so a collaborator or someone opening a shared link would get
-  `404` for every reel they did not save themselves. The item carries what the
-  detail screen needs instead: every display field a list item has
-  (`id`, `category_label`, `sub_category`, `relative_date`,
-  `mappable_locations`, ...), plus `transcript`, `locations`, `key_facts`,
-  `people_mentioned`, `actionable_items` and `events`. The item fields stay:
+  `404` for every reel they did not save themselves. The item is instead the
+  very object `getReel` answers for that save, built by the same code from the
+  same row: every display field (`id`, `category_label`, `sub_category`,
+  `relative_date`, `mappable_locations`, ...), plus `transcript`, `locations`,
+  `key_facts`, `people_mentioned`, `actionable_items` and `events`, so one
+  decoder reads both. The item fields stay:
   `reel_id` (the same value as `id`), `source_platform` (never null here),
   `saved_at`, `added_at` and `added_by`. Open an item's detail screen from the
   item itself, not by calling `getReel`.
