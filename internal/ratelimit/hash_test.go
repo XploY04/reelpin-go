@@ -62,23 +62,28 @@ func TestPlanPolicies(t *testing.T) {
 	}
 }
 
-func TestAPerClientPolicyGivesEachClientItsOwnBucket(t *testing.T) {
-	app := Search.UserSubject("user-1", "")
-	agent := Search.UserSubject("user-1", "mcp-client")
-	extension := Search.UserSubject("user-1", "extension")
+func TestAPerClientPolicyAddsAClientBucketToTheUsers(t *testing.T) {
+	app := Search.UserSubjects("user-1", "")
+	agent := Search.UserSubjects("user-1", "mcp-client")
+	extension := Search.UserSubjects("user-1", "extension")
 
-	if app != "user-1" {
+	if len(app) != 1 || app[0] != "user-1" {
 		t.Errorf("an app session keys %q, want the plain user bucket", app)
 	}
-	if agent == app || agent == extension {
-		t.Errorf("clients share a bucket: app=%q agent=%q extension=%q", app, agent, extension)
+	for _, subjects := range [][]string{agent, extension} {
+		if len(subjects) != 2 || subjects[1] != "user-1" {
+			t.Errorf("a client keys %q, want its own bucket and then the user's total", subjects)
+		}
 	}
-	if other := Search.UserSubject("user-2", "mcp-client"); other == agent {
+	if agent[0] == "user-1" || agent[0] == extension[0] {
+		t.Errorf("clients share a bucket: agent=%q extension=%q", agent, extension)
+	}
+	if other := Search.UserSubjects("user-2", "mcp-client"); other[0] == agent[0] {
 		t.Error("one client shares a bucket across users")
 	}
 
 	perUser := Policy{Name: "per_user", Requests: 1, Window: time.Minute}
-	if got := perUser.UserSubject("user-1", "mcp-client"); got != "user-1" {
+	if got := perUser.UserSubjects("user-1", "mcp-client"); len(got) != 1 || got[0] != "user-1" {
 		t.Errorf("a per-user policy keyed %q, want the user alone", got)
 	}
 	for _, policy := range []Policy{Submission, Search, MapPin} {

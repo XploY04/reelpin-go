@@ -31,20 +31,21 @@ type Policy struct {
 	Requests int
 	Window   time.Duration
 	Burst    int
-	// PerClient gives each OAuth client its own bucket under the user, so an
-	// MCP server or the browser extension spending a user's allowance cannot
-	// starve the app. A request with no client keeps the plain user bucket.
+	// PerClient adds a bucket per OAuth client under the user. It is counted
+	// on top of the user's own bucket, never instead of it, so registering
+	// another client cannot add to a user's allowance. A request with no
+	// client counts against the user's bucket alone.
 	PerClient bool
 }
 
-// UserSubject is what a per-user policy counts a request against: the user,
-// or the user and the OAuth client when the policy is per client and the
-// token named one.
-func (p Policy) UserSubject(userID, clientID string) string {
+// UserSubjects are what a per-user policy counts a request against, and every
+// one must allow it: the OAuth client's bucket when the policy is per client
+// and the token named one, then always the user's total.
+func (p Policy) UserSubjects(userID, clientID string) []string {
 	if !p.PerClient || clientID == "" {
-		return userID
+		return []string{userID}
 	}
-	return userID + "|client:" + clientID
+	return []string{userID + "|client:" + clientID, userID}
 }
 
 func (p Policy) capacity() int {

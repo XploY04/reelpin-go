@@ -117,8 +117,10 @@ share-token route.
 ## Rate limits per client
 
 A Supabase OAuth-server token carries a `client_id`. The submission, search
-and map-pin limits count such a token against its own bucket under the user;
-an app session, which has no client, keeps the plain per-user bucket.
+and map-pin limits count such a token against its own bucket under the user
+and against the user's total, and both must allow it, so a second client
+cannot add to a user's quota. An app session, which has no client, counts
+against the user's total alone.
 
 ## Changing this
 

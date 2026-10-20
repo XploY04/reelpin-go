@@ -12,8 +12,9 @@ import "time"
 // ErrUnavailable. Cheap authenticated reads have no policy at all and stay
 // available when Redis is down.
 //
-// The per-user policies are per client too: a token from an OAuth client gets
-// its own bucket beside the app's, so an agent cannot spend the app's share.
+// The per-user policies are per client too: a token from an OAuth client also
+// counts against a bucket of its own, and the user's total still applies, so a
+// second client cannot multiply a user's quota.
 var (
 	// Task 8 (enqueue) references these two.
 	Submission   = Policy{Name: "submission", Requests: 30, Window: time.Hour, PerClient: true}

@@ -85,6 +85,21 @@ func (s *Server) allowSearch(w http.ResponseWriter, r *http.Request, userID stri
 		"Too many searches. Try again later.")
 }
 
+type meteredCheck struct {
+	policy  ratelimit.Policy
+	subject string
+}
+
+// meteredChecks are the buckets one metered request draws on, in order: the
+// OAuth client's under the user if any, the user's total, then the IP's.
+func meteredChecks(r *http.Request, userID string, user, ip ratelimit.Policy, ipSubject string) []meteredCheck {
+	var checks []meteredCheck
+	for _, subject := range user.UserSubjects(userID, requestClientID(r)) {
+		checks = append(checks, meteredCheck{user, subject})
+	}
+	return append(checks, meteredCheck{ip, ipSubject})
+}
+
 // allowMetered checks the user window, then the IP window, and answers the
 // refusal itself. A missing or unreachable limiter answers unavailable.
 func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID string, user, ip ratelimit.Policy, unavailableBody errorBody, limitedMessage string) bool {
@@ -97,13 +112,7 @@ func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID str
 		return false
 	}
 
-	for _, check := range []struct {
-		policy  ratelimit.Policy
-		subject string
-	}{
-		{user, user.UserSubject(userID, requestClientID(r))},
-		{ip, s.limitSubject(r)},
-	} {
+	for _, check := range meteredChecks(r, userID, user, ip, s.limitSubject(r)) {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {
 			unavailable()
