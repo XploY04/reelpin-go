@@ -27,7 +27,7 @@ func testClient(t *testing.T) (*redis.Client, string) {
 	t.Cleanup(func() { client.Close() })
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
-		t.Skipf("redis is not reachable: %v", err)
+		t.Fatalf("redis is not reachable: %v", err)
 	}
 	return client, fmt.Sprintf("reelpin:test:%s:%d", t.Name(), time.Now().UnixNano())
 }
