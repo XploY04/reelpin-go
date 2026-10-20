@@ -8,7 +8,7 @@ import "time"
 // per-user one: below it, the IP bucket becomes the binding limit for a single
 // person and raising the per-user number does nothing.
 //
-// Submission and search cost provider calls, so their handlers fail closed on
+// Submission, search and map pinning cost provider calls, so their handlers fail closed on
 // ErrUnavailable. Cheap authenticated reads have no policy at all and stay
 // available when Redis is down.
 var (
@@ -19,4 +19,15 @@ var (
 	// Task 20 (hybrid search) references these two.
 	Search   = Policy{Name: "search", Requests: 30, Window: time.Minute}
 	SearchIP = Policy{Name: "search_ip", Requests: 90, Window: time.Minute}
+
+	// Pinning a place not yet pinned costs a Google Place Details call.
+	MapPin   = Policy{Name: "map_pin", Requests: 20, Window: time.Hour}
+	MapPinIP = Policy{Name: "map_pin_ip", Requests: 60, Window: time.Hour}
+)
+
+// The website's feedback form and store-link counter. Both are public, so
+// both are counted per IP only.
+var (
+	FeedbackIP = Policy{Name: "feedback_ip", Requests: 20, Window: time.Hour}
+	LinkClick  = Policy{Name: "link_click_ip", Requests: 120, Window: time.Minute}
 )

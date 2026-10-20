@@ -81,16 +81,44 @@ type Dispatcher struct {
 	publisher Publisher
 	logger    *slog.Logger
 	batchSize int
+	// signal is nil without Redis, and then Run polls PostgreSQL as it always
+	// has.
+	signal *Signal
+	// afterWake is nil unless the caller has work to ride on a wake.
+	afterWake func()
+	now       func() time.Time
+	// dispatch is DispatchOnce plus how long until the next unpublished row
+	// is due; tests replace it to count database round trips.
+	dispatch func(ctx context.Context) (int, *time.Duration, error)
 }
 
 func NewDispatcher(pool *pgxpool.Pool, publisher Publisher, logger *slog.Logger, batchSize int) *Dispatcher {
 	if batchSize <= 0 {
 		batchSize = 100
 	}
-	return &Dispatcher{pool: pool, publisher: publisher, logger: logger, batchSize: batchSize}
+	d := &Dispatcher{pool: pool, publisher: publisher, logger: logger, batchSize: batchSize, now: time.Now}
+	d.dispatch = d.dispatchOnce
+	return d
 }
 
-// Run dispatches until the context is cancelled.
+// WithSignal makes Run wait for writers instead of polling. A nil signal
+// leaves the polling in place.
+func (d *Dispatcher) WithSignal(signal *Signal) *Dispatcher {
+	d.signal = signal
+	return d
+}
+
+// WithAfterWake calls fn after every dispatch that a writer's mark or a due
+// row caused, so work that would otherwise wake an idle database on its own
+// can run while the dispatcher has it awake. It is not called while polling.
+func (d *Dispatcher) WithAfterWake(fn func()) *Dispatcher {
+	d.afterWake = fn
+	return d
+}
+
+// Run dispatches until the context is cancelled. With a signal it asks Redis
+// every interval and touches PostgreSQL only when a writer marked the outbox
+// dirty or a row it already knows about falls due; without one it polls.
 func (d *Dispatcher) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		interval = time.Second
@@ -98,21 +126,69 @@ func (d *Dispatcher) Run(ctx context.Context, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Whatever was committed while no dispatcher was running goes out now.
+	var nextDue time.Time
+	run, woke := true, false
 	for {
-		published, err := d.DispatchOnce(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			d.logger.Error("outbox dispatch failed", "error", err)
-		}
-		if published == d.batchSize {
-			// A full batch means there is probably more; go again now.
-			continue
+		if run {
+			nextDue = d.drain(ctx)
+			if woke && d.afterWake != nil {
+				d.afterWake()
+			}
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 		}
+		run, woke = d.due(ctx, nextDue)
 	}
+}
+
+// drain dispatches batches until one comes back short, and returns when the
+// earliest row still waiting falls due. A zero time means nothing is waiting.
+func (d *Dispatcher) drain(ctx context.Context) time.Time {
+	for {
+		published, next, err := d.dispatch(ctx)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				d.logger.Error("outbox dispatch failed", "error", err)
+			}
+			// A failed dispatch learned nothing, so the next tick tries again.
+			return d.now()
+		}
+		if published == d.batchSize {
+			// A full batch means there is probably more; go again now.
+			continue
+		}
+		if next == nil {
+			return time.Time{}
+		}
+		return d.now().Add(*next)
+	}
+}
+
+// due decides whether this tick touches PostgreSQL, and whether that is a
+// wake, caused by a writer's mark or a known row falling due, rather than a
+// poll.
+func (d *Dispatcher) due(ctx context.Context, nextDue time.Time) (dispatch, woke bool) {
+	if d.signal == nil {
+		return true, false
+	}
+	dirty, err := d.signal.take(ctx)
+	if err != nil {
+		// Redis is the only thing standing between a write and its delivery,
+		// so while it fails the dispatcher polls exactly as it did without it.
+		if !errors.Is(err, context.Canceled) {
+			d.logger.Warn("outbox signal unreadable, polling instead", "error", err)
+		}
+		return true, false
+	}
+	if dirty {
+		return true, true
+	}
+	woke = !nextDue.IsZero() && !d.now().Before(nextDue)
+	return woke, woke
 }
 
 // DispatchOnce claims one bounded batch, publishes it, and marks what the
@@ -120,9 +196,18 @@ func (d *Dispatcher) Run(ctx context.Context, interval time.Duration) error {
 // dispatcher's claims release themselves; several dispatchers may run at once
 // and duplicate publication stays safe.
 func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
+	published, _, err := d.dispatchOnce(ctx)
+	return published, err
+}
+
+// dispatchOnce also reports how long until the earliest row still waiting is
+// due, measured on the database clock, or nil when nothing is waiting. Retries
+// and publish backoff write a future available_at, and no writer signals when
+// that moment arrives.
+func (d *Dispatcher) dispatchOnce(ctx context.Context) (int, *time.Duration, error) {
 	transaction, err := d.pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("starting the dispatch transaction: %w", err)
+		return 0, nil, fmt.Errorf("starting the dispatch transaction: %w", err)
 	}
 	defer transaction.Rollback(ctx)
 
@@ -136,7 +221,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 		maxAttempts, d.batchSize,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("claiming outbox rows: %w", err)
+		return 0, nil, fmt.Errorf("claiming outbox rows: %w", err)
 	}
 
 	type claim struct {
@@ -152,13 +237,13 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 		var c claim
 		if err := rows.Scan(&c.eventID, &c.eventType, &c.routingKey, &c.payload, &c.attempts, &c.createdAt); err != nil {
 			rows.Close()
-			return 0, fmt.Errorf("reading a claimed row: %w", err)
+			return 0, nil, fmt.Errorf("reading a claimed row: %w", err)
 		}
 		claims = append(claims, c)
 	}
 	rows.Close()
 	if rows.Err() != nil {
-		return 0, fmt.Errorf("claiming outbox rows: %w", rows.Err())
+		return 0, nil, fmt.Errorf("claiming outbox rows: %w", rows.Err())
 	}
 
 	published := 0
@@ -174,7 +259,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 			if _, err := transaction.Exec(ctx,
 				`UPDATE reelpin.outbox_events SET attempts = $2 WHERE event_id = $1`,
 				c.eventID, maxAttempts); err != nil {
-				return published, fmt.Errorf("parking an undecodable event: %w", err)
+				return published, nil, fmt.Errorf("parking an undecodable event: %w", err)
 			}
 			continue
 		}
@@ -199,7 +284,7 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 				SET attempts = attempts + 1, available_at = now() + $2::interval
 				WHERE event_id = $1`,
 				c.eventID, backoff.String()); err != nil {
-				return published, fmt.Errorf("recording a failed publish: %w", err)
+				return published, nil, fmt.Errorf("recording a failed publish: %w", err)
 			}
 			continue
 		}
@@ -207,13 +292,27 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) (int, error) {
 		if _, err := transaction.Exec(ctx,
 			`UPDATE reelpin.outbox_events SET published_at = now(), attempts = attempts + 1 WHERE event_id = $1`,
 			c.eventID); err != nil {
-			return published, fmt.Errorf("marking a published event: %w", err)
+			return published, nil, fmt.Errorf("marking a published event: %w", err)
 		}
 		published++
 	}
 
-	if err := transaction.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("committing the dispatch: %w", err)
+	var seconds *float64
+	if err := transaction.QueryRow(ctx, `
+		SELECT extract(epoch FROM min(available_at) - now())::float8
+		FROM reelpin.outbox_events
+		WHERE published_at IS NULL AND attempts < $1`,
+		maxAttempts,
+	).Scan(&seconds); err != nil {
+		return published, nil, fmt.Errorf("finding the next due event: %w", err)
 	}
-	return published, nil
+
+	if err := transaction.Commit(ctx); err != nil {
+		return 0, nil, fmt.Errorf("committing the dispatch: %w", err)
+	}
+	if seconds == nil {
+		return published, nil, nil
+	}
+	next := max(time.Duration(*seconds*float64(time.Second)), 0)
+	return published, &next, nil
 }

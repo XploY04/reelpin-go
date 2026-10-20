@@ -66,6 +66,11 @@ groups:
             Nothing is processing shares. Jobs will keep queueing and users will
             see them stuck. Check the worker units and RabbitMQ connectivity.
 
+      # The two age gauges below are read from the database only after the
+      # pool is used, so a process that has seen no traffic keeps reporting
+      # its last values. Read them with reelpin_db_gauges_staleness_seconds on
+      # the same instance: when it is large, the age is that old a reading,
+      # and the backlog may since have grown or cleared.
       - alert: JobsQueuedTooLong
         expr: reelpin_jobs_oldest_queued_seconds > 900
         for: 10m
@@ -76,7 +81,9 @@ groups:
           description: >-
             Either no worker is consuming, or one platform is failing every
             attempt. Check reelpin_live_workers and
-            reelpin_provider_failures_total.
+            reelpin_provider_failures_total. If
+            reelpin_db_gauges_staleness_seconds is large, this is an old
+            reading.
 
       - alert: OutboxFallingBehind
         expr: reelpin_outbox_oldest_pending_seconds > 300
@@ -87,7 +94,9 @@ groups:
           summary: Outbox events are not being published
           description: >-
             The dispatcher is stuck or RabbitMQ is refusing publishes. Enqueued
-            work is committed but never reaches a worker.
+            work is committed but never reaches a worker. If
+            reelpin_db_gauges_staleness_seconds is large, this is an old
+            reading.
 
       - alert: DeadLettersArriving
         expr: sum by (queue) (increase(reelpin_queue_dead_lettered_total[15m])) > 0

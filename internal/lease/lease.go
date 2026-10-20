@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,7 +43,7 @@ type Lease struct {
 
 // Acquire claims a run. Claiming increments the generation, including when the
 // same owner re-claims after a crash: the increment is what fences the past.
-func Acquire(ctx context.Context, pool *pgxpool.Pool, runID, owner string) (Lease, error) {
+func Acquire(ctx context.Context, pool *pgxpool.Pool, inflight *Inflight, runID, owner string) (Lease, error) {
 	var lease Lease
 	err := pool.QueryRow(ctx, `
 		UPDATE reelpin.processing_runs
@@ -63,12 +64,13 @@ func Acquire(ctx context.Context, pool *pgxpool.Pool, runID, owner string) (Leas
 	if err != nil {
 		return Lease{}, fmt.Errorf("acquiring the run lease: %w", err)
 	}
+	inflight.mark(ctx)
 	return lease, nil
 }
 
 // Renew extends this exact claim. Zero rows means the generation moved on:
 // the worker must stop and discard, never retry the renewal.
-func Renew(ctx context.Context, pool *pgxpool.Pool, lease Lease) (Lease, error) {
+func Renew(ctx context.Context, pool *pgxpool.Pool, inflight *Inflight, lease Lease) (Lease, error) {
 	err := pool.QueryRow(ctx, `
 		UPDATE reelpin.processing_runs
 		SET lease_expires_at = now() + $4::interval, updated_at = now()
@@ -83,6 +85,7 @@ func Renew(ctx context.Context, pool *pgxpool.Pool, lease Lease) (Lease, error) 
 	if err != nil {
 		return Lease{}, fmt.Errorf("renewing the run lease: %w", err)
 	}
+	inflight.mark(ctx)
 	return lease, nil
 }
 
@@ -130,7 +133,7 @@ var resumeNamespace = uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 // inserts nothing new. The resume takes the routing key of the run's most
 // recent outbox event, so media work resumes on the media queue; a run that
 // somehow has none falls back to the light queue for inspection.
-func SweepExpired(ctx context.Context, pool *pgxpool.Pool, fallbackRoutingKey string, limit int) (int, error) {
+func SweepExpired(ctx context.Context, pool *pgxpool.Pool, signal *outbox.Signal, fallbackRoutingKey string, limit int) (int, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -201,6 +204,9 @@ func SweepExpired(ctx context.Context, pool *pgxpool.Pool, fallbackRoutingKey st
 
 	if err := transaction.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("committing the sweep: %w", err)
+	}
+	if swept > 0 {
+		signal.Notify(ctx)
 	}
 	return swept, nil
 }

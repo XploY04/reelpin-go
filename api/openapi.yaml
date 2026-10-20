@@ -40,6 +40,12 @@ tags:
     description: Named sets of saves, shared by membership or link.
   - name: notifications
     description: Device push tokens and open receipts.
+  - name: profile
+    description: The signed-in user's display details.
+  - name: website
+    description: Feedback and store-link taps from the marketing site.
+  - name: reminders
+    description: Pushes a user scheduled for later, and price watches on product pages.
 
 security:
   - supabaseBearer: []
@@ -506,6 +512,95 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: pinMapPlace
+      tags: [map]
+      summary: Pin a Google place
+      description: |
+        Makes a manual pin from a place a map search offered with `can_pin`.
+        Idempotent per place: pinning a place this user already pinned returns
+        that pin with `200` and does not ask Google again. A new pin answers
+        `201`. A place Google does not know, or knows without coordinates,
+        answers `404 place_not_found`, and so does every pin while the
+        deployment has no Google key.
+
+        A new place can cost a Google call, so pinning is rate limited per
+        user and per IP and answers `503 map_unavailable` when it cannot be
+        metered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PinPlaceRequest" }
+      responses:
+        "200":
+          description: The pin this user already had for the place.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "201":
+          description: The new pin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/search:
+    get:
+      operationId: searchMapPlaces
+      tags: [map]
+      summary: Find a place to pin
+      description: |
+        This user's own pins that match the query come first, as `existing`
+        results with `can_pin: false` and the pin in `map_item`. Google places
+        follow as `google` results with `can_pin: true`, minus any that are
+        one of those pins again by place id, coordinates or address.
+
+        `search_mode` is `existing`, `google` or `mixed` by where the results
+        came from, and `google` when there are none at all. Google failing, or
+        a deployment with no Google key, leaves the user's own pins as the
+        whole answer rather than failing the search.
+
+        A query can cost a Google call, so this shares the search rate limits
+        and answers `503 search_unavailable` when it cannot be metered.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+        - name: limit
+          in: query
+          required: false
+          description: The most results of each kind, so at most twice this in all.
+          schema: { type: integer, minimum: 1, maximum: 10, default: 8 }
+        - name: category
+          in: query
+          required: false
+          description: Only this user's pins in this category. Google results are not filtered.
+          schema: { type: string }
+        - name: session_token
+          in: query
+          required: false
+          description: |
+            A Google Places session token. Send the same one on the pin that
+            follows, so Google bills the search and the pin as one session.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The matches.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MapPlaceSearch" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
   /api/v2/map/nearby:
     get:
@@ -567,6 +662,34 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/map/items/{map_item_id}:
+    delete:
+      operationId: deleteMapItem
+      tags: [map]
+      summary: Remove an item from your map
+      description: |
+        Accepts exactly three id forms:
+
+        - `{location_id}`, a bare UUID: the id `listMapPins` and
+          `listNearbyPins` return for a content pin. Hides that location for
+          you only, the same preference `setPinHidden` records.
+        - `reel:{reel_id}:{index}`: hides the reel's location at that index for
+          you only, the same way.
+        - `manual:{pin_id}`: deletes that manual pin.
+
+        The map list returns the bare location UUID for a content pin, not the
+        `reel:` form. It returns a manual pin's bare UUID too, with
+        `kind: manual`; send that one as `manual:{pin_id}`, because a bare UUID
+        is always read as a location id. An id that is malformed, unknown, or
+        not reachable through your own saves answers 404.
+      parameters:
+        - { name: map_item_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
   /api/v2/map/locations/{location_id}/hidden:
     post:
       operationId: setPinHidden
@@ -617,6 +740,54 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/account/entitlements:
+    get:
+      operationId: getEntitlements
+      tags: [account]
+      summary: Plan, usage and limits
+      description: |
+        The authenticated user's plan, cumulative usage totals, limits, feature
+        flags, pricing and paywall copy. When the plan cannot be verified the
+        response is a restricted body with HTTP 200, not an error, so the client
+        degrades and retries rather than blanking the account view.
+      responses:
+        "200":
+          description: The user's entitlements.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Entitlements" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/discover:
+    get:
+      operationId: getDiscover
+      tags: [reels]
+      summary: The Discover tab
+      description: |
+        Recent saves, the dates that have saves, the reels on a chosen date, the
+        category grid and a few search prompts, for the authenticated user.
+
+        The recent-saves list pages by opaque cursor, the same as the reel list.
+
+        The dates, the search prompts and the counts read the newest 5000 saves,
+        so `recent_saves_count` and `pagination.total_count` stop at 5000.
+        `reels_for_selected_date` is filtered by the database, so a date older
+        than those 5000 still returns its reels.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/SavedDate"
+      responses:
+        "200":
+          description: The Discover tab.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoverResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
   /api/v2/search:
     post:
       operationId: searchReels
@@ -653,6 +824,97 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ProcessingUnavailable" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/profile:
+    get:
+      operationId: getProfile
+      tags: [profile]
+      summary: Read your profile
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    put:
+      operationId: putProfile
+      tags: [profile]
+      summary: Create or update your profile
+      description: |
+        An upsert for the user in the token. A field that is absent, null or
+        blank leaves the stored value as it is.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileRequest" }
+      responses:
+        "200":
+          description: The profile after the write.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/feedback:
+    post:
+      operationId: submitFeedback
+      tags: [website]
+      summary: Send feedback
+      description: |
+        Public, no session required, because the website's form is anonymous.
+        A valid bearer token, when one is sent, stores the message against that
+        user; a missing or rejected token stores it with no user. Limited per
+        IP; the signed bucket the web boundary forwards is honoured, a forged
+        one is ignored. Answers 503 `feedback_unavailable` when the limiter
+        cannot answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { description: "The rate limiter cannot answer, so the write is refused." }
+
+  /api/v2/link-clicks:
+    post:
+      operationId: recordLinkClick
+      tags: [website]
+      summary: Count a store-link tap
+      description: |
+        Public, no session. Limited per IP; the signed bucket the web boundary
+        forwards is honoured, a forged one is ignored. Answers 503
+        `link_clicks_unavailable` when the limiter cannot answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LinkClickRequest" }
+      responses:
+        "204": { description: Counted. }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { description: "The rate limiter cannot answer, so the write is refused." }
 
   /api/v2/collections:
     get:
@@ -981,6 +1243,116 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
+  /api/v2/reminders:
+    get:
+      operationId: listReminders
+      tags: [reminders]
+      summary: List reminders
+      description: |
+        This user's reminders, soonest first, sent ones included. Bounded at
+        200 rather than paged.
+      responses:
+        "200":
+          description: The user's reminders.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReminderList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: createReminder
+      tags: [reminders]
+      summary: Schedule a reminder
+      description: |
+        Stores the reminder and schedules one push at `fire_at`. A `fire_at`
+        already in the past fires within seconds. `reel_id`, when given, must
+        be one of this user's saves; deleting that save deletes the reminder.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReminderRequest" }
+      responses:
+        "200":
+          description: The new reminder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reminder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/reminders/{reminder_id}:
+    delete:
+      operationId: deleteReminder
+      tags: [reminders]
+      summary: Delete a reminder
+      description: A pending reminder that is deleted never fires.
+      parameters:
+        - $ref: "#/components/parameters/ReminderID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/price-tracks:
+    get:
+      operationId: listPriceTracks
+      tags: [reminders]
+      summary: List price tracks
+      description: This user's price watches, newest first. Bounded at 200.
+      responses:
+        "200":
+          description: The user's price tracks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceTrackList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: createPriceTrack
+      tags: [reminders]
+      summary: Watch a product page's price
+      description: |
+        The page is read once a day from its structured data (Open Graph or
+        product meta tags, `itemprop=price`, or JSON-LD offers). When the
+        price is at or below `target_price` the user gets one push. The page
+        is not fetched when the track is created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePriceTrackRequest" }
+      responses:
+        "200":
+          description: The new price track.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceTrack" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/price-tracks/{track_id}:
+    delete:
+      operationId: deletePriceTrack
+      tags: [reminders]
+      summary: Stop watching a price
+      parameters:
+        - $ref: "#/components/parameters/PriceTrackID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
 
 components:
   securitySchemes:
@@ -1058,6 +1430,16 @@ components:
       schema: { type: string, format: uuid }
     MemberUserID:
       name: member_user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReminderID:
+      name: reminder_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PriceTrackID:
+      name: track_id
       in: path
       required: true
       schema: { type: string, format: uuid }
@@ -1508,6 +1890,77 @@ components:
           description: |
             How much to trust the place. An extraction guess and a geocoded
             address are not the same claim.
+        category:
+          type: string
+          nullable: true
+          description: |
+            A content pin's category from its save; `Other` on a pin made from
+            a Google place.
+        subcategory: { type: string, nullable: true }
+        google_place_id:
+          type: string
+          nullable: true
+          description: Set only on a manual pin made from a Google place.
+        google_maps_url: { type: string, nullable: true }
+        place_types:
+          type: array
+          items: { type: string }
+
+    PinPlaceRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        `google_place_id` is required. `googlePlaceId` and `sessionToken` are
+        accepted as the same fields under the spelling older app builds send.
+      properties:
+        google_place_id: { type: string }
+        googlePlaceId: { type: string }
+        session_token: { type: string }
+        sessionToken: { type: string }
+
+    MapPlaceSearch:
+      type: object
+      required: [query, search_mode, total, results]
+      properties:
+        query: { type: string }
+        search_mode:
+          type: string
+          enum: [empty, existing, google, mixed]
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/MapPlaceResult" }
+
+    MapPlaceResult:
+      type: object
+      required: [result_type, display_title, display_address, place_name, place_types, can_pin]
+      properties:
+        result_type:
+          type: string
+          enum: [existing, google]
+        source_type:
+          type: string
+          nullable: true
+          enum: [content, manual]
+          description: The pin's kind for an `existing` result; null for `google`.
+        map_item:
+          type: object
+          allOf: [{ $ref: "#/components/schemas/Pin" }]
+          nullable: true
+        google_place_id: { type: string, nullable: true }
+        display_title: { type: string }
+        display_address: { type: string }
+        place_name: { type: string }
+        latitude:
+          type: number
+          nullable: true
+          description: Null for a `google` result; pinning it fetches the coordinates.
+        longitude: { type: number, nullable: true }
+        google_maps_url: { type: string, nullable: true }
+        place_types:
+          type: array
+          items: { type: string }
+        can_pin: { type: boolean }
 
     ManualPinRequest:
       type: object
@@ -1519,6 +1972,43 @@ components:
         latitude: { type: number }
         longitude: { type: number }
 
+    Profile:
+      type: object
+      required: [id, email, full_name, avatar_url, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: The user id. }
+        email: { type: string, nullable: true }
+        full_name: { type: string, nullable: true }
+        avatar_url: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    ProfileRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        email: { type: string, nullable: true, maxLength: 254 }
+        full_name: { type: string, nullable: true, maxLength: 200 }
+        avatar_url: { type: string, nullable: true, maxLength: 2048, description: An http or https URL. }
+
+    FeedbackRequest:
+      type: object
+      required: [topic, message]
+      additionalProperties: false
+      properties:
+        topic: { type: string, enum: [Feedback, Support, Partnership, Privacy request] }
+        email: { type: string, maxLength: 254 }
+        message: { type: string, minLength: 1, maxLength: 2000 }
+
+    LinkClickRequest:
+      type: object
+      required: [target]
+      additionalProperties: false
+      properties:
+        target: { type: string, enum: [play, ios] }
+        referer: { type: string, maxLength: 500 }
+        user_agent: { type: string, maxLength: 500 }
+        country: { type: string, maxLength: 8 }
+
     LibraryStats:
       type: object
       required: [total_reels]
@@ -1528,6 +2018,95 @@ components:
         total_tags: { type: integer }
         total_categories: { type: integer }
         total_subcategories: { type: integer }
+
+    PlanLimits:
+      type: object
+      properties:
+        saved_reels: { type: integer, nullable: true }
+        pinned_locations: { type: integer, nullable: true }
+        searches_per_month: { type: integer, nullable: true }
+        processing_jobs_per_hour: { type: integer, nullable: true }
+
+    Entitlements:
+      type: object
+      required: [user_id, current_entitlement, usage, limits, features, plan, is_premium]
+      properties:
+        user_id: { type: string }
+        current_entitlement:
+          type: object
+          required: [plan, is_premium, restricted]
+          properties:
+            plan: { type: string }
+            billing_interval: { type: string }
+            subscription_status: { type: string }
+            is_premium: { type: boolean }
+            restricted: { type: boolean }
+            error_message: { type: string, nullable: true }
+        usage:
+          type: object
+          properties:
+            saved_reels: { type: integer }
+            pinned_locations: { type: integer }
+            tags: { type: integer }
+            categories: { type: integer }
+            subcategories: { type: integer }
+        limits: { $ref: "#/components/schemas/PlanLimits" }
+        features:
+          type: object
+          additionalProperties: { type: boolean }
+        pricing:
+          type: object
+          additionalProperties: { type: string }
+        plan_cards:
+          type: array
+          items:
+            type: object
+            properties:
+              plan: { type: string }
+              name: { type: string }
+              billing_interval: { type: string }
+              price: { type: string }
+              features: { type: array, items: { type: string } }
+              limits: { $ref: "#/components/schemas/PlanLimits" }
+              cta_label: { type: string }
+        paywall_messages:
+          type: object
+          additionalProperties: { type: string }
+        plan: { type: string }
+        is_premium: { type: boolean }
+
+    DiscoverResponse:
+      type: object
+      required: [recent_saves, recent_saves_count, saved_dates, category_grid, quick_search_prompts, pagination]
+      properties:
+        recent_saves:
+          type: array
+          items: { type: object }
+        recent_saves_count:
+          type: integer
+          description: Saves counted, capped at 5000.
+        saved_dates:
+          type: array
+          items: { type: string }
+        selected_date: { type: string, nullable: true }
+        reels_for_selected_date:
+          type: array
+          items: { type: object }
+        category_grid:
+          type: array
+          items: { type: object }
+        quick_search_prompts:
+          type: array
+          items: { type: string }
+        pagination:
+          type: object
+          properties:
+            next_cursor: { type: string, nullable: true }
+            has_more: { type: boolean }
+            limit: { type: integer }
+            total_count:
+              type: integer
+              description: Saves counted, capped at 5000.
 
     Collection:
       type: object
@@ -1656,6 +2235,82 @@ components:
       required: [ok]
       properties:
         ok: { type: boolean }
+
+    Reminder:
+      type: object
+      required: [id, title, body, fire_at, status, reel_id, created_at, sent_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        fire_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, sent] }
+        reel_id: { type: string, nullable: true, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+        sent_at: { type: string, nullable: true, format: date-time }
+
+    ReminderList:
+      type: object
+      required: [reminders]
+      properties:
+        reminders:
+          type: array
+          items: { $ref: "#/components/schemas/Reminder" }
+
+    CreateReminderRequest:
+      type: object
+      required: [title, fire_at]
+      additionalProperties: false
+      properties:
+        title: { type: string, description: Required after trimming whitespace. }
+        fire_at:
+          type: string
+          format: date-time
+          description: An RFC 3339 instant with an offset. The app converts the event's local time to it.
+        body: { type: string, default: "" }
+        reel_id: { type: string, nullable: true, format: uuid }
+
+    PriceTrack:
+      type: object
+      required: [id, url, title, target_price, currency, last_price, active,
+                 last_checked_at, notified_at, reel_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        title: { type: string }
+        target_price: { type: number }
+        currency: { type: string }
+        last_price:
+          type: number
+          nullable: true
+          description: What the last check read. Null when the page did not say.
+        active: { type: boolean }
+        last_checked_at: { type: string, nullable: true, format: date-time }
+        notified_at:
+          type: string
+          nullable: true
+          format: date-time
+          description: When the one price-drop push went out. Set at most once.
+        reel_id: { type: string, nullable: true, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+
+    PriceTrackList:
+      type: object
+      required: [price_tracks]
+      properties:
+        price_tracks:
+          type: array
+          items: { $ref: "#/components/schemas/PriceTrack" }
+
+    CreatePriceTrackRequest:
+      type: object
+      required: [url, target_price]
+      additionalProperties: false
+      properties:
+        url: { type: string, description: An http or https product page. }
+        target_price: { type: number, exclusiveMinimum: true, minimum: 0 }
+        title: { type: string, default: "" }
+        reel_id: { type: string, nullable: true, format: uuid }
 
     CreateCollectionRequest:
       type: object

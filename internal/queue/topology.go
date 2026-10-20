@@ -24,10 +24,21 @@ const (
 	// QueueNotify is its own durable queue with its own retries: a
 	// notification failure must never occupy processing credit.
 	QueueNotify = "reelpin.notifications"
+	// QueueScheduled carries work the fleet runs on a clock rather than on a
+	// request: the daily price check. One run can take most of an hour, so it
+	// gets its own credit rather than holding a light consumer.
+	QueueScheduled = "reelpin.scheduled"
 )
 
 // WorkQueues is every queue a worker consumes.
-var WorkQueues = []string{QueueMedia, QueueLight, QueueNotify}
+var WorkQueues = []string{QueueMedia, QueueLight, QueueNotify, QueueScheduled}
+
+// DelayQueue parks scheduled work until it is due. It has no consumer: each
+// message carries its own expiration, and the broker dead-letters it onto
+// QueueScheduled when that runs out. A per-message TTL only expires at the
+// head of a queue, which holds here because the scheduler parks one message
+// per run time.
+const DelayQueue = QueueScheduled + ".delay"
 
 // RetryDelays are the two backoff stages the broker owns. These cover
 // transport failures only: a failure that reached durable state schedules its
@@ -92,6 +103,16 @@ func Declare(channel *amqp.Channel) error {
 				return fmt.Errorf("binding retry queue %s: %w", name, err)
 			}
 		}
+	}
+
+	if _, err := channel.QueueDeclare(DelayQueue, true, false, false, false, amqp.Table{
+		"x-dead-letter-exchange":    Exchange,
+		"x-dead-letter-routing-key": QueueScheduled,
+	}); err != nil {
+		return fmt.Errorf("declaring delay queue %s: %w", DelayQueue, err)
+	}
+	if err := channel.QueueBind(DelayQueue, DelayQueue, Exchange, false, nil); err != nil {
+		return fmt.Errorf("binding delay queue %s: %w", DelayQueue, err)
 	}
 	return nil
 }

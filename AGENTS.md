@@ -25,7 +25,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | Path | What lives there |
 |------|------------------|
 | `cmd/api/` | Wiring only: config, pool, JWKS verifier, `http.Server`, signals. No logic. |
-| `cmd/worker/` | The queue consumers: processing, indexing, notifications. |
+| `cmd/worker/` | The queue consumers: processing, indexing, notifications, and the daily price check. |
 | `cmd/maintenance/` | Migrations, backfills, retention, purge, taxonomy curation, search eval, the container healthcheck. |
 | `cmd/load/` | Drives `internal/load`. Never runs in CI. |
 | `internal/httpapi/` | Routes, middleware, handlers, response shapes. The transport layer. |
@@ -37,8 +37,9 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/ai/`, `internal/embed/`, `internal/search/`, `internal/taxonomy/` | Extraction and categorization, the embedding index, the three search arms and their fusion, and the category tree the prompt is built from. |
 | `internal/lifecycle/`, `internal/backfill/` | Deletion, retention and purge; and the resumable read of the legacy Python tables. |
 | `internal/notify/` | Push tokens and FCM delivery. |
-| `internal/media/`, `internal/storage/`, `internal/providers/`, `internal/apify/`, `internal/cookies/`, `internal/reddit/` | Bounded downloads, the temp workspace, provider budgets and cooldowns, and the Reddit application token. |
-| `internal/safehttp/`, `internal/ratelimit/` | The outbound SSRF guard and the Redis limiters. |
+| `internal/reminders/`, `internal/pricetracks/` | Reminders fired from a Redis due set, and price watches checked once a day by a delayed RabbitMQ message the worker schedules. Neither polls PostgreSQL. |
+| `internal/media/`, `internal/storage/`, `internal/providers/`, `internal/apify/`, `internal/cookies/`, `internal/reddit/`, `internal/googleplaces/` | Bounded downloads, the temp workspace, provider budgets and cooldowns, the Reddit application token, and Google Places autocomplete and details. |
+| `internal/safehttp/`, `internal/ratelimit/`, `internal/readcache/` | The outbound SSRF guard, the Redis limiters, and the one-minute Redis read cache that lets an idle database suspend. |
 | `internal/spend/` | The cost gate: what a provider call cost, and whether new submissions are still accepted. The amounts are configuration; see `docs/cost-gate.md`. |
 | `internal/postgres/`, `internal/db/`, `internal/migrations/` | pgx implementations, the pool, and the embedded migrations. |
 | `internal/metrics/` | The only importer of the Prometheus client: every collector, the gauge sampler, and `Hash` for log redaction. |

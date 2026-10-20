@@ -7,7 +7,7 @@ on:
     branches: [dev, main]
 
 env:
-  GO_VERSION: "1.26.2"
+  GO_VERSION: "1.26.9"
 
 jobs:
   check:
@@ -60,9 +60,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        # PostGIS carries the spatial types the map schema needs; pgvector is
-        # installed into the running container below, because no published
-        # image carries both.
+        # Same image as docker-compose.yml. PostGIS carries the spatial types
+        # the map schema needs; pgvector is installed into the running
+        # container below, because no published image carries both.
         image: postgis/postgis:16-3.5
         env:
           POSTGRES_USER: reelpin
@@ -75,6 +75,12 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U reelpin"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
 
     steps:
@@ -93,10 +99,14 @@ jobs:
             docker ps
             exit 1
           fi
+          # The image is Debian bullseye, whose pgdg repository moved to
+          # apt-archive.postgresql.org once bullseye went end-of-life.
           docker exec "$container" bash -c \
-            "apt-get update -qq && apt-get install -y -qq postgresql-16-pgvector"
+            "sed -i 's#http://apt.postgresql.org/pub/repos/apt/#https://apt-archive.postgresql.org/pub/repos/apt/#' /etc/apt/sources.list.d/*.list \
+            && apt-get update -qq && apt-get install -y -qq postgresql-16-pgvector"
 
       - name: integration tests
         run: |
           export TEST_DATABASE_URL="postgres://reelpin@localhost:5432/reelpin"
+          export TEST_REDIS_URL="redis://localhost:6379/0"
           make test-integration

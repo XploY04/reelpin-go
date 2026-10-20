@@ -10,9 +10,11 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/profiles"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/website"
 	"io"
 	"log/slog"
 	"net/http"
@@ -55,12 +57,15 @@ type fakeReels struct {
 	records []reels.ReelRecord
 	facets  []reels.FacetRow
 	stats   reels.LibraryStats
+	library []reels.ReelRecord
 	byID    map[string]reels.ReelRecord
 	err     error
 
 	lastUserID  string
 	lastOptions reels.ListOptions
 	lastGetID   uuid.UUID
+
+	lastLibraryLimit int
 }
 
 func (f *fakeReels) List(_ context.Context, userID string, options reels.ListOptions) ([]reels.ReelRecord, error) {
@@ -94,6 +99,18 @@ func (f *fakeReels) Facets(_ context.Context, userID string) ([]reels.FacetRow, 
 		return nil, f.err
 	}
 	return f.facets, nil
+}
+
+func (f *fakeReels) Library(_ context.Context, userID string, limit int) ([]reels.ReelRecord, error) {
+	f.lastUserID = userID
+	f.lastLibraryLimit = limit
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.library != nil {
+		return f.library, nil
+	}
+	return f.records, nil
 }
 
 func (f *fakeReels) Stats(_ context.Context, userID string) (reels.LibraryStats, error) {
@@ -134,12 +151,24 @@ func (f *fakeJobs) Get(_ context.Context, userID string, id uuid.UUID) (jobs.Job
 	return jobs.JobRecord{}, jobs.ErrNotFound
 }
 
+// fakeEntitlements answers IsPro from a set a test installs, defaulting to Free.
+type fakeEntitlements struct {
+	pro        map[string]bool
+	lastUserID string
+}
+
+func (f *fakeEntitlements) IsPro(_ context.Context, userID string) bool {
+	f.lastUserID = userID
+	return f.pro[userID]
+}
+
 func testDeps(pinger Pinger) Deps {
 	return Deps{
 		DB:            pinger,
 		Auth:          fakeAuth{userID: testUserID},
 		Reels:         &fakeReels{},
 		Jobs:          &fakeJobs{},
+		Entitlements:  &fakeEntitlements{},
 		Enqueue:       &fakeSubmitter{},
 		ShareTokens:   &fakeShareTokens{},
 		Resolver:      &sourceidentity.Resolver{},
@@ -147,7 +176,12 @@ func testDeps(pinger Pinger) Deps {
 		Notifications: &fakeNotifications{},
 		Lifecycle:     &fakeLifecycle{},
 		Map:           &fakeMap{},
+		MapPlaces:     unconfiguredPlaces(&fakePlaceStore{}),
+		Profiles:      &fakeProfiles{},
+		Website:       &fakeWebsite{},
 		Search:        &fakeSearch{},
+		Reminders:     &fakeReminders{},
+		PriceTracks:   &fakePriceTracks{},
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
 		Now:           func() time.Time { return testNow },
@@ -338,6 +372,7 @@ type fakeMap struct {
 	lastBounds geo.Bounds
 	lastCentre geo.Point
 	hidden     *bool
+	lastItemID string
 }
 
 func (f *fakeMap) Pins(_ context.Context, userID string, bounds geo.Bounds) ([]mapview.Pin, error) {
@@ -371,6 +406,11 @@ func (f *fakeMap) HidePin(_ context.Context, userID, _ string, hidden bool) erro
 	return f.err
 }
 
+func (f *fakeMap) DeleteItem(_ context.Context, userID, itemID string) error {
+	f.lastUserID, f.lastItemID = userID, itemID
+	return f.err
+}
+
 // fakeSearch records what a query asked for and answers with whatever the test
 // set up.
 type fakeSearch struct {
@@ -400,4 +440,84 @@ func signedBucketHeader(secret, bucket string, at time.Time) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	return payload + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
+// fakeProfiles keeps one profile per user in memory and mirrors the real
+// service's validation by delegating to Normalize.
+type fakeProfiles struct {
+	err        error
+	stored     map[string]profiles.Profile
+	lastUserID string
+}
+
+func (f *fakeProfiles) Get(_ context.Context, userID string) (profiles.Profile, error) {
+	f.lastUserID = userID
+	if f.err != nil {
+		return profiles.Profile{}, f.err
+	}
+	profile, ok := f.stored[userID]
+	if !ok {
+		return profiles.Profile{}, profiles.ErrNotFound
+	}
+	return profile, nil
+}
+
+func (f *fakeProfiles) Upsert(_ context.Context, userID string, params profiles.Params) (profiles.Profile, error) {
+	f.lastUserID = userID
+	if f.err != nil {
+		return profiles.Profile{}, f.err
+	}
+	normalized, err := profiles.Normalize(params)
+	if err != nil {
+		return profiles.Profile{}, err
+	}
+	if f.stored == nil {
+		f.stored = map[string]profiles.Profile{}
+	}
+	profile := f.stored[userID]
+	profile.ID = userID
+	if normalized.Email != nil {
+		profile.Email = normalized.Email
+	}
+	if normalized.FullName != nil {
+		profile.FullName = normalized.FullName
+	}
+	if normalized.AvatarURL != nil {
+		profile.AvatarURL = normalized.AvatarURL
+	}
+	f.stored[userID] = profile
+	return profile, nil
+}
+
+// fakeWebsite records what reached the service.
+type fakeWebsite struct {
+	err          error
+	lastUserID   string
+	lastFeedback website.Feedback
+	lastClick    website.Click
+	clicks       int
+}
+
+func (f *fakeWebsite) SubmitFeedback(_ context.Context, userID string, feedback website.Feedback) (string, error) {
+	f.lastUserID = userID
+	if f.err != nil {
+		return "", f.err
+	}
+	if _, err := website.NormalizeFeedback(feedback); err != nil {
+		return "", err
+	}
+	f.lastFeedback = feedback
+	return "66666666-6666-4666-8666-666666666666", nil
+}
+
+func (f *fakeWebsite) RecordClick(_ context.Context, click website.Click) error {
+	if f.err != nil {
+		return f.err
+	}
+	if _, err := website.NormalizeClick(click); err != nil {
+		return err
+	}
+	f.lastClick = click
+	f.clicks++
+	return nil
 }

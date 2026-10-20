@@ -17,18 +17,26 @@ import (
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/entitlements"
+	"github.com/XploY04/reelpin-go/internal/googleplaces"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
 	"github.com/XploY04/reelpin-go/internal/lifecycle"
 	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
+	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/pricetracks"
+	"github.com/XploY04/reelpin-go/internal/profiles"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/readcache"
+	"github.com/XploY04/reelpin-go/internal/reminders"
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/search"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/spend"
+	"github.com/XploY04/reelpin-go/internal/website"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/redis/go-redis/v9"
 )
@@ -100,10 +108,16 @@ func run(logger *slog.Logger) error {
 
 	// Redis is optional outside production: without it there are no limits, and
 	// submissions fail closed while every read keeps serving.
+	// It also carries the read cache and the outbox signal, which is what
+	// lets an idle database suspend; without it both pass straight through.
 	var (
-		limiter     httpapi.RateLimiter
-		redisPinger httpapi.Pinger
-		liveWorkers metrics.WorkerCount
+		limiter          httpapi.RateLimiter
+		redisPinger      httpapi.Pinger
+		liveWorkers      metrics.WorkerCount
+		cache            *readcache.Cache
+		invalidator      lifecycle.CacheInvalidator
+		outboxSignal     *outbox.Signal
+		reminderSchedule reminders.Schedule
 	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
@@ -120,6 +134,10 @@ func run(logger *slog.Logger) error {
 		liveWorkers = func(ctx context.Context) (int, error) {
 			return workerhealth.Live(ctx, client, cfg.RedisKeyPrefix)
 		}
+		cache = readcache.New(client, cfg.RedisKeyPrefix, logger)
+		invalidator = cache
+		outboxSignal = outbox.NewSignal(client, cfg.RedisKeyPrefix, logger)
+		reminderSchedule = reminders.NewRedisSchedule(client, cfg.RedisKeyPrefix)
 	} else {
 		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
 			"environment", cfg.Environment)
@@ -149,12 +167,13 @@ func run(logger *slog.Logger) error {
 	if cfg.AdminKey == "" {
 		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
 	}
-	go metrics.Sample(ctx, meters, pool, liveWorkers)
+	activity := metrics.NewActivity(pool)
+	go metrics.Sample(ctx, meters, activity, liveWorkers, nil)
 
 	// The API is the one process that publishes the fleet's month-to-date
 	// spend, whether or not a gate is configured: watching it is how the
 	// limits get chosen.
-	go metrics.SampleSpend(ctx, meters, func(ctx context.Context) (float64, error) {
+	go metrics.SampleSpend(ctx, meters, activity, func(ctx context.Context) (float64, error) {
 		total, err := ledger.MonthToDateMicros(ctx)
 		return total.USD(), err
 	})
@@ -174,20 +193,40 @@ func run(logger *slog.Logger) error {
 		logger.Warn("no SUPABASE_SERVICE_ROLE_KEY: an account deletion removes the data, leaves the sign-in working, and stays pending")
 	}
 
+	submissions := postgres.NewEnqueue(pool)
+	submissions.Outbox = outboxSignal
+
+	places := googleplaces.New(googleplaces.Config{
+		APIKey:  cfg.GoogleMapsAPIKey,
+		Timeout: cfg.GoogleMapsTimeout,
+		Metrics: meters,
+	})
+	if !places.Configured() {
+		logger.Warn("no GOOGLE_MAPS_API_KEY: map search answers the user's own pins only, and pinning a place answers not found")
+	}
+	mapService := mapview.New(pool, time.Now)
+
 	api, err := httpapi.New(httpapi.Deps{
 		DB:             pool,
 		Auth:           verifier,
-		Reels:          postgres.NewReels(pool),
-		Jobs:           postgres.NewCombinedJobs(pool),
-		Enqueue:        enqueue.New(postgres.NewEnqueue(pool), resolver, optionalGate(gate)),
+		Reels:          readcache.CachedReels(postgres.NewReels(pool), cache),
+		Jobs:           readcache.CachedJobs(postgres.NewCombinedJobs(pool), cache),
+		Entitlements:   entitlements.NewCache(postgres.NewEntitlements(pool), time.Minute, time.Now, logger),
+		Enqueue:        enqueue.New(submissions, resolver, optionalGate(gate)),
 		ShareTokens:    shareTokens,
 		Resolver:       resolver,
 		Collections:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
-		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), nil, logger),
-		Map:            mapview.New(pool, time.Now),
+		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), invalidator, logger),
+		Map:            mapService,
+		MapPlaces:      mapview.NewPlaces(mapService, places, logger),
+		Profiles:       profiles.New(pool),
+		Website:        website.New(pool),
 		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
 		Search:         searchService,
+		Reminders:      reminders.NewService(postgres.NewReminders(pool), reminderSchedule, logger),
+		PriceTracks:    pricetracks.NewService(postgres.NewPriceTracks(pool)),
 		Limiter:        limiter,
+		Cache:          invalidator,
 		Metrics:        meters,
 		AdminKey:       cfg.AdminKey,
 		IPBucketSecret: cfg.IPBucketSecret,

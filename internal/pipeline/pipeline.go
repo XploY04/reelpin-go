@@ -16,6 +16,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/metrics"
+	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/platform"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -66,6 +67,12 @@ type Cooldowns interface {
 	Remaining(ctx context.Context, provider string) (time.Duration, error)
 }
 
+// CacheInvalidator drops a user's cached reads once a commit changes what
+// they would see.
+type CacheInvalidator interface {
+	InvalidateUser(ctx context.Context, userID string) error
+}
+
 // Deps are the seams. Everything that costs money or touches a file is behind
 // one.
 type Deps struct {
@@ -88,6 +95,11 @@ type Deps struct {
 	Now      func() time.Time
 	// Metrics is optional. Nil means the pipeline measures nothing.
 	Metrics *metrics.Metrics
+	// Outbox, Inflight and Cache are the Redis hints that let an idle
+	// database stay idle. Each may be nil, and then nothing is hinted.
+	Outbox   *outbox.Signal
+	Inflight *lease.Inflight
+	Cache    CacheInvalidator
 }
 
 type Pipeline struct {
@@ -124,7 +136,7 @@ type run struct {
 // Handle is the queue handler: it owns the lease, the outcome, and the line
 // between transport retries and durable failure state.
 func (p *Pipeline) Handle(ctx context.Context, message queue.Message) (queue.Outcome, error) {
-	held, err := lease.Acquire(ctx, p.deps.Pool, message.RunID, p.deps.WorkerID)
+	held, err := lease.Acquire(ctx, p.deps.Pool, p.deps.Inflight, message.RunID, p.deps.WorkerID)
 	if errors.Is(err, lease.ErrNotAcquired) {
 		// Finished, or another worker holds it: this delivery is a duplicate
 		// either way, and acknowledging it is the idempotent answer.
@@ -263,7 +275,11 @@ func (p *Pipeline) escalate(ctx context.Context, held lease.Lease, state *run) e
 	}); err != nil {
 		return err
 	}
-	return transaction.Commit(ctx)
+	if err := transaction.Commit(ctx); err != nil {
+		return err
+	}
+	p.deps.Outbox.Notify(ctx)
+	return nil
 }
 
 // observeStage records one stage attempt. The outcome is the failure class,
@@ -299,7 +315,7 @@ func (p *Pipeline) renew(ctx context.Context, held lease.Lease, cancel context.C
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := lease.Renew(ctx, p.deps.Pool, held); err != nil {
+			if _, err := lease.Renew(ctx, p.deps.Pool, p.deps.Inflight, held); err != nil {
 				// Fenced or unreachable: either way this worker must stop
 				// before it commits anything stale.
 				cancel()
@@ -546,6 +562,7 @@ func (p *Pipeline) commitStage(ctx context.Context, state *run, stage, hash stri
 	}
 	defer tx.Rollback(ctx)
 
+	var users []string
 	err = lease.GuardedExec(ctx, tx, state.Lease, func(guarded pgx.Tx) error {
 		if err := saveCheckpoint(ctx, guarded, state.ID, stage, hash, output); err != nil {
 			return err
@@ -555,17 +572,24 @@ func (p *Pipeline) commitStage(ctx context.Context, state *run, stage, hash stri
 			state.ID, stage); err != nil {
 			return err
 		}
-		_, err := guarded.Exec(ctx, `
+		if _, err := guarded.Exec(ctx, `
 			UPDATE reelpin.processing_jobs
 			SET status = 'processing', current_step = $2, progress_percent = $3, updated_at = now()
 			WHERE run_id = $1 AND status IN ('queued', 'processing')`,
-			state.ID, stage, progress)
+			state.ID, stage, progress); err != nil {
+			return err
+		}
+		users, err = p.subscribers(ctx, guarded, state.ID)
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	p.invalidate(ctx, users)
+	return nil
 }
 
 // load reads the run and reconstructs the identity the handlers need.
@@ -603,9 +627,13 @@ func (p *Pipeline) applyFailure(ctx context.Context, held lease.Lease, stage str
 	defer tx.Rollback(ctx)
 
 	var terminal bool
+	var users []string
 	err = lease.GuardedExec(ctx, tx, held, func(guarded pgx.Tx) error {
 		attempts, err := recordStageFailure(ctx, guarded, held.RunID, stage, failure.Class)
 		if err != nil {
+			return err
+		}
+		if users, err = p.subscribers(ctx, guarded, held.RunID); err != nil {
 			return err
 		}
 
@@ -627,6 +655,12 @@ func (p *Pipeline) applyFailure(ctx context.Context, held lease.Lease, stage str
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing the failure: %w", err)
 	}
+	if !terminal {
+		// The retry is an outbox row due in the future; the dispatcher reads
+		// when it falls due the next time it is woken.
+		p.deps.Outbox.Notify(ctx)
+	}
+	p.invalidate(ctx, users)
 
 	p.deps.Logger.Warn("stage failed",
 		"run_id", held.RunID, "stage", stage, "class", string(failure.Class),
@@ -715,4 +749,38 @@ func (p *Pipeline) completeAsFailed(ctx context.Context, tx pgx.Tx, runID string
 		WHERE run_id = $1 AND status IN ('queued', 'processing')`,
 		runID, failure.Code)
 	return err
+}
+
+// subscribers lists the users with a job on this run, read inside the commit
+// that changes what they see. Without a cache there is nothing to drop, and
+// the query is skipped.
+func (p *Pipeline) subscribers(ctx context.Context, tx pgx.Tx, runID string) ([]string, error) {
+	if p.deps.Cache == nil {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT DISTINCT user_id::text FROM reelpin.processing_jobs WHERE run_id = $1`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("finding the run's subscribers: %w", err)
+	}
+	users, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("finding the run's subscribers: %w", err)
+	}
+	return users, nil
+}
+
+// invalidate runs after the commit, so a read that misses the cache finds the
+// committed state. A failure costs a stale screen for one cache lifetime, never
+// the run.
+func (p *Pipeline) invalidate(ctx context.Context, users []string) {
+	if p.deps.Cache == nil {
+		return
+	}
+	for _, userID := range users {
+		if err := p.deps.Cache.InvalidateUser(ctx, userID); err != nil {
+			p.deps.Logger.Warn("invalidating a subscriber's cache failed",
+				"user", metrics.Hash(userID), "error", err)
+		}
+	}
 }

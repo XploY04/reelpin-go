@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -39,6 +40,9 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.InstagramCookies) != 0 {
 		t.Errorf("InstagramCookies = %v, want no slots", cfg.InstagramCookies)
 	}
+	if cfg.GoogleMapsAPIKey != "" || cfg.GoogleMapsTimeout != 10*time.Second {
+		t.Errorf("google maps = %q and %v, want no key and 10s", cfg.GoogleMapsAPIKey, cfg.GoogleMapsTimeout)
+	}
 }
 
 var configKeys = []string{
@@ -46,6 +50,7 @@ var configKeys = []string{
 	"SUPABASE_URL", "SUPABASE_JWT_AUDIENCE",
 	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
 	"REEL_THUMBNAIL_BUCKET", "YT_DLP_PATH", "FFMPEG_PATH",
+	"GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_TIMEOUT_SECONDS",
 	"INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64",
 	"INSTAGRAM_BACKUP_COOKIE_DATA_BASE64",
 	"INSTAGRAM_TERTIARY_COOKIE_DATA_BASE64",
@@ -177,6 +182,35 @@ func TestLoad(t *testing.T) {
 					t.Errorf("redis timeouts are unset: %+v", options)
 				}
 			},
+		},
+		{
+			name: "google maps key and timeout",
+			env: map[string]string{
+				"SUPABASE_URL":                "https://project.supabase.co",
+				"GOOGLE_MAPS_API_KEY":         " maps-key ",
+				"GOOGLE_MAPS_TIMEOUT_SECONDS": "2.5",
+			},
+			check: func(t *testing.T, c Config) {
+				if c.GoogleMapsAPIKey != "maps-key" || c.GoogleMapsTimeout != 2500*time.Millisecond {
+					t.Errorf("google maps = %q and %v", c.GoogleMapsAPIKey, c.GoogleMapsTimeout)
+				}
+			},
+		},
+		{
+			name: "a google maps timeout that is not a number",
+			env: map[string]string{
+				"SUPABASE_URL":                "https://project.supabase.co",
+				"GOOGLE_MAPS_TIMEOUT_SECONDS": "soon",
+			},
+			wantErr: true,
+		},
+		{
+			name: "a google maps timeout of zero",
+			env: map[string]string{
+				"SUPABASE_URL":                "https://project.supabase.co",
+				"GOOGLE_MAPS_TIMEOUT_SECONDS": "0",
+			},
+			wantErr: true,
 		},
 		{
 			name: "development generates a salt",

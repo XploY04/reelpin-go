@@ -77,12 +77,18 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodGet, "/api/v2/processing-jobs/{job_id}", "getProcessingJob", s.handleGetJob, true, "Jobs", "Reels"),
 
 		bearer(http.MethodGet, "/api/v2/account/library-stats", "getLibraryStats", s.handleLibraryStats, true, "Reels"),
+		bearer(http.MethodGet, "/api/v2/account/entitlements", "getEntitlements", s.handleEntitlements, true, "Reels", "Entitlements"),
+
+		bearer(http.MethodGet, "/api/v2/discover", "getDiscover", s.handleDiscover, true, "Reels"),
 
 		bearer(http.MethodGet, "/api/v2/map/pins", "listMapPins", s.handleMapPins, true, "Map"),
 		bearer(http.MethodGet, "/api/v2/map/nearby", "listNearbyPins", s.handleMapNearby, true, "Map"),
 		bearer(http.MethodPost, "/api/v2/map/manual-pins", "createManualPin", s.handleCreateManualPin, true, "Map"),
 		bearer(http.MethodDelete, "/api/v2/map/manual-pins/{pin_id}", "deleteManualPin", s.handleDeleteManualPin, true, "Map"),
 		bearer(http.MethodPost, "/api/v2/map/locations/{location_id}/hidden", "setPinHidden", s.handleHidePin, true, "Map"),
+		bearer(http.MethodGet, "/api/v2/map/search", "searchMapPlaces", s.handleMapPlaceSearch, true, "MapPlaces"),
+		bearer(http.MethodPost, "/api/v2/map/pins", "pinMapPlace", s.handlePinMapPlace, false, "MapPlaces"),
+		bearer(http.MethodDelete, "/api/v2/map/items/{map_item_id}", "deleteMapItem", s.handleDeleteMapItem, true, "Map"),
 		bearer(http.MethodPost, "/api/v2/search", "searchReels", s.handleSearch, true, "Search"),
 
 		bearer(http.MethodPost, "/api/v2/device-push-tokens", "registerDeviceToken", s.handleRegisterPushToken, true, "Notifications"),
@@ -105,6 +111,14 @@ func (s *Server) routeTable() []Route {
 			requires: []string{"Logger", "ShareTokens", "Enqueue"},
 		},
 
+		bearer(http.MethodGet, "/api/v2/profile", "getProfile", s.handleGetProfile, false, "Profiles"),
+		bearer(http.MethodPut, "/api/v2/profile", "putProfile", s.handlePutProfile, true, "Profiles"),
+
+		// Public because the website's form is anonymous; a valid bearer token,
+		// when one is sent, attaches the message to that user.
+		public(http.MethodPost, "/api/v2/feedback", "submitFeedback", s.handleSubmitFeedback, true, "Auth", "Website"),
+		public(http.MethodPost, "/api/v2/link-clicks", "recordLinkClick", s.handleRecordLinkClick, true, "Website"),
+
 		bearer(http.MethodGet, "/api/v2/collections", "listCollections", s.handleListCollections, false, "Collections"),
 		bearer(http.MethodPost, "/api/v2/collections", "createCollection", s.handleCreateCollection, true, "Collections"),
 		bearer(http.MethodGet, "/api/v2/collections/{collection_id}", "getCollection", s.handleCollectionDetail, false, "Collections"),
@@ -119,6 +133,14 @@ func (s *Server) routeTable() []Route {
 		bearer(http.MethodDelete, "/api/v2/collections/{collection_id}/link", "disableCollectionLink", s.handleDisableCollectionLink, true, "Collections"),
 		bearer(http.MethodPost, "/api/v2/collections/{collection_id}/invites", "createCollectionInvite", s.handleCreateCollectionInvite, true, "Collections"),
 		bearer(http.MethodPost, "/api/v2/collection-invites/{token}/accept", "acceptCollectionInvite", s.handleAcceptCollectionInvite, true, "Collections"),
+
+		bearer(http.MethodGet, "/api/v2/reminders", "listReminders", s.handleListReminders, true, "Reminders"),
+		bearer(http.MethodPost, "/api/v2/reminders", "createReminder", s.handleCreateReminder, false, "Reminders"),
+		bearer(http.MethodDelete, "/api/v2/reminders/{reminder_id}", "deleteReminder", s.handleDeleteReminder, true, "Reminders"),
+		bearer(http.MethodGet, "/api/v2/price-tracks", "listPriceTracks", s.handleListPriceTracks, true, "PriceTracks"),
+		bearer(http.MethodPost, "/api/v2/price-tracks", "createPriceTrack", s.handleCreatePriceTrack, false, "PriceTracks"),
+		bearer(http.MethodDelete, "/api/v2/price-tracks/{track_id}", "deletePriceTrack", s.handleDeletePriceTrack, true, "PriceTracks"),
+
 		{
 			// The token in the path is the whole authorization: an unguessable
 			// capability granting a read-only view of one collection.

@@ -42,6 +42,9 @@ func drain(t *testing.T, connection *amqp.Connection) {
 	if err := Declare(channel); err != nil {
 		t.Fatalf("declaring: %v", err)
 	}
+	if _, err := channel.QueuePurge(DelayQueue, false); err != nil {
+		t.Fatalf("purging %s: %v", DelayQueue, err)
+	}
 	for _, queue := range WorkQueues {
 		names := []string{queue, DeadLetterQueue(queue)}
 		for _, delay := range RetryDelays {
@@ -341,4 +344,43 @@ func TestMessagesSurviveABrokerRestartOnItsVolume(t *testing.T) {
 		t.Fatalf("the work queue is not declared durable: %v", err)
 	}
 	_ = state
+}
+
+func TestADelayedMessageArrivesOnTheScheduledQueueWhenDue(t *testing.T) {
+	connection := testConnection(t)
+	drain(t, connection)
+
+	publisher, err := NewPublisher(connection, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publisher.Close()
+
+	message := testMessage("77777777-7777-4777-8777-777777777777")
+	message.EventType = EventPriceCheck
+	message.RunID = ""
+	parkedAt := time.Now()
+	if err := publisher.PublishDelayed(context.Background(), time.Second, message); err != nil {
+		t.Fatalf("parking: %v", err)
+	}
+
+	received := make(chan time.Time, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go Consume(ctx, connection, ConsumerConfig{Queue: QueueScheduled, Logger: quiet()}, publisher,
+		func(_ context.Context, delivered Message) (Outcome, error) {
+			if delivered.EventID == message.EventID {
+				received <- time.Now()
+			}
+			return Outcome{Kind: Done}, nil
+		})
+
+	select {
+	case at := <-received:
+		if waited := at.Sub(parkedAt); waited < time.Second {
+			t.Fatalf("delivered after %s, before its delay ran out", waited)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the delayed message never reached the scheduled queue")
+	}
 }

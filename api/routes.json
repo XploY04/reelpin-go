@@ -1,11 +1,17 @@
 {
   "note": "Generated from Server.routeTable(). A change here is an API change.",
-  "route_count": 40,
+  "route_count": 55,
   "routes": [
     {
       "method": "DELETE",
       "path": "/api/v2/account",
       "operation_id": "deleteAccount",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/account/entitlements",
+      "operation_id": "getEntitlements",
       "auth": "bearer"
     },
     {
@@ -112,6 +118,18 @@
     },
     {
       "method": "GET",
+      "path": "/api/v2/discover",
+      "operation_id": "getDiscover",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/feedback",
+      "operation_id": "submitFeedback",
+      "auth": "public"
+    },
+    {
+      "method": "GET",
       "path": "/api/v2/health/live",
       "operation_id": "getHealthLive",
       "auth": "public"
@@ -121,6 +139,18 @@
       "path": "/api/v2/health/ready",
       "operation_id": "getHealthReady",
       "auth": "public"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/link-clicks",
+      "operation_id": "recordLinkClick",
+      "auth": "public"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/map/items/{map_item_id}",
+      "operation_id": "deleteMapItem",
+      "auth": "bearer"
     },
     {
       "method": "POST",
@@ -154,6 +184,18 @@
     },
     {
       "method": "POST",
+      "path": "/api/v2/map/pins",
+      "operation_id": "pinMapPlace",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/search",
+      "operation_id": "searchMapPlaces",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
       "path": "/api/v2/native-shares/reels",
       "operation_id": "submitNativeShare",
       "auth": "share-token"
@@ -162,6 +204,24 @@
       "method": "POST",
       "path": "/api/v2/notifications/{notification_id}/opened",
       "operation_id": "markNotificationOpened",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/price-tracks",
+      "operation_id": "listPriceTracks",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/price-tracks",
+      "operation_id": "createPriceTrack",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/price-tracks/{track_id}",
+      "operation_id": "deletePriceTrack",
       "auth": "bearer"
     },
     {
@@ -180,6 +240,18 @@
       "method": "GET",
       "path": "/api/v2/processing-jobs/{job_id}",
       "operation_id": "getProcessingJob",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/profile",
+      "operation_id": "getProfile",
+      "auth": "bearer"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/profile",
+      "operation_id": "putProfile",
       "auth": "bearer"
     },
     {
@@ -210,6 +282,24 @@
       "method": "GET",
       "path": "/api/v2/reels/{reel_id}",
       "operation_id": "getReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reminders",
+      "operation_id": "listReminders",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/reminders",
+      "operation_id": "createReminder",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/reminders/{reminder_id}",
+      "operation_id": "deleteReminder",
       "auth": "bearer"
     },
     {

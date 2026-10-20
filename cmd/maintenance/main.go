@@ -28,7 +28,7 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|" +
 			"rebuild-queue|retention|purge|backfill-embeddings|backfill-legacy|backfill-verify|" +
-			"search-eval|curate-taxonomy|rollback-taxonomy|healthcheck>")
+			"search-eval|curate-taxonomy|rollback-taxonomy|check-price-tracks|healthcheck>")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -90,6 +90,9 @@ func run(logger *slog.Logger, args []string) error {
 
 	case "rollback-taxonomy":
 		return runRollbackTaxonomy(ctx, logger, cfg, args[1:])
+
+	case "check-price-tracks":
+		return runCheckPriceTracks(ctx, logger, cfg, args[1:])
 
 	case "migrate-down":
 		// Expand-only migrations are corrected forward in production. This is

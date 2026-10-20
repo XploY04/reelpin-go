@@ -100,7 +100,7 @@ func TestOnlyOneOwnerHoldsARun(t *testing.T) {
 	runID := seedRun(t, pool)
 	ctx := context.Background()
 
-	first, err := Acquire(ctx, pool, runID, "worker-a")
+	first, err := Acquire(ctx, pool, nil, runID, "worker-a")
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestOnlyOneOwnerHoldsARun(t *testing.T) {
 		t.Fatalf("generation = %d, want the first claim to be 1", first.Generation)
 	}
 
-	if _, err := Acquire(ctx, pool, runID, "worker-b"); !errors.Is(err, ErrNotAcquired) {
+	if _, err := Acquire(ctx, pool, nil, runID, "worker-b"); !errors.Is(err, ErrNotAcquired) {
 		t.Fatalf("second acquire err = %v, want ErrNotAcquired while the lease is live", err)
 	}
 }
@@ -118,7 +118,7 @@ func TestAnExpiredLeaseIsReclaimedAndThePastIsFenced(t *testing.T) {
 	runID := seedRun(t, pool)
 	ctx := context.Background()
 
-	old, err := Acquire(ctx, pool, runID, "worker-a")
+	old, err := Acquire(ctx, pool, nil, runID, "worker-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestAnExpiredLeaseIsReclaimedAndThePastIsFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fresh, err := Acquire(ctx, pool, runID, "worker-b")
+	fresh, err := Acquire(ctx, pool, nil, runID, "worker-b")
 	if err != nil {
 		t.Fatalf("reclaim: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestAnExpiredLeaseIsReclaimedAndThePastIsFenced(t *testing.T) {
 	}
 
 	// The paused worker wakes up. Every path it has must refuse.
-	if _, err := Renew(ctx, pool, old); !errors.Is(err, ErrFenced) {
+	if _, err := Renew(ctx, pool, nil, old); !errors.Is(err, ErrFenced) {
 		t.Errorf("stale renew err = %v, want ErrFenced", err)
 	}
 	tx, err := pool.Begin(ctx)
@@ -153,7 +153,7 @@ func TestAnExpiredLeaseIsReclaimedAndThePastIsFenced(t *testing.T) {
 	}
 
 	// The new claim still works.
-	if _, err := Renew(ctx, pool, fresh); err != nil {
+	if _, err := Renew(ctx, pool, nil, fresh); err != nil {
 		t.Errorf("fresh renew: %v", err)
 	}
 }
@@ -163,7 +163,7 @@ func TestTheSweeperCreatesExactlyOneResumeEvent(t *testing.T) {
 	runID := seedRun(t, pool)
 	ctx := context.Background()
 
-	old, err := Acquire(ctx, pool, runID, "worker-a")
+	old, err := Acquire(ctx, pool, nil, runID, "worker-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestTheSweeperCreatesExactlyOneResumeEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	swept, err := SweepExpired(ctx, pool, queue.QueueLight, 10)
+	swept, err := SweepExpired(ctx, pool, nil, queue.QueueLight, 10)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestTheSweeperCreatesExactlyOneResumeEvent(t *testing.T) {
 	}
 
 	// The old worker stays fenced even though the sweep requeued the run.
-	if _, err := Renew(ctx, pool, old); !errors.Is(err, ErrFenced) {
+	if _, err := Renew(ctx, pool, nil, old); !errors.Is(err, ErrFenced) {
 		t.Errorf("the swept worker can still renew: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestTheSweeperCreatesExactlyOneResumeEvent(t *testing.T) {
 
 	// Sweeping again finds a queued run (not expired-processing) and adds
 	// nothing: the event id is deterministic per generation.
-	again, err := SweepExpired(ctx, pool, queue.QueueLight, 10)
+	again, err := SweepExpired(ctx, pool, nil, queue.QueueLight, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestAGuardedCommitCarriesTheWork(t *testing.T) {
 	runID := seedRun(t, pool)
 	ctx := context.Background()
 
-	held, err := Acquire(ctx, pool, runID, "worker-a")
+	held, err := Acquire(ctx, pool, nil, runID, "worker-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestReleaseReturnsTheRunToTheQueue(t *testing.T) {
 	runID := seedRun(t, pool)
 	ctx := context.Background()
 
-	held, err := Acquire(ctx, pool, runID, "worker-a")
+	held, err := Acquire(ctx, pool, nil, runID, "worker-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestReleaseReturnsTheRunToTheQueue(t *testing.T) {
 	}
 
 	// Anyone can claim it again immediately, at a higher generation.
-	next, err := Acquire(ctx, pool, runID, "worker-b")
+	next, err := Acquire(ctx, pool, nil, runID, "worker-b")
 	if err != nil {
 		t.Fatalf("acquire after release: %v", err)
 	}

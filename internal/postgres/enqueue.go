@@ -22,6 +22,9 @@ import (
 // Enqueue implements the submission transaction against the canonical schema.
 type Enqueue struct {
 	pool *pgxpool.Pool
+	// Outbox is told after a submission commits. Nil without Redis, and the
+	// dispatcher then polls.
+	Outbox *outbox.Signal
 }
 
 func NewEnqueue(pool *pgxpool.Pool) *Enqueue {
@@ -98,6 +101,7 @@ func (e *Enqueue) Submit(ctx context.Context, submission enqueue.Submission) (en
 	if err := transaction.Commit(ctx); err != nil {
 		return enqueue.Result{}, fmt.Errorf("committing the submission: %w", err)
 	}
+	e.Outbox.Notify(ctx)
 	return result, nil
 }
 

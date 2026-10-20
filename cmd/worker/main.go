@@ -1,6 +1,6 @@
 // Command worker consumes the processing queues. One process runs one media,
-// one light and one notification consumer, the outbox dispatcher and the lease
-// sweeper; scaling is more processes, not more flags.
+// one light, one notification and one scheduled consumer, the outbox
+// dispatcher and the lease sweeper; scaling is more processes, not more flags.
 package main
 
 import (
@@ -24,10 +24,13 @@ import (
 	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/pricetracks"
 	"github.com/XploY04/reelpin-go/internal/queue"
+	"github.com/XploY04/reelpin-go/internal/readcache"
+	"github.com/XploY04/reelpin-go/internal/reminders"
+	"github.com/XploY04/reelpin-go/internal/safehttp"
 	"github.com/XploY04/reelpin-go/internal/spend"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
-	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
@@ -95,8 +98,17 @@ func run(logger *slog.Logger) error {
 	defer publisher.Close()
 
 	// Heartbeats are how readiness sees the fleet. Redis being optional in
-	// development means a worker without it simply is not counted.
-	var liveWorkers metrics.WorkerCount
+	// development means a worker without it simply is not counted. The same
+	// Redis carries the hints that let an idle database suspend; without it
+	// the dispatcher and the sweeper poll PostgreSQL as they always have.
+	var (
+		liveWorkers      metrics.WorkerCount
+		outboxSignal     *outbox.Signal
+		inflight         *lease.Inflight
+		invalidator      pipeline.CacheInvalidator
+		reminderSchedule reminders.Schedule
+		priceClaims      pricetracks.Claims
+	)
 	if cfg.RedisURL != "" {
 		options, err := cfg.RedisOptions()
 		if err != nil {
@@ -111,6 +123,11 @@ func run(logger *slog.Logger) error {
 		liveWorkers = func(ctx context.Context) (int, error) {
 			return workerhealth.Live(ctx, redisClient, cfg.RedisKeyPrefix)
 		}
+		outboxSignal = outbox.NewSignal(redisClient, cfg.RedisKeyPrefix, logger)
+		inflight = lease.NewInflight(redisClient, cfg.RedisKeyPrefix, logger)
+		invalidator = readcache.New(redisClient, cfg.RedisKeyPrefix, logger)
+		reminderSchedule = reminders.NewRedisSchedule(redisClient, cfg.RedisKeyPrefix)
+		priceClaims = pricetracks.NewRedisClaims(redisClient)
 	} else {
 		logger.Warn("no REDIS_URL: this worker sends no heartbeats and readiness cannot see it")
 	}
@@ -122,7 +139,12 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("worker temp directory: %w", err)
 	}
 
-	go metrics.Sample(ctx, meters, pool, liveWorkers)
+	// The dispatcher no longer polls, so an idle worker's database gauges hold
+	// their last values. Sampling and sweeping right behind each dispatch
+	// keeps them current at no cost: the dispatcher has just woken the
+	// database.
+	sampleNow := make(chan struct{}, 1)
+	go metrics.Sample(ctx, meters, metrics.NewActivity(pool), liveWorkers, sampleNow)
 	go metrics.SampleTempDisk(ctx, meters, tempRoot)
 
 	// The worker is where the money is spent, so it is what writes the ledger.
@@ -155,6 +177,9 @@ func run(logger *slog.Logger) error {
 		WorkerID:     cfg.WorkerID,
 		TempRoot:     tempRoot,
 		Metrics:      meters,
+		Outbox:       outboxSignal,
+		Inflight:     inflight,
+		Cache:        invalidator,
 	})
 
 	// Firebase is optional in development: without it a run still completes and
@@ -189,19 +214,47 @@ func run(logger *slog.Logger) error {
 		return handler(ctx, message)
 	}
 
-	done := make(chan error, len(queue.WorkQueues)+3)
+	// The daily price check is scheduled behind a Redis claim, so without
+	// Redis no worker schedules it.
+	if priceClaims != nil {
+		checker := pricetracks.NewChecker(postgres.NewPriceTracks(pool),
+			pricetracks.PageFetcher{Client: safehttp.New(safehttp.Config{})},
+			notifications, logger, time.Now, pricetracks.CheckConcurrency)
+		daily := pricetracks.NewDaily(checker, priceClaims, publisher, cfg.RedisKeyPrefix, logger, time.Now)
+		registry[queue.EventPriceCheck] = daily.Handle
+		if err := daily.Start(ctx); err != nil {
+			return err
+		}
+	}
+
+	done := make(chan error, len(queue.WorkQueues)+4)
 	started := 0
 
 	started++
 	go func() { done <- serveMetrics(ctx, meters, cfg.MetricsPort, cfg.AdminKey, logger) }()
 
-	started++
-	go func() {
-		done <- outbox.NewDispatcher(pool, publisher, logger, 100).Run(ctx, time.Second)
-	}()
+	sweeper := lease.NewSweeper(pool, inflight, outboxSignal, queue.QueueLight, logger)
+	dispatcher := outbox.NewDispatcher(pool, publisher, logger, 100).WithSignal(outboxSignal).WithAfterWake(func() {
+		sweeper.Wake()
+		select {
+		case sampleNow <- struct{}{}:
+		default:
+		}
+	})
 
 	started++
-	go func() { done <- sweepLoop(ctx, logger, pool) }()
+	go func() { done <- dispatcher.Run(ctx, time.Second) }()
+
+	started++
+	go func() { done <- sweeper.Run(ctx, lease.SweepInterval) }()
+
+	// Reminders are fired from Redis's due set, so without Redis there is
+	// nothing to read and the dispatcher does not run.
+	if reminderSchedule != nil {
+		dispatcher := reminders.NewDispatcher(postgres.NewReminders(pool), reminderSchedule, notifications, logger, time.Now)
+		started++
+		go func() { done <- dispatcher.Run(ctx, reminders.TickInterval) }()
+	}
 
 	for _, name := range queue.WorkQueues {
 		started++
@@ -249,28 +302,4 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	return firstErr
-}
-
-// sweepLoop returns expired-lease runs to their queues. It is deliberately
-// slow: the sweep exists for crashed workers, not as a scheduler, and every
-// resume it writes is idempotent per lease generation.
-func sweepLoop(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool) error {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-		swept, err := lease.SweepExpired(ctx, pool, queue.QueueLight, 100)
-		if err != nil && !errors.Is(err, context.Canceled) {
-			logger.Error("lease sweep failed", "error", err)
-			continue
-		}
-		if swept > 0 {
-			logger.Info("requeued runs from workers that went away", "count", swept)
-		}
-	}
 }
