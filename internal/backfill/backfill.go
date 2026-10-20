@@ -45,7 +45,14 @@ const legacyVersion = "python-legacy"
 const (
 	sourceReels = "reels"
 	sourceJobs  = "processing_jobs"
+	sourceCache = "processing_cache"
 )
+
+// deltaOverlap is subtracted from the high-water mark a run prints. A legacy
+// row stamped just before the mark can commit just after the pass read past
+// it, and Supabase and Neon keep different clocks. Copies are idempotent, so
+// reading a few minutes twice costs nothing.
+const deltaOverlap = 5 * time.Minute
 
 // blocklistViolation is the SQLSTATE the blocklist trigger raises. A purged
 // source appearing in the legacy tables is expected, not a reason to stop.
@@ -58,6 +65,13 @@ type Options struct {
 	BatchSize int
 	// MaxRows stops the reel pass early, for a rehearsal on a big table.
 	MaxRows int
+	// SourceSchema is where the legacy tables are read from. Empty means
+	// public, which is where Supabase keeps them.
+	SourceSchema string
+	// Since switches to a delta pass: only legacy rows that changed after it
+	// are read, no resume cursor is read or moved, and every table is
+	// scanned from the start of its keyspace.
+	Since *time.Time
 }
 
 // Report counts what happened. It carries no content and no user data.
@@ -71,7 +85,12 @@ type Report struct {
 	InvalidURLs       int `json:"invalid_urls"`
 	Unreadable        int `json:"unreadable"`
 	Blocklisted       int `json:"blocklisted"`
+	// Conflicts counts legacy reels whose user already had a save of the same
+	// content under another id. The newer of the two is kept; see
+	// resolveConflict. ConflictsReplaced is how many of those the legacy row
+	// won.
 	Conflicts         int `json:"conflicts"`
+	ConflictsReplaced int `json:"conflicts_replaced"`
 	Failures          int `json:"failures"`
 
 	JobsScanned      int `json:"jobs_scanned"`
@@ -79,12 +98,19 @@ type Report struct {
 	JobsAlreadyThere int `json:"jobs_already_there"`
 	JobsUncertain    int `json:"jobs_uncertain"`
 	RunsCreated      int `json:"runs_created"`
+
+	Tables map[string]TableReport `json:"tables"`
+
+	// HighWaterMark is what the next --since should be. Only a real run that
+	// finished sets it.
+	HighWaterMark *time.Time `json:"high_water_mark,omitempty"`
 }
 
 type Backfiller struct {
 	pool     *pgxpool.Pool
 	logger   *slog.Logger
 	resolver *sourceidentity.Resolver
+	source   source
 	// seen dedupes identities during a dry run, which writes nothing and so
 	// cannot ask the database what it already created. It counts what this
 	// pass would build from an empty canonical schema.
@@ -97,13 +123,25 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Backfiller {
 	return &Backfiller{pool: pool, logger: logger, resolver: &sourceidentity.Resolver{}}
 }
 
-// Run copies reels and then jobs, resuming from the recorded cursor. Jobs run
-// second because a job is only copied once its content exists.
+// Run copies reels, then jobs, then the wave 1 tables, resuming from the
+// recorded cursor. Jobs run after reels because a job is only copied once its
+// content exists, and reminders, price tracks and hidden pins point at saves.
 func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if options.BatchSize <= 0 {
 		options.BatchSize = 500
 	}
 	b.seen = map[string]bool{}
+
+	var err error
+	if b.source, err = newSource(options.SourceSchema); err != nil {
+		return Report{}, err
+	}
+	if err := b.source.describe(ctx, b.pool); err != nil {
+		return Report{}, err
+	}
+	if err := b.source.require(sourceReels, sourceJobs, sourceCache); err != nil {
+		return Report{}, err
+	}
 
 	release, err := b.lock(ctx)
 	if err != nil {
@@ -111,7 +149,18 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	}
 	defer release()
 
-	report := Report{}
+	// Taken before anything is read, so every row this run could have missed
+	// is after it. A snapshot resumed from a cursor started when its first
+	// attempt did: rows written behind the cursor since then were never read.
+	var started time.Time
+	if err := b.pool.QueryRow(ctx, `
+		SELECT CASE WHEN $2 THEN now() ELSE least(now(), (
+			SELECT min(created_at) FROM reelpin.backfill_progress WHERE backfill_version = $1))
+		END`, Version, options.Since != nil).Scan(&started); err != nil {
+		return Report{}, fmt.Errorf("reading the database clock: %w", err)
+	}
+
+	report := Report{Tables: map[string]TableReport{}}
 	if err := b.backfillReels(ctx, options, &report); err != nil {
 		return report, err
 	}
@@ -123,6 +172,16 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	}
 	if err := b.copyJobs(ctx, options, &report); err != nil {
 		return report, err
+	}
+	for _, mapping := range wave1Mappings {
+		if err := b.copyTable(ctx, options, mapping, &report); err != nil {
+			return report, err
+		}
+	}
+
+	if options.Execute {
+		mark := started.Add(-deltaOverlap)
+		report.HighWaterMark = &mark
 	}
 	return report, nil
 }
@@ -171,14 +230,17 @@ type reelRow struct {
 }
 
 func (b *Backfiller) backfillReels(ctx context.Context, options Options, report *Report) error {
-	cursor, err := b.cursor(ctx, sourceReels)
-	if err != nil {
-		return err
+	cursor := ""
+	if options.Since == nil {
+		var err error
+		if cursor, err = b.cursor(ctx, sourceReels); err != nil {
+			return err
+		}
 	}
 
 	batch := int64(0)
 	for {
-		rows, err := b.readReels(ctx, cursor, options.BatchSize)
+		rows, err := b.readReels(ctx, cursor, options)
 		if err != nil {
 			return err
 		}
@@ -260,7 +322,7 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 	// A second user's save of the same content reuses the version the first
 	// one built. Only the first save of a content pays for reading the cache.
 	if versionID == "" {
-		cached, err := readCache(ctx, transaction, identity)
+		cached, err := readCache(ctx, transaction, b.source.table(sourceCache), identity)
 		if err != nil {
 			return err
 		}
@@ -275,6 +337,18 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		report.ContentVersions++
 	}
 
+	kept, err := b.resolveConflict(ctx, transaction, row, contentID, report)
+	if err != nil {
+		return err
+	}
+	if kept != "" {
+		if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "skipped_conflict",
+			&contentID, &versionID, nil, "kept the newer save "+kept); err != nil {
+			return err
+		}
+		return transaction.Commit(ctx)
+	}
+
 	tag, err := transaction.Exec(ctx, `
 		INSERT INTO reelpin.user_saves (id, user_id, content_id, saved_at)
 		VALUES ($1, $2, $3, coalesce($4, now()))
@@ -284,18 +358,77 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		report.Failures++
 		return fmt.Errorf("creating the save: %w", err)
 	}
-	if tag.RowsAffected() == 1 {
-		report.SavesCreated++
-	} else {
-		// The same user saved this content twice under two legacy rows. One
-		// save survives; the other is reported rather than forced in.
+	if tag.RowsAffected() == 0 {
+		// The app saved the same content between the conflict check and the
+		// insert. The app's save is the newer one.
 		report.Conflicts++
+		b.logger.Info("save conflict: kept the newer save", "kept", "concurrent", "dropped", row.ID)
+		if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "skipped_conflict",
+			&contentID, &versionID, nil, "a concurrent save of the same content"); err != nil {
+			return err
+		}
+		return transaction.Commit(ctx)
 	}
+	report.SavesCreated++
 
 	if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "saved", &contentID, &versionID, nil, ""); err != nil {
 		return err
 	}
 	return transaction.Commit(ctx)
+}
+
+// resolveConflict applies the one conflict rule: when this user already has a
+// save of the same content under another id, from an earlier legacy row or
+// from the new app during the dual run, the newer save is kept and the other
+// is logged. It returns the id of the save that was kept when that is the
+// existing one; an empty id means the legacy row goes in.
+//
+// Replacing a save deletes it, and what hangs off it goes with it: collection
+// items and reminders cascade, and a job's link to it is cleared. A legacy row
+// with no created_at never wins, because nothing says it is newer.
+func (b *Backfiller) resolveConflict(
+	ctx context.Context,
+	tx pgx.Tx,
+	row reelRow,
+	contentID string,
+	report *Report,
+) (string, error) {
+	var existingID string
+	var existingSavedAt time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT id::text, saved_at FROM reelpin.user_saves
+		WHERE user_id = $1 AND content_id = $2
+		FOR UPDATE`,
+		row.UserID, contentID,
+	).Scan(&existingID, &existingSavedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("checking for a conflicting save: %w", err)
+	}
+
+	report.Conflicts++
+	if row.CreatedAt == nil || !row.CreatedAt.After(existingSavedAt) {
+		b.logger.Info("save conflict: kept the newer save", "kept", existingID, "dropped", row.ID)
+		return existingID, nil
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM reelpin.user_saves WHERE id = $1`, existingID); err != nil {
+		return "", fmt.Errorf("replacing an older save: %w", err)
+	}
+	// The older save may itself have come from a legacy row. Its audit entry
+	// would otherwise claim a save that no longer exists.
+	if _, err := tx.Exec(ctx, `
+		UPDATE reelpin.backfill_audit
+		SET action = 'skipped_conflict', note = $3
+		WHERE backfill_version = $1 AND source_table = '`+sourceReels+`' AND source_id = $2`,
+		Version, existingID, "replaced by the newer save "+row.ID); err != nil {
+		return "", fmt.Errorf("recording the replaced save: %w", err)
+	}
+	report.ConflictsReplaced++
+	b.logger.Info("save conflict: kept the newer save", "kept", row.ID, "dropped", existingID)
+	return "", nil
 }
 
 // reportOneReel is the dry run: it reads what a real run would read and counts
@@ -311,7 +444,7 @@ func (b *Backfiller) reportOneReel(ctx context.Context, identity sourceidentity.
 	report.UniqueContent++
 	report.ContentVersions++
 
-	cached, err := readCache(ctx, b.pool, identity)
+	cached, err := readCache(ctx, b.pool, b.source.table(sourceCache), identity)
 	if err != nil {
 		return err
 	}
@@ -368,13 +501,15 @@ func scanReel(source pgx.Row) (reelRow, error) {
 	return row, nil
 }
 
-func (b *Backfiller) readReels(ctx context.Context, cursor string, limit int) ([]reelRow, error) {
+func (b *Backfiller) readReels(ctx context.Context, cursor string, options Options) ([]reelRow, error) {
+	shape := b.source.shape(sourceReels)
 	rows, err := b.pool.Query(ctx, `
 		SELECT `+reelColumns+`
-		FROM public.reels l
+		FROM `+b.source.table(sourceReels)+` l
 		WHERE ($1::uuid IS NULL OR l.id > $1::uuid)
+		  AND ($3::timestamptz IS NULL OR `+shape.changed()+` > $3)`+shape.environmentFilter()+`
 		ORDER BY l.id
-		LIMIT $2`, nullableUUID(cursor), limit)
+		LIMIT $2`, nullableUUID(cursor), options.BatchSize, options.Since)
 	if err != nil {
 		return nil, fmt.Errorf("reading legacy reels: %w", err)
 	}
@@ -441,7 +576,7 @@ type querier interface {
 
 // readCache prefers the global extraction Python already paid for over the
 // per-user copy on the reel row.
-func readCache(ctx context.Context, db querier, identity sourceidentity.SourceIdentity) (*cacheRow, error) {
+func readCache(ctx context.Context, db querier, table string, identity sourceidentity.SourceIdentity) (*cacheRow, error) {
 	if identity.ContentID == "" {
 		return nil, nil
 	}
@@ -450,7 +585,7 @@ func readCache(ctx context.Context, db querier, identity sourceidentity.SourceId
 	var transcript, caption *string
 	err := db.QueryRow(ctx, `
 		SELECT transcript, caption, thumbnail_url, extracted_data
-		FROM public.processing_cache
+		FROM `+table+`
 		WHERE source_platform = $1 AND source_content_id = $2
 		ORDER BY updated_at DESC NULLS LAST
 		LIMIT 1`,

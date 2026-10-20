@@ -28,9 +28,11 @@ func (b *Backfiller) cursor(ctx context.Context, table string) (string, error) {
 }
 
 // saveCursor advances the resume point. A dry run keeps no cursor: it has to be
-// repeatable and produce identical totals every time.
+// repeatable and produce identical totals every time. Neither does a --since
+// pass: it reads a different slice of the table, and moving the snapshot's
+// cursor would make the snapshot skip rows if it were ever resumed.
 func (b *Backfiller) saveCursor(ctx context.Context, options Options, table, cursor string, scanned int) error {
-	if !options.Execute {
+	if !options.Execute || options.Since != nil {
 		return nil
 	}
 	if _, err := b.pool.Exec(ctx, `
@@ -47,7 +49,7 @@ func (b *Backfiller) saveCursor(ctx context.Context, options Options, table, cur
 }
 
 func (b *Backfiller) finishCursor(ctx context.Context, options Options, table string) error {
-	if !options.Execute {
+	if !options.Execute || options.Since != nil {
 		return nil
 	}
 	if _, err := b.pool.Exec(ctx, `

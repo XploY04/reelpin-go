@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -222,7 +224,7 @@ func TestDryRunIsRepeatableAndWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second dry run: %v", err)
 	}
-	if first != second {
+	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("dry runs disagree:\nfirst  %+v\nsecond %+v", first, second)
 	}
 
@@ -485,6 +487,20 @@ func TestResumeContinuesFromTheCursor(t *testing.T) {
 	}
 	if total := count(t, pool, "reelpin.user_saves"); total != 4 {
 		t.Errorf("%d saves after resuming, want 4", total)
+	}
+
+	// Rows written behind the cursor after the first attempt began were never
+	// read, so the mark goes back to that attempt, not to the resume.
+	if partial.HighWaterMark != nil {
+		t.Error("a run stopped by --max-rows printed a high-water mark")
+	}
+	var firstAttempt time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT min(created_at) FROM reelpin.backfill_progress`).Scan(&firstAttempt); err != nil {
+		t.Fatalf("reading the first attempt: %v", err)
+	}
+	if rest.HighWaterMark == nil || rest.HighWaterMark.After(firstAttempt.Add(-deltaOverlap)) {
+		t.Errorf("the resumed run's mark %v is later than the first attempt %v", rest.HighWaterMark, firstAttempt)
 	}
 }
 
