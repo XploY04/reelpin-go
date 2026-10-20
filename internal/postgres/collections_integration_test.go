@@ -4,9 +4,12 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"maps"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,14 +27,53 @@ const (
 	collaborator = "33333333-3333-4333-8333-333333333333"
 )
 
+// firstPage is the item page most tests read: the default size, transcripts
+// included, as the detailed view asks.
+var firstPage = collections.ItemQuery{Limit: 25, Transcripts: true}
+
+// legacyReelsTable is the public.reels shape Supabase owns and no migration
+// here creates. Reels.Get and the collection items both read it, so an item
+// test needs it as production has it.
+const legacyReelsTable = `
+CREATE TABLE public.reels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    url TEXT NOT NULL,
+    normalized_url TEXT,
+    source_platform TEXT,
+    source_content_type TEXT,
+    source_content_id TEXT,
+    processing_version TEXT,
+    ingestion_method TEXT,
+    transcript_source TEXT,
+    thumbnail_url TEXT,
+    title TEXT NOT NULL DEFAULT 'Untitled',
+    summary TEXT DEFAULT '',
+    transcript TEXT DEFAULT '',
+    category TEXT DEFAULT 'Other',
+    subcategory TEXT DEFAULT 'Other',
+    secondary_categories JSONB DEFAULT '[]'::jsonb,
+    key_facts JSONB DEFAULT '[]'::jsonb,
+    locations JSONB DEFAULT '[]'::jsonb,
+    people_mentioned JSONB DEFAULT '[]'::jsonb,
+    actionable_items JSONB DEFAULT '[]'::jsonb,
+    events JSONB NOT NULL DEFAULT '[]'::jsonb,
+    parse_status TEXT NOT NULL DEFAULT 'parsed',
+    created_at TIMESTAMPTZ DEFAULT now()
+)`
+
 // collectionPool builds one throwaway database per test with a
-// production-shaped auth.users, then migrates it. Cleanup drops WITH (FORCE),
-// so a connection left open by a failure cannot hang the package.
+// production-shaped auth.users and public.reels, then migrates it. Cleanup
+// drops WITH (FORCE), so a connection left open by a failure cannot hang the
+// package.
 func collectionPool(t *testing.T) *Collections {
 	t.Helper()
 	pool := rawPool(t)
 
 	ctx := context.Background()
+	if _, err := pool.Exec(ctx, legacyReelsTable); err != nil {
+		t.Fatalf("creating the production-shaped public.reels: %v", err)
+	}
 	for _, id := range []string{ownerID, strangerID, collaborator} {
 		if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("seeding a user: %v", err)
@@ -102,6 +145,7 @@ func rawPool(t *testing.T) *pgxpool.Pool {
 }
 
 // seedSave creates one content, one version and one user's save of it, and
+// the public.reels row the pipeline writes beside them under the same id, and
 // returns the save id, which is the public reel id.
 func seedSave(t *testing.T, c *Collections, userID, sourceID string) string {
 	t.Helper()
@@ -134,6 +178,17 @@ func seedSave(t *testing.T, c *Collections, userID, sourceID string) string {
 		RETURNING id::text`, userID, contentID).Scan(&saveID); err != nil {
 		t.Fatalf("seeding a save: %v", err)
 	}
+	if _, err := c.pool.Exec(ctx, `
+		INSERT INTO public.reels
+			(id, user_id, url, normalized_url, source_platform, source_content_type,
+			 source_content_id, thumbnail_url, title, summary, created_at)
+		SELECT s.id, s.user_id, co.normalized_url, co.normalized_url, co.source_platform,
+		       co.source_content_type, co.source_content_id, 'https://cdn/x.jpg',
+		       'A title', 'A summary', s.saved_at
+		FROM reelpin.user_saves s JOIN reelpin.contents co ON co.id = s.content_id
+		WHERE s.id = $1`, saveID); err != nil {
+		t.Fatalf("seeding the legacy reel: %v", err)
+	}
 	return saveID
 }
 
@@ -156,7 +211,7 @@ func TestOnlyPeopleWithAccessSeeACollection(t *testing.T) {
 		run  func() error
 	}{
 		{"get", func() error { _, err := c.Get(ctx, collection.ID, strangerID); return err }},
-		{"detail", func() error { _, err := c.Detail(ctx, collection.ID, strangerID, nil, 25); return err }},
+		{"detail", func() error { _, _, err := c.Detail(ctx, collection.ID, strangerID, firstPage); return err }},
 		{"members", func() error { _, _, err := c.Members(ctx, collection.ID, strangerID); return err }},
 		{"update", func() error {
 			name := "Stolen"
@@ -262,7 +317,7 @@ func TestFileSaveIsIdempotentUnderDuplicateDelivery(t *testing.T) {
 	}
 }
 
-func TestFileSaveSkipsWhatItCannotFile(t *testing.T) {
+func TestFileSaveSkipsMalformedIDsAndRefusesUnknownOnes(t *testing.T) {
 	c := collectionPool(t)
 	ctx := context.Background()
 
@@ -272,23 +327,69 @@ func TestFileSaveSkipsWhatItCannotFile(t *testing.T) {
 	}
 	mine := seedSave(t, c, ownerID, "MINE")
 
-	tx, err := c.pool.Begin(ctx)
+	// A malformed id cannot name a save, so it is dropped, not an error.
+	added, err := c.AddItems(ctx, collection.ID, ownerID, []string{"not-a-uuid", mine})
 	if err != nil {
-		t.Fatal(err)
-	}
-	// A stale picker sends a malformed id and one that does not exist. Neither
-	// may cost the user the rest of the batch.
-	added, fileErr := c.FileSave(ctx, tx, ownerID, collection.ID,
-		[]string{"not-a-uuid", "44444444-4444-4444-8444-000000000000", mine})
-	if fileErr != nil {
-		tx.Rollback(ctx)
-		t.Fatalf("FileSave: %v", fileErr)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("AddItems: %v", err)
 	}
 	if added != 1 {
 		t.Fatalf("added = %d, want only the real save", added)
+	}
+
+	// A well-formed id that names no save fails the batch.
+	if _, err := c.AddItems(ctx, collection.ID, ownerID,
+		[]string{"44444444-4444-4444-8444-000000000000", mine}); !errors.Is(err, reels.ErrNotFound) {
+		t.Fatalf("an unknown save id = %v, want reels.ErrNotFound", err)
+	}
+}
+
+// TestAnEditorCannotFileAnotherUsersSave: editing a collection grants no right
+// to someone else's saves. A foreign id answers the same not-found an unknown
+// one does, and a batch that mixes one in files nothing.
+func TestAnEditorCannotFileAnotherUsersSave(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+
+	collection, _, err := c.Create(ctx, ownerID, "Trips", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, invite, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleEditor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptInvite(ctx, invite, collaborator); err != nil {
+		t.Fatal(err)
+	}
+	foreign := seedSave(t, c, strangerID, "THEIRS")
+	own := seedSave(t, c, collaborator, "OURS")
+
+	for name, saveIDs := range map[string][]string{
+		"foreign": {foreign},
+		"mixed":   {own, foreign},
+	} {
+		if _, err := c.AddItems(ctx, collection.ID, collaborator, saveIDs); !errors.Is(err, reels.ErrNotFound) {
+			t.Errorf("%s batch = %v, want reels.ErrNotFound", name, err)
+		}
+	}
+	countItems := func() int {
+		var items int
+		if err := c.pool.QueryRow(ctx,
+			`SELECT count(*) FROM reelpin.collection_items WHERE collection_id = $1`, collection.ID).Scan(&items); err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+	if items := countItems(); items != 0 {
+		t.Fatalf("rows = %d after refused batches, want none", items)
+	}
+
+	added, err := c.AddItems(ctx, collection.ID, collaborator, []string{own})
+	if err != nil {
+		t.Fatalf("filing the editor's own save: %v", err)
+	}
+	if added != 1 || countItems() != 1 {
+		t.Fatalf("added = %d, want the editor's own save filed", added)
 	}
 }
 
@@ -329,7 +430,7 @@ func TestMembershipIsIdempotentAndRoleBound(t *testing.T) {
 	if _, err := c.AddItems(ctx, collection.ID, collaborator, []string{saveID}); !errors.Is(err, collections.ErrForbidden) {
 		t.Errorf("a viewer adding items = %v, want ErrForbidden", err)
 	}
-	if _, err := c.Detail(ctx, collection.ID, collaborator, nil, 25); err != nil {
+	if _, _, err := c.Detail(ctx, collection.ID, collaborator, firstPage); err != nil {
 		t.Errorf("a viewer cannot read: %v", err)
 	}
 }
@@ -391,27 +492,27 @@ func TestAShareTokenRevealsNothingWhenItShouldNot(t *testing.T) {
 		t.Fatalf("EnableLink: %v", err)
 	}
 
-	shared, err := c.SharedByToken(ctx, token, nil, 25)
+	shared, page, err := c.SharedByToken(ctx, token, firstPage)
 	if err != nil {
 		t.Fatalf("a live token: %v", err)
 	}
-	if len(shared.Items) != 1 {
-		t.Fatalf("items = %d, want the filed save", len(shared.Items))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %d, want the filed save", len(page.Items))
 	}
 	// The token grants a view of the saves, not of who can see them.
-	if shared.Collection.OwnerID != "" || shared.Collection.MemberCount != 0 {
-		t.Errorf("the anonymous view leaks membership: %+v", shared.Collection)
+	if shared.OwnerID != "" || shared.MemberCount != 0 {
+		t.Errorf("the anonymous view leaks membership: %+v", shared)
 	}
 
 	// Malformed, revoked and expired all answer the same.
-	if _, err := c.SharedByToken(ctx, "not-a-token", nil, 25); !errors.Is(err, collections.ErrNotFound) {
+	if _, _, err := c.SharedByToken(ctx, "not-a-token", firstPage); !errors.Is(err, collections.ErrNotFound) {
 		t.Errorf("a malformed token = %v, want ErrNotFound", err)
 	}
 
 	if err := c.DisableLink(ctx, collection.ID, ownerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.SharedByToken(ctx, token, nil, 25); !errors.Is(err, collections.ErrNotFound) {
+	if _, _, err := c.SharedByToken(ctx, token, firstPage); !errors.Is(err, collections.ErrNotFound) {
 		t.Errorf("a revoked token = %v, want ErrNotFound", err)
 	}
 
@@ -424,7 +525,7 @@ func TestAShareTokenRevealsNothingWhenItShouldNot(t *testing.T) {
 		collection.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.SharedByToken(ctx, fresh, nil, 25); !errors.Is(err, collections.ErrNotFound) {
+	if _, _, err := c.SharedByToken(ctx, fresh, firstPage); !errors.Is(err, collections.ErrNotFound) {
 		t.Errorf("an expired token = %v, want ErrNotFound", err)
 	}
 }
@@ -505,7 +606,7 @@ func TestItemPagesResumeWithoutRepeating(t *testing.T) {
 		}
 	}
 
-	first, err := c.Detail(ctx, collection.ID, ownerID, nil, 2)
+	_, first, err := c.Detail(ctx, collection.ID, ownerID, collections.ItemQuery{Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +618,7 @@ func TestItemPagesResumeWithoutRepeating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the cursor does not decode: %v", err)
 	}
-	second, err := c.Detail(ctx, collection.ID, ownerID, &cursor, 2)
+	_, second, err := c.Detail(ctx, collection.ID, ownerID, collections.ItemQuery{After: &cursor, Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,8 +627,8 @@ func TestItemPagesResumeWithoutRepeating(t *testing.T) {
 	}
 	for _, shown := range first.Items {
 		for _, next := range second.Items {
-			if shown.ReelID == next.ReelID {
-				t.Fatalf("reel %s appears on both pages", shown.ReelID)
+			if shown.Reel.ID == next.Reel.ID {
+				t.Fatalf("reel %s appears on both pages", shown.Reel.ID)
 			}
 		}
 	}
@@ -557,4 +658,178 @@ func TestDeletingACollectionKeepsTheSaves(t *testing.T) {
 	if saves != 1 {
 		t.Fatal("deleting a collection deleted the save it held")
 	}
+}
+
+// TestACollaboratorReadsTheFullReel is why items carry the whole reel: the
+// collaborator cannot read another user's save through the reel reader, so the
+// item has to bring the extraction with it, and the concise page never reads
+// the transcript at all.
+func TestACollaboratorReadsTheFullReel(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+
+	collection, _, err := c.Create(ctx, ownerID, "Trips", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptInvite(ctx, token, collaborator); err != nil {
+		t.Fatal(err)
+	}
+
+	saveID := seedFullSave(t, c, ownerID, "FULL1")
+	if _, err := c.AddItems(ctx, collection.ID, ownerID, []string{saveID}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, page, err := c.Detail(ctx, collection.ID, collaborator, firstPage)
+	if err != nil {
+		t.Fatalf("a viewer cannot read: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(page.Items))
+	}
+	reel := page.Items[0].Reel
+	if reel.ID != saveID || reel.UserID != ownerID {
+		t.Errorf("reel %s of %s, want the owner's save %s", reel.ID, reel.UserID, saveID)
+	}
+	if reel.Transcript != "spoken words" || reel.Category != "food_and_drink" || reel.Subcategory != "cafes" {
+		t.Errorf("transcript %q, category %q/%q", reel.Transcript, reel.Category, reel.Subcategory)
+	}
+	if len(reel.KeyFacts) != 1 || len(reel.PeopleMentioned) != 1 || len(reel.ActionableItems) != 1 ||
+		len(reel.Events) != 1 || len(reel.SecondaryCategories) != 1 {
+		t.Errorf("extraction lists = %+v", reel)
+	}
+	if len(reel.Locations) != 1 || reel.Locations[0].Latitude == nil || reel.Locations[0].Name != "Artjuna Cafe" {
+		t.Errorf("locations = %+v", reel.Locations)
+	} else if address := reel.Locations[0].Address; address == nil || *address != "Anjuna Beach Road" {
+		t.Errorf("location address = %v, want the stored one", address)
+	}
+	if reel.ThumbnailURL == nil || *reel.ThumbnailURL != "https://cdn/x.jpg" || reel.CreatedAt == nil {
+		t.Errorf("thumbnail %v, saved at %v", reel.ThumbnailURL, reel.CreatedAt)
+	}
+	if page.Items[0].AddedBy == nil || *page.Items[0].AddedBy != ownerID || page.Items[0].AddedAt == nil {
+		t.Errorf("added by %v at %v", page.Items[0].AddedBy, page.Items[0].AddedAt)
+	}
+
+	_, concise, err := c.Detail(ctx, collection.ID, collaborator, collections.ItemQuery{Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := concise.Items[0].Reel.Transcript; got != "" {
+		t.Errorf("a concise page read the transcript: %q", got)
+	}
+}
+
+// seedFullSave is seedSave with the long-form extraction filled in on the
+// legacy row the reel reader resolves, a located place with an address
+// among it.
+func seedFullSave(t *testing.T, c *Collections, userID, sourceID string) string {
+	t.Helper()
+	saveID := seedSave(t, c, userID, sourceID)
+	if _, err := c.pool.Exec(context.Background(), `
+		UPDATE public.reels SET
+			title = 'Best cafes in Goa', summary = 'Three cafes.', transcript = 'spoken words',
+			category = 'food_and_drink', subcategory = 'cafes',
+			secondary_categories = '["goa"]', key_facts = '["Opens at 8am"]',
+			locations = '[{"name": "Artjuna Cafe", "address": "Anjuna Beach Road", "city": "Anjuna",
+			               "latitude": 15.58, "longitude": 73.74}]',
+			people_mentioned = '["Rhea"]', actionable_items = '["Go early"]',
+			events = '[{"name": "Market", "date": "2026-09-05", "time": ""}]'
+		WHERE id = $1`, saveID); err != nil {
+		t.Fatalf("filling the legacy reel: %v", err)
+	}
+	return saveID
+}
+
+// TestAnItemIsTheReelGetReelAnswers is the one-shape rule: a save filed in a
+// collection reads, through the collection page and the shared link alike,
+// exactly as getReel answers it, apart from the fields that belong to the
+// filing. Both build from the same record with reels.BuildReel.
+func TestAnItemIsTheReelGetReelAnswers(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+	now := func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
+
+	collection, _, err := c.Create(ctx, ownerID, "Trips", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, invite, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptInvite(ctx, invite, collaborator); err != nil {
+		t.Fatal(err)
+	}
+	saveID := seedFullSave(t, c, ownerID, "SAME1")
+	if _, err := c.AddItems(ctx, collection.ID, ownerID, []string{saveID}); err != nil {
+		t.Fatal(err)
+	}
+	_, link, _, err := c.EnableLink(ctx, collection.ID, ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reel, err := reels.NewService(NewReels(c.pool), "https://reelpin.in", now).Get(ctx, ownerID, uuid.MustParse(saveID))
+	if err != nil {
+		t.Fatalf("getReel: %v", err)
+	}
+	want := jsonObject(t, reel)
+
+	service := collections.NewService(c, "https://reelpin.in", now)
+	params := collections.ItemParams{Limit: 25, View: reels.ViewDetailed}
+	detail, err := service.Detail(ctx, collection.ID, collaborator, params)
+	if err != nil {
+		t.Fatalf("the collection page: %v", err)
+	}
+	shared, err := service.SharedByToken(ctx, link, params)
+	if err != nil {
+		t.Fatalf("the shared page: %v", err)
+	}
+
+	for name, items := range map[string][]collections.Item{"collection": detail.Items, "shared": shared.Items} {
+		if len(items) != 1 {
+			t.Fatalf("%s items = %d, want 1", name, len(items))
+		}
+		got := jsonObject(t, items[0])
+		for _, filing := range []string{"reel_id", "saved_at", "added_at", "added_by"} {
+			delete(got, filing)
+		}
+		expected := want
+		if name == "shared" {
+			// The anonymous view leaves out whose account the save is; apart
+			// from that it is still the reel getReel answers.
+			if userID, present := got["user_id"]; present {
+				t.Errorf("the shared item carries user_id %v", userID)
+			}
+			expected = maps.Clone(want)
+			delete(expected, "user_id")
+		}
+		if !reflect.DeepEqual(got, expected) {
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(expected)
+			t.Errorf("the %s item is not the reel getReel answers:\n item %s\n reel %s", name, gotJSON, wantJSON)
+		}
+		mappable := items[0].MappableLocations
+		if len(mappable) != 1 || mappable[0].Address == nil || *mappable[0].Address != "Anjuna Beach Road" {
+			t.Errorf("the %s item's mappable location lost its address: %+v", name, mappable)
+		}
+	}
+}
+
+func jsonObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := map[string]any{}
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		t.Fatal(err)
+	}
+	return object
 }

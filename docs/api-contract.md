@@ -98,14 +98,54 @@ than spending unmetered — while reads never consult the limiter at all.
 
 ## Transcripts and views
 
-A transcript appears only in `GET /api/v2/reels/{reel_id}`, never in a list.
-Adding it to the list is a silent payload and cost regression.
+A transcript appears in `GET /api/v2/reels/{reel_id}` and in the items of a
+collection page (`GET /api/v2/collections/{collection_id}` and
+`GET /api/v2/shared-collections/{token}`), never in the reel list or search.
+Adding it to those is a silent payload and cost regression.
 
-`view=concise` on the reel list, search and collection detail drops the other
-long-form fields as well (`key_facts`, `people_mentioned`, `actionable_items`,
-`events`). `detailed` is the default, so a client that never sends it is
-unaffected. The projection lives in `reels.Display`, not in a handler, so the
-MCP server applies the same one.
+Collection items are the exception because a collaborator or a link viewer
+cannot call `GET /reels/{reel_id}` for a save that is not theirs: that read is
+scoped to the save's owner. So each item carries the whole reel, the display
+fields, `transcript`, `locations` and the long-form extraction, plus
+`added_at` and `added_by`.
+
+`view=concise` on the reel list, search and both collection pages drops the
+long-form fields (`key_facts`, `people_mentioned`, `actionable_items`,
+`events`, and on a collection page `transcript`, which a concise page never
+reads from the database). `detailed` is the default, so a client that never
+sends it is unaffected. The projection lives in `reels.Display`, not in a
+handler, so the MCP server applies the same one.
+
+## One reel, one shape
+
+`GET /api/v2/reels/{reel_id}` carries every record field and the same display
+fields a list item does (`category_label`, `sub_category_label`,
+`relative_date`, `display_date`, `saved_date_key`, `content_type`,
+`has_map_locations`, `mappable_locations`, `map_location_count`,
+`primary_location_label`), built by the same `reels.BuildDisplayReel`.
+
+A collection item is that same object. Both collection pages read each save
+from the table `GET /reels/{reel_id}` reads, with the same columns and scan,
+and build it with `reels.BuildReel`, so a detailed item equals the save's
+`getReel` body apart from `reel_id`, `saved_at`, `added_at` and `added_by`.
+`internal/postgres` tests this across all three endpoints.
+
+The one difference is `user_id`, the save owner's account id. The signed-in
+collection page sends it; `GET /api/v2/shared-collections/{token}` leaves it
+out, because its reader is anonymous and the link grants a view of the saves,
+not of whose they are.
+
+Filing works only on your own saves. `POST /api/v2/collections` and
+`POST /api/v2/collections/{collection_id}/items` check that every reel id
+belongs to the caller; an unknown or foreign id answers `404 reel_not_found`,
+the same answer `getReel` gives, and the request files nothing. Being an
+editor of a collection grants no right to another member's saves.
+
+The subcategory is `sub_category` (and `sub_category_label`) in every
+reel-bearing response. The single-reel shape and map pins first sent it as
+`subcategory`; they keep that name beside `sub_category`, marked deprecated,
+for one release, because removing it is a breaking change to a released v2
+operation. Query and body filters still take `subcategory`.
 
 ## Public URLs
 

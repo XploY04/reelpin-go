@@ -67,6 +67,8 @@ func (s *Server) writeCollectionError(w http.ResponseWriter, r *http.Request, er
 	switch {
 	case errors.Is(err, collections.ErrNotFound):
 		notFoundError(w, "collection_not_found")
+	case errors.Is(err, reels.ErrNotFound):
+		notFoundError(w, "reel_not_found")
 	case errors.Is(err, collections.ErrForbidden):
 		writeError(w, http.StatusForbidden, errorBody{
 			Code:    "collection_forbidden",
@@ -116,18 +118,12 @@ func (s *Server) handleCollectionDetail(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	after, limit, ok := itemPageParams(w, r)
+	params, ok := itemPageParams(w, r)
 	if !ok {
 		return
 	}
-	// Items are cards and never carry the fields concise drops, so both views
-	// answer the same body. The value is still validated, as on every route
-	// that takes it.
-	if _, ok := viewParam(w, r.URL.Query()); !ok {
-		return
-	}
 
-	detail, err := s.collections.Detail(r.Context(), id.String(), requestUserID(r), after, limit)
+	detail, err := s.collections.Detail(r.Context(), id.String(), requestUserID(r), params)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_detail_failed", "Could not load the collection right now.")
 		return
@@ -169,12 +165,12 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 // handleSharedCollection serves the one public-share route: the unguessable
 // token in the path is the whole authorization.
 func (s *Server) handleSharedCollection(w http.ResponseWriter, r *http.Request) {
-	after, limit, ok := itemPageParams(w, r)
+	params, ok := itemPageParams(w, r)
 	if !ok {
 		return
 	}
 
-	shared, err := s.collections.SharedByToken(r.Context(), r.PathValue("token"), after, limit)
+	shared, err := s.collections.SharedByToken(r.Context(), r.PathValue("token"), params)
 	if err != nil {
 		s.writeCollectionError(w, r, err, "collection_detail_failed", "Could not load the collection right now.")
 		return
@@ -323,17 +319,21 @@ func (s *Server) handleAcceptCollectionInvite(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, collectionMutationResponse{Collection: collection})
 }
 
-// itemPageParams are the cursor and limit every item page accepts, the same
-// opaque-cursor rule the reel list uses.
-func itemPageParams(w http.ResponseWriter, r *http.Request) (*reels.Cursor, int, bool) {
+// itemPageParams are the cursor, limit and view every item page accepts, the
+// same opaque-cursor rule the reel list uses.
+func itemPageParams(w http.ResponseWriter, r *http.Request) (collections.ItemParams, bool) {
 	query := r.URL.Query()
 	limit, ok := intParam(w, query, "limit", reels.DefaultPageSize, 1, reels.MaxPageSize)
 	if !ok {
-		return nil, 0, false
+		return collections.ItemParams{}, false
 	}
 	after, ok := cursorParam(w, query)
 	if !ok {
-		return nil, 0, false
+		return collections.ItemParams{}, false
 	}
-	return after, limit, true
+	view, ok := viewParam(w, query)
+	if !ok {
+		return collections.ItemParams{}, false
+	}
+	return collections.ItemParams{After: after, Limit: limit, View: view}, true
 }

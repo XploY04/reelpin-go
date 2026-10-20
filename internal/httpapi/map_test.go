@@ -33,6 +33,23 @@ func TestTheViewportReachesTheServiceUnchanged(t *testing.T) {
 	}
 }
 
+func TestTheMapCategoryReachesTheService(t *testing.T) {
+	fake := &fakeMap{}
+	rec := serve(mapDeps(fake), "GET",
+		"/api/v2/map/pins?south=15&west=73&north=16&east=74&category=%20Food%20", "Bearer good.token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if fake.lastCategory != "Food" {
+		t.Errorf("category = %q, want Food, trimmed", fake.lastCategory)
+	}
+
+	serve(mapDeps(fake), "GET", "/api/v2/map/pins?south=15&west=73&north=16&east=74", "Bearer good.token")
+	if fake.lastCategory != "" {
+		t.Errorf("no category reached the service as %q, want every category", fake.lastCategory)
+	}
+}
+
 func TestAPacificViewportIsNotRejected(t *testing.T) {
 	// West greater than east is a box crossing the antimeridian, which is a
 	// place a user can pan to, not a mistake.

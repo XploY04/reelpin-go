@@ -40,6 +40,47 @@ func TestRegisteringADeviceRunsAsTheTokenSubject(t *testing.T) {
 	}
 }
 
+// TestARegistrationCarriesItsBuild is what a forced-update rollout reads: the
+// build fields reach the service as sent, blank labels as absent, and a
+// registration without them still works for the builds that predate them.
+func TestARegistrationCarriesItsBuild(t *testing.T) {
+	fake := &fakeNotifications{}
+	rec := send(notifyDeps(fake), "POST", "/api/v2/device-push-tokens",
+		`{"token":"device-token","platform":"android","app_version":" 2.4.0 ","app_build":412,"timezone":"Asia/Kolkata","locale":"  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	device := fake.lastDevice
+	if device.AppVersion == nil || *device.AppVersion != "2.4.0" {
+		t.Errorf("app_version = %v, want 2.4.0 trimmed", device.AppVersion)
+	}
+	if device.AppBuild == nil || *device.AppBuild != 412 {
+		t.Errorf("app_build = %v, want 412", device.AppBuild)
+	}
+	if device.Timezone == nil || *device.Timezone != "Asia/Kolkata" {
+		t.Errorf("timezone = %v", device.Timezone)
+	}
+	if device.Locale != nil {
+		t.Errorf("locale = %q, want a blank one read as not reported", *device.Locale)
+	}
+
+	rec = send(notifyDeps(fake), "POST", "/api/v2/device-push-tokens", `{"token":"device-token","platform":"ios"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("an older build's registration status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if fake.lastDevice.AppBuild != nil || fake.lastDevice.AppVersion != nil {
+		t.Errorf("device = %+v, want no build fields", fake.lastDevice)
+	}
+}
+
+func TestRemovingADeviceTakesTheTokenAlone(t *testing.T) {
+	rec := send(notifyDeps(&fakeNotifications{}), "DELETE", "/api/v2/device-push-tokens",
+		`{"token":"t","app_build":412}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestADeviceTokenIsNeverEchoedBack(t *testing.T) {
 	// It is a credential: a response that repeats it is a response that can
 	// leak it through a log, a proxy or a crash report.
@@ -56,6 +97,13 @@ func TestDeviceRegistrationValidatesItsInput(t *testing.T) {
 		{"no token", `{"platform":"ios"}`},
 		{"unknown platform", `{"token":"t","platform":"blackberry"}`},
 		{"unknown field", `{"token":"t","platform":"ios","user_id":"someone"}`},
+		{"negative build", `{"token":"t","platform":"ios","app_build":-1}`},
+		{"build past an integer", `{"token":"t","platform":"ios","app_build":2147483648}`},
+		{"build as text", `{"token":"t","platform":"ios","app_build":"42"}`},
+		{"fractional build", `{"token":"t","platform":"ios","app_build":4.2}`},
+		{"long version", `{"token":"t","platform":"ios","app_version":"` + strings.Repeat("1", 65) + `"}`},
+		{"long timezone", `{"token":"t","platform":"ios","timezone":"` + strings.Repeat("a", 65) + `"}`},
+		{"long locale", `{"token":"t","platform":"ios","locale":"` + strings.Repeat("a", 36) + `"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

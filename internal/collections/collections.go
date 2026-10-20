@@ -15,6 +15,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/reels"
 )
 
 // ErrNotFound is a collection that does not exist, and equally one this user
@@ -67,19 +69,47 @@ type Collection struct {
 	OwnerID string `json:"-"`
 }
 
-// Item is one filed save, as a card: enough to render a grid, with the full
-// reel one getReel call away by the same id.
+// Item is one filed save as a full reel. A collaborator or a link viewer
+// cannot call getReel for a save that is not theirs, so the item is that reel,
+// built by the same reels.BuildReel from the same record getReel reads, plus
+// when and by whom it was filed. Transcript is nil under the concise view,
+// which leaves it out.
+//
+// UserID, SourcePlatform and Transcript shadow the reel's, and the shallower
+// field wins in JSON: the shared view leaves the save owner's id out, an
+// item's platform has always been a non-null string, and the concise view
+// leaves the transcript out.
 type Item struct {
+	reels.Reel
+	UserID         string  `json:"user_id,omitempty"`
 	ReelID         string  `json:"reel_id"`
-	Title          string  `json:"title"`
-	Summary        string  `json:"summary"`
-	URL            string  `json:"url"`
-	WebURL         string  `json:"web_url"`
-	ThumbnailURL   *string `json:"thumbnail_url"`
 	SourcePlatform string  `json:"source_platform"`
+	Transcript     *string `json:"transcript,omitempty"`
 	SavedAt        *string `json:"saved_at"`
 	AddedAt        *string `json:"added_at"`
 	AddedBy        *string `json:"added_by"`
+}
+
+// ItemRecord is one filed save as storage reads it. Reel.CreatedAt is when the
+// save was made, the same as every other reel record.
+type ItemRecord struct {
+	Reel    reels.ReelRecord
+	AddedAt *time.Time
+	AddedBy *string
+}
+
+// ItemQuery pages a collection's items. Transcripts is false for the concise
+// view, so a page that leaves the transcript out never reads it.
+type ItemQuery struct {
+	After       *reels.Cursor
+	Limit       int
+	Transcripts bool
+}
+
+// ItemPage is one keyset page of filed saves as storage reads them.
+type ItemPage struct {
+	Items []ItemRecord
+	Page  Page
 }
 
 // Page is one cursor page of items.

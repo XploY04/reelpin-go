@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/collections"
-	"github.com/XploY04/reelpin-go/internal/reels"
 )
 
 const testCollectionID = "77777777-7777-4777-8777-777777777777"
@@ -15,15 +14,13 @@ const testCollectionID = "77777777-7777-4777-8777-777777777777"
 type fakeCollections struct {
 	err        error
 	collection collections.Collection
-	detail     collections.Detail
-	shared     collections.Shared
+	items      []collections.ItemRecord
 	members    []collections.Member
 	added      int
 
 	lastUserID  string
 	lastAction  string
-	lastLimit   int
-	lastCursor  *reels.Cursor
+	lastQuery   collections.ItemQuery
 	lastSaveIDs []string
 	lastToken   string
 }
@@ -35,15 +32,8 @@ func newFakeCollections() *fakeCollections {
 	}
 	return &fakeCollections{
 		collection: collection,
-		detail: collections.Detail{
-			Collection: collection, Items: []collections.Item{},
-			Page: collections.Page{Limit: 25}, CanEdit: true,
-		},
-		shared: collections.Shared{
-			Collection: collection, Items: []collections.Item{},
-			Page: collections.Page{Limit: 25},
-		},
-		members: []collections.Member{},
+		items:      []collections.ItemRecord{},
+		members:    []collections.Member{},
 	}
 }
 
@@ -80,14 +70,22 @@ func (f *fakeCollections) Delete(_ context.Context, _, userID string) error {
 	return f.err
 }
 
-func (f *fakeCollections) Detail(_ context.Context, _, userID string, after *reels.Cursor, limit int) (collections.Detail, error) {
-	f.lastUserID, f.lastAction, f.lastCursor, f.lastLimit = userID, "detail", after, limit
-	return f.detail, f.err
+func (f *fakeCollections) Detail(_ context.Context, _, userID string, query collections.ItemQuery) (collections.Collection, collections.ItemPage, error) {
+	f.lastUserID, f.lastAction, f.lastQuery = userID, "detail", query
+	return f.collection, f.page(query), f.err
 }
 
-func (f *fakeCollections) SharedByToken(_ context.Context, token string, after *reels.Cursor, limit int) (collections.Shared, error) {
-	f.lastAction, f.lastToken, f.lastCursor, f.lastLimit = "shared", token, after, limit
-	return f.shared, f.err
+func (f *fakeCollections) SharedByToken(_ context.Context, token string, query collections.ItemQuery) (collections.Collection, collections.ItemPage, error) {
+	f.lastAction, f.lastToken, f.lastQuery = "shared", token, query
+	// The store answers a link reader as a viewer who learns nothing about
+	// membership.
+	collection := f.collection
+	collection.Role, collection.MemberCount = collections.RoleViewer, 0
+	return collection, f.page(query), f.err
+}
+
+func (f *fakeCollections) page(query collections.ItemQuery) collections.ItemPage {
+	return collections.ItemPage{Items: f.items, Page: collections.Page{Limit: query.Limit}}
 }
 
 func (f *fakeCollections) AddItems(_ context.Context, _, userID string, saveIDs []string) (int, error) {

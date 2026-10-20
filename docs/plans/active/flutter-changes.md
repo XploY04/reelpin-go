@@ -171,7 +171,7 @@ in-app URL preview. The extensions must not call it any more.
 | `GET /api/v1/health/live`, `/ready` | same paths under `/api/v2` | none |
 | `GET /api/v1/health` | **removed** | poll `/ready` instead; it was a compat alias |
 | `GET /api/v1/reels` (+ bare alias) | `GET /api/v2/reels` | cursor pagination, default limit 25, no `sort`, no `offset`, no `total_count` |
-| `GET /api/v1/reels/{id}` | `GET /api/v2/reels/{reel_id}` | transcript still only here, never in lists |
+| `GET /api/v1/reels/{id}` | `GET /api/v2/reels/{reel_id}` | transcript never in lists; carries the list's display fields; `sub_category` (see **Reel detail**) |
 | `GET /api/v1/reels/filters` | `GET /api/v2/reels/filters` | none |
 | `GET /api/v1/reels/category-filters` | `GET /api/v2/reels/category-filters` | none |
 | `GET /api/v1/processing-jobs` | `GET /api/v2/processing-jobs` | bounded list, no pagination; `active_only` default is still `false` |
@@ -188,11 +188,40 @@ in-app URL preview. The extensions must not call it any more.
 | notification opened (v1) | `POST /api/v2/notifications/{notification_id}/opened` | none |
 | delete reel (v1) | `DELETE /api/v2/reels/{reel_id}` | `204`, no body |
 | delete account (v1) | `DELETE /api/v2/account` | see **Deletion**; the two halves report separately |
-| `GET /api/v1/account/entitlements` | **not in v2 yet** | stays on v1 until a v2 decision; do not migrate this call |
+| `GET /api/v1/account/entitlements` | `GET /api/v2/account/entitlements` | see **Entitlements** |
 
 Everything above is the complete v2 surface: **40 operations**. Anything the app
 calls today that is not in this table does not exist in v2, and `/api/v1` keeps
 serving it for installed versions throughout coexistence.
+
+## Reel detail (built)
+
+`GET /api/v2/reels/{reel_id}` now answers every record field it did before
+plus the display fields a list item carries: `category_label`,
+`sub_category_label`, `relative_date`, `display_date`, `saved_date_key`,
+`content_type`, `parse_status`, `events`, `has_map_locations`,
+`mappable_locations`, `map_location_count` and `primary_location_label`. They
+come from the same code as the list, so a reel reads identically in the feed
+and on the detail screen, and the detail screen needs no list item to fill
+them in. A submission's `200` body is the same shape.
+
+**The subcategory has one name: `sub_category`** (with `sub_category_label`),
+in every response that carries a reel: the reel list, the detail, search,
+Discover, collection items, shared collections and map pins. Two shapes sent
+it as `subcategory` first, the single reel and map pins. They still send
+`subcategory` beside `sub_category`, with the same value, **for one release
+only**; it is marked deprecated in the contract. Read `sub_category`
+everywhere now. Filters are unchanged: the `subcategory` query parameter and
+the `subcategory` field of a search body keep their names.
+
+## Entitlements (built)
+
+`GET /api/v2/account/entitlements` exists. It answers the signed-in user's
+plan, usage totals, limits, feature flags, pricing, plan cards and paywall
+copy. When the plan cannot be verified it still answers `200`, with
+`current_entitlement.restricted: true` and an `error_message`, so the account
+screen degrades and retries rather than showing an error. Move this call to v2
+with the rest.
 
 ## Search (built)
 
@@ -217,10 +246,23 @@ Item ids in requests and responses are `reel_id` and are unchanged save ids, so
 existing local caches keep working. What changed beyond the envelope:
 
 - **Detail shape**: `{collection, items, page:{next_cursor,has_more,limit},
-  can_edit}`. `items` are **cards** (`reel_id, title, summary, url,
-  thumbnail_url, source_platform, saved_at, added_at, added_by`), not full
-  reels — fetch the full reel from `GET /api/v2/reels/{reel_id}`. The old
-  `reels[]` plus `pagination{offset,total_count}` shape is gone.
+  can_edit}`. The old `reels[]` plus `pagination{offset,total_count}` shape
+  is gone.
+- **Each item is a full reel.** `GET /api/v2/reels/{reel_id}` only answers the
+  save's owner, so a collaborator or someone opening a shared link would get
+  `404` for every reel they did not save themselves. The item is instead the
+  very object `getReel` answers for that save, built by the same code from the
+  same row: every display field (`id`, `category_label`, `sub_category`,
+  `relative_date`, `mappable_locations`, ...), plus `transcript`, `locations`,
+  `key_facts`, `people_mentioned`, `actionable_items` and `events`, so one
+  decoder reads both. The item fields stay:
+  `reel_id` (the same value as `id`), `source_platform` (never null here),
+  `saved_at`, `added_at` and `added_by`. Open an item's detail screen from the
+  item itself, not by calling `getReel`.
+- **`?view=concise`** on both `GET /api/v2/collections/{collection_id}` and
+  `GET /api/v2/shared-collections/{token}` leaves out `transcript`,
+  `key_facts`, `people_mentioned`, `actionable_items` and `events`. Use it for
+  a grid that never shows them; the default is the full item.
 - **Item paging is opaque cursors**, same rule as the library: pass
   `next_cursor` as `cursor`, never construct one; a v1-style offset is a `422`.
 - **Shared view** moves to `GET /api/v2/shared-collections/{token}`, is
@@ -246,6 +288,19 @@ ids it takes and when the filing shows up.
   "ios"|"android"|"web"}` — `platform` is now validated, so the old free-text
   value fails with `422`. Registering the same token again moves it to the
   current user, which is what makes a shared phone behave.
+- **Send the build with every registration.** The body also takes
+  `app_version` (string, up to 64 characters, such as `"2.4.0"`), `app_build`
+  (integer, 0 to 2147483647, the store build number), `timezone` (IANA, such
+  as `"Asia/Kolkata"`, up to 64) and `locale` (BCP 47, such as `"en-IN"`, up
+  to 35). All four are optional, so a build that sends none still registers.
+  They are stored on the token and **replaced on every registration**, absent
+  ones included, so register on every launch, not only when the token
+  changes. This is how a forced update sees which builds are still live
+  before it cuts one off; an operator reads it with
+  `maintenance push-token-builds -days 30`. A blank string counts as not
+  sent; a negative or fractional `app_build`, or a string that is too long, is
+  `422` naming the field. Any other field is still a `422`, and the `DELETE`
+  body still takes the token alone.
 - `DELETE /api/v2/device-push-tokens` with the same body. Another user's token
   answers `404 device_token_not_found`.
 - `POST /api/v2/notifications/{notification_id}/opened` — a second open, and
@@ -261,7 +316,16 @@ ids it takes and when the filing shows up.
 
 - `GET /api/v2/map/pins?south=&west=&north=&east=` returns `{pins: [...]}`.
   A pin is `{id, kind, name, address, latitude, longitude, reel_id,
-  confidence}`; `kind` is `content` (carries `reel_id`) or `manual` (does not).
+  confidence, category, sub_category}`; `kind` is `content` (carries
+  `reel_id`) or `manual` (does not). Pins also send the deprecated
+  `subcategory` for one release; read `sub_category`.
+- **`&category=` filters on the server**, the same as v1's `/map?category=`:
+  only pins whose category is exactly that value, content and manual pins
+  alike, with a pin that has no category counting as `Other`. The match is
+  exact and case-sensitive, so send the `category` value the filters
+  returned, not its label. It applies before the 500-pin cap, so a filtered
+  map in a dense area is not short of pins. Leave it out, or send it empty,
+  for every category. Drop any client-side category filtering of pins.
 - **A box whose `west` is greater than `east` is valid** and means a viewport
   crossing the antimeridian. Do not "normalise" it client-side; the backend
   handles it as two boxes and a normalised box would return the whole world.
@@ -363,10 +427,11 @@ list the app sees is not fixed at build time.
 - Every reel, collection and collection item carries `web_url`, its public page:
   `https://reelpin.in/r/{reel_id}` or
   `https://reelpin.in/collections/{collection_id}`.
-- `GET /reels`, `POST /search` and `GET /collections/{id}` accept
-  `?view=concise`, which leaves out `key_facts`, `people_mentioned`,
-  `actionable_items` and `events`. The default is `detailed`, which is what the
-  app already reads, so the app needs no change.
+- `GET /reels`, `POST /search`, `GET /collections/{id}` and
+  `GET /shared-collections/{token}` accept `?view=concise`, which leaves out
+  `key_facts`, `people_mentioned`, `actionable_items` and `events` (and
+  `transcript` on a collection item). The default is `detailed`, which is what
+  the app already reads, so the app needs no change.
 
 ## Auth
 
@@ -437,7 +502,6 @@ Each of these is a real, expected answer that reads like a bug:
 
 ## Still open
 
-- Entitlements have no v2 route. Keep calling v1 for that one thing.
 - The dev base URL is live only once Task 22's deployment is deployed.
 - `spend_limit_reached` is built, but the monthly limits are not set on any
   deployment, so it cannot fire yet. Handle it before the first public web

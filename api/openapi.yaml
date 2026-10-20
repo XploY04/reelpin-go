@@ -160,7 +160,12 @@ paths:
       tags: [reels]
       summary: Get one saved reel
       description: |
-        The full reel, including its transcript when one exists.
+        The full reel, including its transcript when one exists, with the same
+        display fields a list item carries (`category_label`,
+        `sub_category_label`, `relative_date`, `display_date`,
+        `saved_date_key`, `content_type`, `has_map_locations`,
+        `mappable_locations`, `map_location_count`,
+        `primary_location_label`), so a detail view needs no second source.
 
         A reel that belongs to another user answers 404, the same as one that
         does not exist. A different answer would tell a stranger which ids are
@@ -397,13 +402,18 @@ paths:
         token again moves it to this user and refreshes it: a shared phone is a
         real thing, and the newest sign-in owns the device.
 
+        The optional build fields are stored on the token and replaced on every
+        registration, absent ones included, so the row describes the build
+        that registered it last. Send them on every launch: they are how a
+        forced update sees which builds are still live.
+
         The token is a credential. It is never returned by any endpoint and
         never appears in a log or an error.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/DeviceTokenRequest" }
+            schema: { $ref: "#/components/schemas/RegisterDeviceTokenRequest" }
       responses:
         "200":
           description: The device is registered.
@@ -511,6 +521,14 @@ paths:
         - { name: west, in: query, required: true, schema: { type: number } }
         - { name: north, in: query, required: true, schema: { type: number } }
         - { name: east, in: query, required: true, schema: { type: number } }
+        - name: category
+          in: query
+          required: false
+          description: |
+            Only pins in exactly this category, on content and manual pins
+            alike. A pin with no category counts as `Other`. Applied before the
+            500-pin cap. Absent or empty means every category.
+          schema: { type: string }
       responses:
         "200":
           description: The pins in view.
@@ -948,8 +966,9 @@ paths:
       summary: Create a collection
       description: |
         Creates a collection, optionally filing saves into it in the same
-        transaction. Unknown or foreign reel ids are skipped, not errors: a
-        stale picker must not cost the user the rest of the batch.
+        transaction. Every filed reel id must be one of the caller's own
+        saves: an unknown or foreign id answers `404 reel_not_found` and
+        nothing is created. Malformed ids are skipped.
       requestBody:
         required: true
         content:
@@ -962,6 +981,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/CollectionMutation" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
@@ -971,16 +991,18 @@ paths:
       tags: [collections]
       summary: Get a collection with one page of items
       description: |
-        The signed-in view: the collection, one cursor page of item cards, and
-        whether this user may change it. Items are cards, not full reels; the
-        full reel is one `getReel` call away by the same id.
+        The signed-in view: the collection, one cursor page of items, and
+        whether this user may change it. Each item is the full reel, because a
+        collaborator cannot call `getReel` for a save that is not theirs: the
+        display fields, `transcript`, `locations` and the long-form extraction,
+        plus when and by whom it was filed.
 
         A collection this user cannot see answers 404, identically to one that
         does not exist.
 
-        `view` is accepted for parity with the reel list and search. Items are
-        cards and never carry the fields `concise` leaves out, so both views
-        answer the same body.
+        `view=concise` leaves out `transcript`, `key_facts`,
+        `people_mentioned`, `actionable_items` and `events`, the same way it
+        trims the reel list.
       parameters:
         - $ref: "#/components/parameters/CollectionID"
         - $ref: "#/components/parameters/Cursor"
@@ -1046,7 +1068,10 @@ paths:
       summary: File saves into a collection
       description: |
         Owner or editor. Idempotent: re-adding a save changes nothing and is
-        not an error. Unknown and foreign ids are skipped.
+        not an error. Every reel id must be one of the caller's own saves:
+        editing a collection grants no right to anyone else's. An unknown or
+        foreign id answers `404 reel_not_found`, the same as `getReel`, and
+        a batch that contains one files nothing. Malformed ids are skipped.
       parameters:
         - $ref: "#/components/parameters/CollectionID"
       requestBody:
@@ -1242,12 +1267,17 @@ paths:
         whole authorization; it grants a view of the saves, never membership,
         and the response carries no owner id and no member information.
 
+        Items are full reels, as on `getCollection`, except that they carry
+        no `user_id`: the link does not say whose account a save belongs to.
+        `view=concise` trims them the same way.
+
         Unknown, expired and revoked tokens answer the same 404.
       security: []
       parameters:
         - $ref: "#/components/parameters/ShareLinkToken"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/View"
       responses:
         "200":
           description: The shared view.
@@ -1634,7 +1664,7 @@ components:
 
     Reel:
       type: object
-      required: [id, url, title, summary, category, subcategory]
+      required: [id, url, title, summary, category, subcategory, sub_category]
       properties:
         id: { type: string, format: uuid }
         url: { type: string }
@@ -1644,13 +1674,49 @@ components:
         thumbnail_url: { type: string, nullable: true }
         source_platform: { type: string, nullable: true }
         source_content_type: { type: string, nullable: true }
+        content_type:
+          type: string
+          enum: [reel, post, carousel]
+          description: The share-card kind derived from `source_content_type`.
+        parse_status: { type: string }
         title: { type: string }
         summary: { type: string }
         transcript:
           type: string
           description: Present only on a single-reel request, never in a list.
         category: { type: string }
-        subcategory: { type: string }
+        sub_category:
+          type: string
+          description: The subcategory, under the one name every reel-bearing response uses.
+        subcategory:
+          type: string
+          deprecated: true
+          description: |
+            The same value as `sub_category`, sent only on the single-reel
+            shape (`getReel` and a submission's `200`), under the name it used
+            first. Read `sub_category`; this goes after one release.
+        category_label: { type: string }
+        sub_category_label: { type: string }
+        display_date:
+          type: string
+          description: The save date for display, such as `Sep 2, 2026`, in UTC.
+        relative_date:
+          type: string
+          description: The save date relative to now, such as `Today` or `2 days ago`.
+        saved_date_key:
+          type: string
+          nullable: true
+          description: The save date as `YYYY-MM-DD`, in UTC, for grouping.
+        has_map_locations: { type: boolean }
+        mappable_locations:
+          type: array
+          description: The locations that have coordinates, ready to pin.
+          items: { $ref: "#/components/schemas/MappableLocation" }
+        map_location_count: { type: integer }
+        primary_location_label:
+          type: string
+          nullable: true
+          description: The first mappable location's label. Null when there is none.
         secondary_categories: { type: array, items: { type: string } }
         key_facts:
           type: array
@@ -1683,6 +1749,26 @@ components:
             Only on a submission's `200`. True when this user had the reel
             before this submission. False when it was saved just now from
             content someone else had already processed.
+
+    MappableLocation:
+      type: object
+      required: [name, latitude, longitude, marker_id, location_display_label]
+      properties:
+        name: { type: string }
+        address: { type: string, nullable: true }
+        neighborhood: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        country: { type: string, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
+        marker_id:
+          type: string
+          description: "`{reel_id}:{index}`, stable for one reel's locations."
+        location_name: { type: string }
+        location_address: { type: string }
+        location_display_label: { type: string }
+        google_maps_url: { type: string, nullable: true }
 
     Location:
       type: object
@@ -1918,6 +2004,35 @@ components:
         platform:
           type: string
           enum: [ios, android, web]
+
+    RegisterDeviceTokenRequest:
+      type: object
+      required: [token]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: The FCM registration token. Write-only; never returned.
+        platform:
+          type: string
+          enum: [ios, android, web]
+        app_version:
+          type: string
+          maxLength: 64
+          description: The marketing version, such as `2.4.0`. Blank counts as absent.
+        app_build:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: The build number the store knows the release by.
+        timezone:
+          type: string
+          maxLength: 64
+          description: The device's IANA zone, such as `Asia/Kolkata`. Blank counts as absent.
+        locale:
+          type: string
+          maxLength: 35
+          description: The device's BCP 47 locale, such as `en-IN`. Blank counts as absent.
     AccountDeletion:
       type: object
       required: [data_deleted, identity_deleted, pending, removed]
@@ -1978,7 +2093,17 @@ components:
           description: |
             A content pin's category from its save; `Other` on a pin made from
             a Google place.
-        subcategory: { type: string, nullable: true }
+        sub_category:
+          type: string
+          nullable: true
+          description: The subcategory, under the one name every reel-bearing response uses.
+        subcategory:
+          type: string
+          nullable: true
+          deprecated: true
+          description: |
+            The same value as `sub_category`, under the name pins sent first.
+            Read `sub_category`; this goes after one release.
         google_place_id:
           type: string
           nullable: true
@@ -2227,11 +2352,36 @@ components:
 
     CollectionItem:
       type: object
-      required: [reel_id, title, summary, url, source_platform]
+      required: [reel_id, title, summary, url, source_platform, id, category, sub_category, locations]
       description: |
-        One filed save, as a card. `reel_id` is the same id `getReel` accepts.
+        One filed save as a full reel, plus when and by whom it was filed.
+        `reel_id` and `id` are the same save id `getReel` accepts, but a
+        collaborator or a link viewer cannot call `getReel` for a save that is
+        not theirs, so everything a detail view shows is here. Apart from
+        `reel_id`, `saved_at`, `added_at` and `added_by`, a detailed item is
+        exactly the object `getReel` answers for that save: the same record,
+        presented by the same code.
+        `view=concise` leaves out `transcript`, `key_facts`,
+        `people_mentioned`, `actionable_items` and `events`.
       properties:
         reel_id: { type: string, format: uuid }
+        id: { type: string, format: uuid }
+        user_id:
+          type: string
+          format: uuid
+          description: |
+            The user whose save this is. Absent on `getSharedCollection`,
+            whose anonymous reader must not learn whose account a save is.
+        normalized_url: { type: string, nullable: true }
+        source_content_id: { type: string, nullable: true }
+        processing_version: { type: string, nullable: true }
+        ingestion_method: { type: string, nullable: true }
+        transcript_source: { type: string, nullable: true }
+        subcategory:
+          type: string
+          deprecated: true
+          description: The same value as `sub_category`, as `getReel` sends it. Read `sub_category`.
+        secondary_categories: { type: array, items: { type: string } }
         title: { type: string }
         summary: { type: string }
         url: { type: string }
@@ -2240,6 +2390,70 @@ components:
           description: The reel's public page, `{PUBLIC_WEB_BASE_URL}/r/{reel_id}`.
         thumbnail_url: { type: string, nullable: true }
         source_platform: { type: string }
+        source_content_type: { type: string, nullable: true }
+        content_type:
+          type: string
+          enum: [reel, post, carousel]
+        parse_status: { type: string }
+        category: { type: string }
+        sub_category: { type: string }
+        category_label: { type: string }
+        sub_category_label: { type: string }
+        created_at:
+          type: string
+          nullable: true
+          format: date-time
+          description: When the save was made; the same instant as `saved_at`.
+        display_date: { type: string }
+        relative_date: { type: string }
+        saved_date_key: { type: string, nullable: true }
+        has_map_locations: { type: boolean }
+        mappable_locations:
+          type: array
+          items: { $ref: "#/components/schemas/MappableLocation" }
+        map_location_count: { type: integer }
+        primary_location_label: { type: string, nullable: true }
+        transcript:
+          type: string
+          description: Left out under `view=concise`.
+        locations:
+          type: array
+          description: |
+            Every extracted location, with or without coordinates. The ones
+            with coordinates are also in `mappable_locations`.
+          items:
+            type: object
+            required: [name, latitude, longitude]
+            properties:
+              name: { type: string }
+              address: { type: string, nullable: true }
+              neighborhood: { type: string, nullable: true }
+              city: { type: string, nullable: true }
+              state: { type: string, nullable: true }
+              country: { type: string, nullable: true }
+              latitude: { type: number, nullable: true }
+              longitude: { type: number, nullable: true }
+        key_facts:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        people_mentioned:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        actionable_items:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        events:
+          type: array
+          description: Left out under `view=concise`.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              date: { type: string }
+              time: { type: string }
         saved_at: { type: string, nullable: true, format: date-time }
         added_at: { type: string, nullable: true, format: date-time }
         added_by: { type: string, nullable: true, format: uuid }
@@ -2270,9 +2484,9 @@ components:
       type: object
       required: [collection, items, page]
       description: |
-        The anonymous view. `member_count` is always zero here and `role` is
-        always `viewer`: the token grants a view of the saves, not of who can
-        see them.
+        The anonymous view. `member_count` is always zero here, `role` is
+        always `viewer`, and items carry no `user_id`: the token grants a view
+        of the saves, not of who owns or can see them.
       properties:
         collection: { $ref: "#/components/schemas/Collection" }
         items:

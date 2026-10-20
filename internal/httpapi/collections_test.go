@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/reels"
@@ -153,6 +154,22 @@ func TestAnotherUsersCollectionIs404(t *testing.T) {
 	}
 }
 
+// TestFilingAnotherUsersSaveIs404 answers what getReel answers for that id, so
+// filing cannot probe whether someone else's save exists.
+func TestFilingAnotherUsersSaveIs404(t *testing.T) {
+	fake := newFakeCollections()
+	fake.err = reels.ErrNotFound
+
+	rec := request(collectionDeps(fake), "POST", "/api/v2/collections/"+testCollectionID+"/items",
+		`{"reel_ids":["`+testReelID+`"]}`, "Bearer good.token")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if code := decodeError(t, rec).Error.Code; code != "reel_not_found" {
+		t.Errorf("code = %q", code)
+	}
+}
+
 func TestAViewerCannotChangeACollection(t *testing.T) {
 	fake := newFakeCollections()
 	fake.err = collections.ErrForbidden
@@ -223,11 +240,11 @@ func TestItemPagesUseOpaqueCursors(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
 	}
-	if fake.lastLimit != 10 {
-		t.Errorf("limit = %d", fake.lastLimit)
+	if fake.lastQuery.Limit != 10 {
+		t.Errorf("limit = %d", fake.lastQuery.Limit)
 	}
-	if fake.lastCursor == nil || fake.lastCursor.ID != testReelID {
-		t.Fatalf("cursor = %+v, want the decoded position", fake.lastCursor)
+	if fake.lastQuery.After == nil || fake.lastQuery.After.ID != testReelID {
+		t.Fatalf("cursor = %+v, want the decoded position", fake.lastQuery.After)
 	}
 
 	// Anything this API did not issue is a validation error, never a guessed
@@ -254,7 +271,7 @@ func TestAServiceFailureIsA500WithoutDetail(t *testing.T) {
 
 func TestCollectionsLinkTheirPublicPages(t *testing.T) {
 	fake := newFakeCollections()
-	fake.detail.Items = []collections.Item{{ReelID: testReelID, Title: "Best cafes in Goa"}}
+	fake.items = []collections.ItemRecord{{Reel: sampleReel(testReelID, otherUserID)}}
 
 	rec := request(collectionDeps(fake), "GET", "/api/v2/collections/"+testCollectionID, "", "Bearer good.token")
 	if rec.Code != http.StatusOK {
@@ -297,4 +314,127 @@ func TestAddingItemsAnswersTheCollectionAfterTheChange(t *testing.T) {
 	if body.AddedCount != 1 || body.Collection.ID != testCollectionID || body.Collection.WebURL == "" {
 		t.Errorf("body = %+v", body)
 	}
+}
+
+// TestCollectionItemsAreFullReels covers the reason items changed shape: a
+// collaborator or a link viewer cannot call getReel for a save that is not
+// theirs, so the item itself carries the detailed reel, and concise trims it
+// the same way it trims the reel list.
+func TestCollectionItemsAreFullReels(t *testing.T) {
+	addedAt := testNow.Add(-time.Hour)
+	for _, target := range []string{
+		"/api/v2/collections/" + testCollectionID,
+		"/api/v2/shared-collections/sometoken",
+	} {
+		t.Run(target, func(t *testing.T) {
+			fake := newFakeCollections()
+			fake.items = []collections.ItemRecord{{
+				Reel:    sampleReel(testReelID, otherUserID),
+				AddedAt: &addedAt,
+				AddedBy: stringPtr(otherUserID),
+			}}
+
+			rec := request(collectionDeps(fake), "GET", target, "", "Bearer good.token")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+			}
+			if !fake.lastQuery.Transcripts {
+				t.Error("the detailed view did not ask storage for transcripts")
+			}
+			item := firstItem(t, rec)
+			for key, want := range map[string]any{
+				"reel_id":            testReelID,
+				"id":                 testReelID,
+				"transcript":         "spoken words",
+				"sub_category":       "cafes",
+				"sub_category_label": "Cafes",
+				"category_label":     "Food And Drink",
+				"relative_date":      "2 days ago",
+				"map_location_count": float64(1),
+				"source_platform":    "instagram",
+				"added_by":           otherUserID,
+			} {
+				if item[key] != want {
+					t.Errorf("%s = %#v, want %#v", key, item[key], want)
+				}
+			}
+			for _, key := range []string{"key_facts", "people_mentioned", "actionable_items", "events", "locations", "mappable_locations", "added_at", "saved_at"} {
+				if _, present := item[key]; !present {
+					t.Errorf("the detailed item has no %s", key)
+				}
+			}
+			if locations, _ := item["locations"].([]any); len(locations) != 2 {
+				t.Errorf("locations = %v, want both, coordinates or not", item["locations"])
+			}
+			// The anonymous link view must not name the save owner's account.
+			userID, present := item["user_id"]
+			if strings.HasPrefix(target, "/api/v2/shared-collections/") {
+				if present {
+					t.Errorf("the shared item carries user_id %v", userID)
+				}
+			} else if userID != otherUserID {
+				t.Errorf("user_id = %#v, want the save owner %s", userID, otherUserID)
+			}
+
+			concise := request(collectionDeps(fake), "GET", target+"?view=concise", "", "Bearer good.token")
+			if concise.Code != http.StatusOK {
+				t.Fatalf("concise status = %d (%s)", concise.Code, concise.Body.String())
+			}
+			if fake.lastQuery.Transcripts {
+				t.Error("the concise view asked storage for transcripts it does not send")
+			}
+			item = firstItem(t, concise)
+			for _, key := range []string{"transcript", "key_facts", "people_mentioned", "actionable_items", "events"} {
+				if _, present := item[key]; present {
+					t.Errorf("the concise item carries %s", key)
+				}
+			}
+			if item["sub_category"] != "cafes" || item["added_at"] == nil {
+				t.Errorf("the concise item lost a display or item field: %v", item)
+			}
+		})
+	}
+}
+
+func TestAnUnknownItemViewIsRejected(t *testing.T) {
+	for _, target := range []string{
+		"/api/v2/collections/" + testCollectionID + "?view=verbose",
+		"/api/v2/shared-collections/sometoken?view=verbose",
+	} {
+		rec := request(collectionDeps(newFakeCollections()), "GET", target, "", "Bearer good.token")
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s status = %d, want 422", target, rec.Code)
+		}
+	}
+}
+
+func TestCanEditFollowsTheRole(t *testing.T) {
+	for role, want := range map[string]bool{
+		collections.RoleOwner: true, collections.RoleEditor: true, collections.RoleViewer: false,
+	} {
+		fake := newFakeCollections()
+		fake.collection.Role = role
+		rec := request(collectionDeps(fake), "GET", "/api/v2/collections/"+testCollectionID, "", "Bearer good.token")
+		var body collections.Detail
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.CanEdit != want {
+			t.Errorf("role %s can_edit = %v, want %v", role, body.CanEdit, want)
+		}
+	}
+}
+
+func firstItem(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(body.Items))
+	}
+	return body.Items[0]
 }

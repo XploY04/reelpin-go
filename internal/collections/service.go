@@ -16,8 +16,8 @@ type Store interface {
 	Get(ctx context.Context, collectionID, userID string) (Collection, error)
 	Update(ctx context.Context, collectionID, userID string, name, description, coverReelID *string) (Collection, error)
 	Delete(ctx context.Context, collectionID, userID string) error
-	Detail(ctx context.Context, collectionID, userID string, after *reels.Cursor, limit int) (Detail, error)
-	SharedByToken(ctx context.Context, token string, after *reels.Cursor, limit int) (Shared, error)
+	Detail(ctx context.Context, collectionID, userID string, query ItemQuery) (Collection, ItemPage, error)
+	SharedByToken(ctx context.Context, token string, query ItemQuery) (Collection, ItemPage, error)
 	AddItems(ctx context.Context, collectionID, userID string, saveIDs []string) (int, error)
 	RemoveItem(ctx context.Context, collectionID, userID, saveID string) error
 	EnableLink(ctx context.Context, collectionID, userID string) (string, string, time.Time, error)
@@ -30,14 +30,31 @@ type Store interface {
 }
 
 // Service is the collection use cases every client shares. It adds what
-// storage does not know, the public page each collection and item lives on.
+// storage does not know: the public page each collection and item lives on,
+// and how an item is presented.
 type Service struct {
 	store      Store
 	webBaseURL string
+	now        func() time.Time
 }
 
-func NewService(store Store, webBaseURL string) *Service {
-	return &Service{store: store, webBaseURL: webBaseURL}
+func NewService(store Store, webBaseURL string, now func() time.Time) *Service {
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{store: store, webBaseURL: webBaseURL, now: now}
+}
+
+// ItemParams page a collection's items and choose how much of each reel to
+// send. After nil starts at the newest filing.
+type ItemParams struct {
+	After *reels.Cursor
+	Limit int
+	View  reels.View
+}
+
+func (p ItemParams) query() ItemQuery {
+	return ItemQuery{After: p.After, Limit: p.Limit, Transcripts: p.View != reels.ViewConcise}
 }
 
 // WebURL is a collection's public page.
@@ -85,24 +102,34 @@ func (s *Service) Delete(ctx context.Context, collectionID, userID string) error
 	return s.store.Delete(ctx, collectionID, userID)
 }
 
-func (s *Service) Detail(ctx context.Context, collectionID, userID string, after *reels.Cursor, limit int) (Detail, error) {
-	detail, err := s.store.Detail(ctx, collectionID, userID, after, limit)
+func (s *Service) Detail(ctx context.Context, collectionID, userID string, params ItemParams) (Detail, error) {
+	collection, page, err := s.store.Detail(ctx, collectionID, userID, params.query())
 	if err != nil {
 		return Detail{}, err
 	}
-	detail.Collection = s.collection(detail.Collection)
-	detail.Items = s.items(detail.Items)
-	return detail, nil
+	return Detail{
+		Collection: s.collection(collection),
+		Items:      s.items(page.Items, params.View),
+		Page:       page.Page,
+		CanEdit:    CanEdit(collection.Role),
+	}, nil
 }
 
-func (s *Service) SharedByToken(ctx context.Context, token string, after *reels.Cursor, limit int) (Shared, error) {
-	shared, err := s.store.SharedByToken(ctx, token, after, limit)
+func (s *Service) SharedByToken(ctx context.Context, token string, params ItemParams) (Shared, error) {
+	collection, page, err := s.store.SharedByToken(ctx, token, params.query())
 	if err != nil {
 		return Shared{}, err
 	}
-	shared.Collection = s.collection(shared.Collection)
-	shared.Items = s.items(shared.Items)
-	return shared, nil
+	items := s.items(page.Items, params.View)
+	// An anonymous reader must not learn whose account a save belongs to.
+	for index := range items {
+		items[index].UserID = ""
+	}
+	return Shared{
+		Collection: s.collection(collection),
+		Items:      items,
+		Page:       page.Page,
+	}, nil
 }
 
 // AddItems files saves and answers the collection as it now stands, so the
@@ -168,9 +195,26 @@ func (s *Service) collection(collection Collection) Collection {
 	return collection
 }
 
-func (s *Service) items(items []Item) []Item {
-	for index := range items {
-		items[index].WebURL = reels.WebURL(s.webBaseURL, items[index].ReelID)
+func (s *Service) items(records []ItemRecord, view reels.View) []Item {
+	display := reels.Display{Now: s.now().UTC(), WebBaseURL: s.webBaseURL, View: view}
+	items := make([]Item, 0, len(records))
+	for _, record := range records {
+		item := Item{
+			Reel:    reels.BuildReel(record.Reel, display),
+			UserID:  record.Reel.UserID,
+			ReelID:  record.Reel.ID,
+			SavedAt: ISOTime(record.Reel.CreatedAt),
+			AddedAt: ISOTime(record.AddedAt),
+			AddedBy: record.AddedBy,
+		}
+		if record.Reel.SourcePlatform != nil {
+			item.SourcePlatform = *record.Reel.SourcePlatform
+		}
+		if view != reels.ViewConcise {
+			transcript := item.Reel.Transcript
+			item.Transcript = &transcript
+		}
+		items = append(items, item)
 	}
 	return items
 }

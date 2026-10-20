@@ -123,7 +123,7 @@ func New(deps Deps) (*Server, error) {
 		reels:        reelService,
 		jobs:         jobs.NewService(deps.Jobs, reelService, deps.StageBudgets, deps.Now),
 		entitlements: entitlements.NewService(deps.Reels, deps.Entitlements),
-		collections:  collections.NewService(deps.Collections, deps.PublicWebBaseURL),
+		collections:  collections.NewService(deps.Collections, deps.PublicWebBaseURL, deps.Now),
 	}
 	if err := checkDependencies(deps, server.routeTable()); err != nil {
 		return nil, err

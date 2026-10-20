@@ -59,7 +59,7 @@ func (s *Service) Get(ctx context.Context, userID string, id uuid.UUID) (Reel, e
 	if err != nil {
 		return Reel{}, err
 	}
-	return BuildReel(record, s.webBaseURL), nil
+	return BuildReel(record, s.display(ViewDetailed)), nil
 }
 
 // Card answers one reel in the list's shape.
@@ -74,7 +74,7 @@ func (s *Service) Card(ctx context.Context, userID string, id uuid.UUID, view Vi
 // Present is the full shape for a record a caller already holds, such as the
 // reel a submission found already saved.
 func (s *Service) Present(record ReelRecord) Reel {
-	return BuildReel(record, s.webBaseURL)
+	return BuildReel(record, s.display(ViewDetailed))
 }
 
 // DiscoverParams page the recent saves and optionally choose one saved date.
