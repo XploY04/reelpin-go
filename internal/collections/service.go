@@ -120,9 +120,14 @@ func (s *Service) SharedByToken(ctx context.Context, token string, params ItemPa
 	if err != nil {
 		return Shared{}, err
 	}
+	items := s.items(page.Items, params.View)
+	// An anonymous reader must not learn whose account a save belongs to.
+	for index := range items {
+		items[index].UserID = ""
+	}
 	return Shared{
 		Collection: s.collection(collection),
-		Items:      s.items(page.Items, params.View),
+		Items:      items,
 		Page:       page.Page,
 	}, nil
 }
@@ -196,6 +201,7 @@ func (s *Service) items(records []ItemRecord, view reels.View) []Item {
 	for _, record := range records {
 		item := Item{
 			Reel:    reels.BuildReel(record.Reel, display),
+			UserID:  record.Reel.UserID,
 			ReelID:  record.Reel.ID,
 			SavedAt: ISOTime(record.Reel.CreatedAt),
 			AddedAt: ISOTime(record.AddedAt),

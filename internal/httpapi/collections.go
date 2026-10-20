@@ -67,6 +67,8 @@ func (s *Server) writeCollectionError(w http.ResponseWriter, r *http.Request, er
 	switch {
 	case errors.Is(err, collections.ErrNotFound):
 		notFoundError(w, "collection_not_found")
+	case errors.Is(err, reels.ErrNotFound):
+		notFoundError(w, "reel_not_found")
 	case errors.Is(err, collections.ErrForbidden):
 		writeError(w, http.StatusForbidden, errorBody{
 			Code:    "collection_forbidden",

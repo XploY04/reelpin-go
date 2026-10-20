@@ -130,6 +130,17 @@ and build it with `reels.BuildReel`, so a detailed item equals the save's
 `getReel` body apart from `reel_id`, `saved_at`, `added_at` and `added_by`.
 `internal/postgres` tests this across all three endpoints.
 
+The one difference is `user_id`, the save owner's account id. The signed-in
+collection page sends it; `GET /api/v2/shared-collections/{token}` leaves it
+out, because its reader is anonymous and the link grants a view of the saves,
+not of whose they are.
+
+Filing works only on your own saves. `POST /api/v2/collections` and
+`POST /api/v2/collections/{collection_id}/items` check that every reel id
+belongs to the caller; an unknown or foreign id answers `404 reel_not_found`,
+the same answer `getReel` gives, and the request files nothing. Being an
+editor of a collection grants no right to another member's saves.
+
 The subcategory is `sub_category` (and `sub_category_label`) in every
 reel-bearing response. The single-reel shape and map pins first sent it as
 `subcategory`; they keep that name beside `sub_category`, marked deprecated,

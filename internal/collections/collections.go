@@ -75,11 +75,13 @@ type Collection struct {
 // when and by whom it was filed. Transcript is nil under the concise view,
 // which leaves it out.
 //
-// SourcePlatform and Transcript shadow the reel's, and the shallower field
-// wins in JSON: an item's platform has always been a non-null string, and the
-// concise view leaves the transcript out.
+// UserID, SourcePlatform and Transcript shadow the reel's, and the shallower
+// field wins in JSON: the shared view leaves the save owner's id out, an
+// item's platform has always been a non-null string, and the concise view
+// leaves the transcript out.
 type Item struct {
 	reels.Reel
+	UserID         string  `json:"user_id,omitempty"`
 	ReelID         string  `json:"reel_id"`
 	SourcePlatform string  `json:"source_platform"`
 	Transcript     *string `json:"transcript,omitempty"`

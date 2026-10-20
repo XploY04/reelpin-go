@@ -966,8 +966,9 @@ paths:
       summary: Create a collection
       description: |
         Creates a collection, optionally filing saves into it in the same
-        transaction. Unknown or foreign reel ids are skipped, not errors: a
-        stale picker must not cost the user the rest of the batch.
+        transaction. Every filed reel id must be one of the caller's own
+        saves: an unknown or foreign id answers `404 reel_not_found` and
+        nothing is created. Malformed ids are skipped.
       requestBody:
         required: true
         content:
@@ -980,6 +981,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/CollectionMutation" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
 
@@ -1066,7 +1068,10 @@ paths:
       summary: File saves into a collection
       description: |
         Owner or editor. Idempotent: re-adding a save changes nothing and is
-        not an error. Unknown and foreign ids are skipped.
+        not an error. Every reel id must be one of the caller's own saves:
+        editing a collection grants no right to anyone else's. An unknown or
+        foreign id answers `404 reel_not_found`, the same as `getReel`, and
+        a batch that contains one files nothing. Malformed ids are skipped.
       parameters:
         - $ref: "#/components/parameters/CollectionID"
       requestBody:
@@ -1262,8 +1267,9 @@ paths:
         whole authorization; it grants a view of the saves, never membership,
         and the response carries no owner id and no member information.
 
-        Items are full reels, as on `getCollection`, and `view=concise` trims
-        them the same way.
+        Items are full reels, as on `getCollection`, except that they carry
+        no `user_id`: the link does not say whose account a save belongs to.
+        `view=concise` trims them the same way.
 
         Unknown, expired and revoked tokens answer the same 404.
       security: []
@@ -2363,7 +2369,9 @@ components:
         user_id:
           type: string
           format: uuid
-          description: The user whose save this is.
+          description: |
+            The user whose save this is. Absent on `getSharedCollection`,
+            whose anonymous reader must not learn whose account a save is.
         normalized_url: { type: string, nullable: true }
         source_content_id: { type: string, nullable: true }
         processing_version: { type: string, nullable: true }
@@ -2476,9 +2484,9 @@ components:
       type: object
       required: [collection, items, page]
       description: |
-        The anonymous view. `member_count` is always zero here and `role` is
-        always `viewer`: the token grants a view of the saves, not of who can
-        see them.
+        The anonymous view. `member_count` is always zero here, `role` is
+        always `viewer`, and items carry no `user_id`: the token grants a view
+        of the saves, not of who owns or can see them.
       properties:
         collection: { $ref: "#/components/schemas/Collection" }
         items:

@@ -218,8 +218,9 @@ func (c *Collections) AddItems(ctx context.Context, collectionID, userID string,
 // enqueue task, which files a new save into its named collections in the same
 // transaction as the save itself; AddItems and Create route through it too, so
 // there is exactly one filing rule. It is idempotent under duplicate delivery:
-// the primary key absorbs re-inserts, and only saves that exist are filed, so
-// a stale picker cannot fail a batch.
+// the primary key absorbs re-inserts. Every save must be the caller's own;
+// one that is not, or does not exist, files nothing and answers
+// reels.ErrNotFound.
 func (c *Collections) FileSave(ctx context.Context, tx pgx.Tx, userID, collectionID string, saveIDs []string) (int, error) {
 	return fileSaves(ctx, tx, userID, collectionID, saveIDs)
 }
@@ -245,6 +246,20 @@ func fileSaves(ctx context.Context, tx pgx.Tx, userID, collectionID string, save
 	}
 	if len(cleaned) == 0 {
 		return 0, nil
+	}
+
+	// Editing a collection grants no right to another user's saves, so one
+	// foreign or unknown id fails the whole batch with getReel's not-found.
+	var owned int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM reelpin.user_saves
+		WHERE id = ANY($1::uuid[]) AND user_id = $2::uuid`,
+		cleaned, userID,
+	).Scan(&owned); err != nil {
+		return 0, fmt.Errorf("checking save ownership: %w", err)
+	}
+	if owned != len(cleaned) {
+		return 0, reels.ErrNotFound
 	}
 
 	tag, err := tx.Exec(ctx, `

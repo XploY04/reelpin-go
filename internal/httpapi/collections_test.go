@@ -154,6 +154,22 @@ func TestAnotherUsersCollectionIs404(t *testing.T) {
 	}
 }
 
+// TestFilingAnotherUsersSaveIs404 answers what getReel answers for that id, so
+// filing cannot probe whether someone else's save exists.
+func TestFilingAnotherUsersSaveIs404(t *testing.T) {
+	fake := newFakeCollections()
+	fake.err = reels.ErrNotFound
+
+	rec := request(collectionDeps(fake), "POST", "/api/v2/collections/"+testCollectionID+"/items",
+		`{"reel_ids":["`+testReelID+`"]}`, "Bearer good.token")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if code := decodeError(t, rec).Error.Code; code != "reel_not_found" {
+		t.Errorf("code = %q", code)
+	}
+}
+
 func TestAViewerCannotChangeACollection(t *testing.T) {
 	fake := newFakeCollections()
 	fake.err = collections.ErrForbidden
@@ -349,6 +365,15 @@ func TestCollectionItemsAreFullReels(t *testing.T) {
 			}
 			if locations, _ := item["locations"].([]any); len(locations) != 2 {
 				t.Errorf("locations = %v, want both, coordinates or not", item["locations"])
+			}
+			// The anonymous link view must not name the save owner's account.
+			userID, present := item["user_id"]
+			if strings.HasPrefix(target, "/api/v2/shared-collections/") {
+				if present {
+					t.Errorf("the shared item carries user_id %v", userID)
+				}
+			} else if userID != otherUserID {
+				t.Errorf("user_id = %#v, want the save owner %s", userID, otherUserID)
 			}
 
 			concise := request(collectionDeps(fake), "GET", target+"?view=concise", "", "Bearer good.token")

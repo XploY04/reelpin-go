@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/url"
 	"os"
 	"reflect"
@@ -316,7 +317,7 @@ func TestFileSaveIsIdempotentUnderDuplicateDelivery(t *testing.T) {
 	}
 }
 
-func TestFileSaveSkipsWhatItCannotFile(t *testing.T) {
+func TestFileSaveSkipsMalformedIDsAndRefusesUnknownOnes(t *testing.T) {
 	c := collectionPool(t)
 	ctx := context.Background()
 
@@ -326,23 +327,69 @@ func TestFileSaveSkipsWhatItCannotFile(t *testing.T) {
 	}
 	mine := seedSave(t, c, ownerID, "MINE")
 
-	tx, err := c.pool.Begin(ctx)
+	// A malformed id cannot name a save, so it is dropped, not an error.
+	added, err := c.AddItems(ctx, collection.ID, ownerID, []string{"not-a-uuid", mine})
 	if err != nil {
-		t.Fatal(err)
-	}
-	// A stale picker sends a malformed id and one that does not exist. Neither
-	// may cost the user the rest of the batch.
-	added, fileErr := c.FileSave(ctx, tx, ownerID, collection.ID,
-		[]string{"not-a-uuid", "44444444-4444-4444-8444-000000000000", mine})
-	if fileErr != nil {
-		tx.Rollback(ctx)
-		t.Fatalf("FileSave: %v", fileErr)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("AddItems: %v", err)
 	}
 	if added != 1 {
 		t.Fatalf("added = %d, want only the real save", added)
+	}
+
+	// A well-formed id that names no save fails the batch.
+	if _, err := c.AddItems(ctx, collection.ID, ownerID,
+		[]string{"44444444-4444-4444-8444-000000000000", mine}); !errors.Is(err, reels.ErrNotFound) {
+		t.Fatalf("an unknown save id = %v, want reels.ErrNotFound", err)
+	}
+}
+
+// TestAnEditorCannotFileAnotherUsersSave: editing a collection grants no right
+// to someone else's saves. A foreign id answers the same not-found an unknown
+// one does, and a batch that mixes one in files nothing.
+func TestAnEditorCannotFileAnotherUsersSave(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+
+	collection, _, err := c.Create(ctx, ownerID, "Trips", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, invite, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleEditor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptInvite(ctx, invite, collaborator); err != nil {
+		t.Fatal(err)
+	}
+	foreign := seedSave(t, c, strangerID, "THEIRS")
+	own := seedSave(t, c, collaborator, "OURS")
+
+	for name, saveIDs := range map[string][]string{
+		"foreign": {foreign},
+		"mixed":   {own, foreign},
+	} {
+		if _, err := c.AddItems(ctx, collection.ID, collaborator, saveIDs); !errors.Is(err, reels.ErrNotFound) {
+			t.Errorf("%s batch = %v, want reels.ErrNotFound", name, err)
+		}
+	}
+	countItems := func() int {
+		var items int
+		if err := c.pool.QueryRow(ctx,
+			`SELECT count(*) FROM reelpin.collection_items WHERE collection_id = $1`, collection.ID).Scan(&items); err != nil {
+			t.Fatal(err)
+		}
+		return items
+	}
+	if items := countItems(); items != 0 {
+		t.Fatalf("rows = %d after refused batches, want none", items)
+	}
+
+	added, err := c.AddItems(ctx, collection.ID, collaborator, []string{own})
+	if err != nil {
+		t.Fatalf("filing the editor's own save: %v", err)
+	}
+	if added != 1 || countItems() != 1 {
+		t.Fatalf("added = %d, want the editor's own save filed", added)
 	}
 }
 
@@ -752,9 +799,19 @@ func TestAnItemIsTheReelGetReelAnswers(t *testing.T) {
 		for _, filing := range []string{"reel_id", "saved_at", "added_at", "added_by"} {
 			delete(got, filing)
 		}
-		if !reflect.DeepEqual(got, want) {
+		expected := want
+		if name == "shared" {
+			// The anonymous view leaves out whose account the save is; apart
+			// from that it is still the reel getReel answers.
+			if userID, present := got["user_id"]; present {
+				t.Errorf("the shared item carries user_id %v", userID)
+			}
+			expected = maps.Clone(want)
+			delete(expected, "user_id")
+		}
+		if !reflect.DeepEqual(got, expected) {
 			gotJSON, _ := json.Marshal(got)
-			wantJSON, _ := json.Marshal(want)
+			wantJSON, _ := json.Marshal(expected)
 			t.Errorf("the %s item is not the reel getReel answers:\n item %s\n reel %s", name, gotJSON, wantJSON)
 		}
 		mappable := items[0].MappableLocations
