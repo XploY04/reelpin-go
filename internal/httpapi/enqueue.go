@@ -61,7 +61,7 @@ func (s *Server) allowSubmission(w http.ResponseWriter, r *http.Request, userID 
 		policy  ratelimit.Policy
 		subject string
 	}{
-		{ratelimit.Submission, userID},
+		{ratelimit.Submission, ratelimit.Submission.UserSubject(userID, requestClientID(r))},
 		{ratelimit.SubmissionIP, s.limitSubject(r)},
 	} {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)

@@ -485,3 +485,43 @@ func TestAnUnconfiguredServiceBelievesNoBucket(t *testing.T) {
 		t.Fatalf("subject = %q, want the socket peer", got)
 	}
 }
+
+// A token from an OAuth client counts against that client's own bucket under
+// the user; an app session keeps the plain per-user bucket. Search shares the
+// rule through allowMetered.
+func TestAnOAuthClientHasItsOwnUserBucket(t *testing.T) {
+	subjects := map[string]map[string]string{}
+	for _, clientID := range []string{"", "mcp-client"} {
+		for _, call := range []struct{ target, body string }{
+			{"/api/v2/processing-jobs/reels", `{"url":"https://www.instagram.com/reel/C8abc123/"}`},
+			{"/api/v2/search", `{"query":"cafe"}`},
+		} {
+			limiter := &recordingLimiter{}
+			deps := submitDeps(&fakeSubmitter{})
+			deps.Limiter = limiter
+			deps.Auth = fakeAuth{userID: testUserID, clientID: clientID}
+
+			rec := post(deps, call.target, call.body,
+				map[string]string{"Authorization": "Bearer good.token", "Idempotency-Key": validKey})
+			if rec.Code >= 300 {
+				t.Fatalf("%s as client %q: status = %d (%s)", call.target, clientID, rec.Code, rec.Body.String())
+			}
+			if subjects[clientID] == nil {
+				subjects[clientID] = map[string]string{}
+			}
+			for name, subject := range limiter.subjects {
+				subjects[clientID][name] = subject
+			}
+		}
+	}
+
+	for _, policy := range []ratelimit.Policy{ratelimit.Submission, ratelimit.Search} {
+		app, agent := subjects[""][policy.Name], subjects["mcp-client"][policy.Name]
+		if app != testUserID {
+			t.Errorf("%s: an app session counted against %q, want the user", policy.Name, app)
+		}
+		if agent == app || !strings.HasPrefix(agent, testUserID) {
+			t.Errorf("%s: the OAuth client counted against %q, want its own bucket under the user", policy.Name, agent)
+		}
+	}
+}

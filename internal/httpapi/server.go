@@ -243,7 +243,7 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		userID, err := s.deps.Auth.Authenticate(r.Context(), token)
+		principal, err := s.deps.Auth.Authenticate(r.Context(), token)
 		if err != nil {
 			// The verification error stays in the log; the client learns nothing.
 			s.deps.Logger.Info("token rejected",
@@ -260,9 +260,10 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		// The log middleware runs outside this one and cannot see a context
 		// value set here, so the hashed user is handed back through a holder.
 		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok {
-			holder.hashedUser = metrics.Hash(userID)
+			holder.hashedUser = metrics.Hash(principal.UserID)
 		}
-		next(s.invalidatingWrites(w, r, userID), r.WithContext(auth.WithUserID(r.Context(), userID)))
+		ctx := auth.WithClientID(auth.WithUserID(r.Context(), principal.UserID), principal.ClientID)
+		next(s.invalidatingWrites(w, r, principal.UserID), r.WithContext(ctx))
 	}
 }
 

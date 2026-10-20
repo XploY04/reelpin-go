@@ -11,17 +11,20 @@ import "time"
 // Submission, search and map pinning cost provider calls, so their handlers fail closed on
 // ErrUnavailable. Cheap authenticated reads have no policy at all and stay
 // available when Redis is down.
+//
+// The per-user policies are per client too: a token from an OAuth client gets
+// its own bucket beside the app's, so an agent cannot spend the app's share.
 var (
 	// Task 8 (enqueue) references these two.
-	Submission   = Policy{Name: "submission", Requests: 30, Window: time.Hour}
+	Submission   = Policy{Name: "submission", Requests: 30, Window: time.Hour, PerClient: true}
 	SubmissionIP = Policy{Name: "submission_ip", Requests: 60, Window: time.Hour}
 
 	// Task 20 (hybrid search) references these two.
-	Search   = Policy{Name: "search", Requests: 30, Window: time.Minute}
+	Search   = Policy{Name: "search", Requests: 30, Window: time.Minute, PerClient: true}
 	SearchIP = Policy{Name: "search_ip", Requests: 90, Window: time.Minute}
 
 	// Pinning a place not yet pinned costs a Google Place Details call.
-	MapPin   = Policy{Name: "map_pin", Requests: 20, Window: time.Hour}
+	MapPin   = Policy{Name: "map_pin", Requests: 20, Window: time.Hour, PerClient: true}
 	MapPinIP = Policy{Name: "map_pin_ip", Requests: 60, Window: time.Hour}
 )
 

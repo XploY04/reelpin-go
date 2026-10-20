@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/mapview"
@@ -42,15 +43,16 @@ func (f *fakePinger) Ping(context.Context) error {
 }
 
 type fakeAuth struct {
-	userID string
-	err    error
+	userID   string
+	clientID string
+	err      error
 }
 
-func (f fakeAuth) Authenticate(context.Context, string) (string, error) {
+func (f fakeAuth) Authenticate(context.Context, string) (auth.Principal, error) {
 	if f.err != nil {
-		return "", f.err
+		return auth.Principal{}, f.err
 	}
-	return f.userID, nil
+	return auth.Principal{UserID: f.userID, ClientID: f.clientID}, nil
 }
 
 type fakeReels struct {

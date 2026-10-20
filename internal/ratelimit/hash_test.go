@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHashHidesTheSubjectAndStaysStable(t *testing.T) {
@@ -58,5 +59,31 @@ func TestPlanPolicies(t *testing.T) {
 	}
 	if MapPinIP.Requests != 60 || MapPinIP.Window.Hours() != 1 {
 		t.Errorf("map_pin_ip = %+v, want 60 per hour", MapPinIP)
+	}
+}
+
+func TestAPerClientPolicyGivesEachClientItsOwnBucket(t *testing.T) {
+	app := Search.UserSubject("user-1", "")
+	agent := Search.UserSubject("user-1", "mcp-client")
+	extension := Search.UserSubject("user-1", "extension")
+
+	if app != "user-1" {
+		t.Errorf("an app session keys %q, want the plain user bucket", app)
+	}
+	if agent == app || agent == extension {
+		t.Errorf("clients share a bucket: app=%q agent=%q extension=%q", app, agent, extension)
+	}
+	if other := Search.UserSubject("user-2", "mcp-client"); other == agent {
+		t.Error("one client shares a bucket across users")
+	}
+
+	perUser := Policy{Name: "per_user", Requests: 1, Window: time.Minute}
+	if got := perUser.UserSubject("user-1", "mcp-client"); got != "user-1" {
+		t.Errorf("a per-user policy keyed %q, want the user alone", got)
+	}
+	for _, policy := range []Policy{Submission, Search, MapPin} {
+		if !policy.PerClient {
+			t.Errorf("%s is not per client", policy.Name)
+		}
 	}
 }

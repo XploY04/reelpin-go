@@ -100,6 +100,7 @@ type claims struct {
 	role      string
 	expiresAt time.Time
 	notBefore *time.Time
+	extra     map[string]any
 }
 
 func (c claims) sign(t *testing.T, key signingKey, algorithm jwa.SignatureAlgorithm, raw any) string {
@@ -115,6 +116,9 @@ func (c claims) sign(t *testing.T, key signingKey, algorithm jwa.SignatureAlgori
 	}
 	if c.notBefore != nil {
 		builder = builder.NotBefore(*c.notBefore)
+	}
+	for name, value := range c.extra {
+		builder = builder.Claim(name, value)
 	}
 
 	token, err := builder.Build()
@@ -163,12 +167,40 @@ func TestAuthenticateValidToken(t *testing.T) {
 	verifier := newVerifier(t, server)
 
 	token := validClaims(server).sign(t, key, jwa.ES256(), key.private)
-	subject, err := verifier.Authenticate(context.Background(), token)
+	principal, err := verifier.Authenticate(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Authenticate() error: %v", err)
 	}
-	if subject != testSubject {
-		t.Errorf("subject = %q, want %q", subject, testSubject)
+	if principal.UserID != testSubject {
+		t.Errorf("subject = %q, want %q", principal.UserID, testSubject)
+	}
+	if principal.ClientID != "" {
+		t.Errorf("an app session token has client_id %q, want none", principal.ClientID)
+	}
+}
+
+// A Supabase OAuth-server token names the client it was issued to, and that
+// is what a per-client rate limit is keyed by.
+func TestAuthenticateReadsTheOAuthClient(t *testing.T) {
+	key := newSigningKey(t, "key-1")
+	server := newJWKSServer(t, key)
+	verifier := newVerifier(t, server)
+
+	issued := validClaims(server)
+	issued.extra = map[string]any{"client_id": "mcp-client"}
+	principal, err := verifier.Authenticate(context.Background(), issued.sign(t, key, jwa.ES256(), key.private))
+	if err != nil {
+		t.Fatalf("Authenticate() error: %v", err)
+	}
+	if principal.UserID != testSubject || principal.ClientID != "mcp-client" {
+		t.Errorf("principal = %+v", principal)
+	}
+
+	for _, malformed := range []any{"", 42} {
+		issued.extra = map[string]any{"client_id": malformed}
+		if _, err := verifier.Authenticate(context.Background(), issued.sign(t, key, jwa.ES256(), key.private)); err == nil {
+			t.Errorf("client_id %#v was accepted", malformed)
+		}
 	}
 }
 
@@ -267,12 +299,12 @@ func TestUnknownKeyIDRefreshesOnce(t *testing.T) {
 
 	before := server.fetches.Load()
 	token := validClaims(server).sign(t, rotated, jwa.ES256(), rotated.private)
-	subject, err := verifier.Authenticate(context.Background(), token)
+	principal, err := verifier.Authenticate(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Authenticate() after rotation: %v", err)
 	}
-	if subject != testSubject {
-		t.Errorf("subject = %q, want %q", subject, testSubject)
+	if principal.UserID != testSubject {
+		t.Errorf("subject = %q, want %q", principal.UserID, testSubject)
 	}
 	if got := server.fetches.Load() - before; got != 1 {
 		t.Errorf("fetches during rotation = %d, want 1", got)

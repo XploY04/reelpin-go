@@ -47,6 +47,13 @@ func requestUserID(r *http.Request) string {
 	return userID
 }
 
+// requestClientID is the OAuth client the bearer token was issued to, empty
+// for an app session or a share token. It only ever selects a rate-limit
+// bucket; authorization stays with the user id.
+func requestClientID(r *http.Request) string {
+	return auth.ClientID(r.Context())
+}
+
 // validationError carries the offending field in details when the caller can
 // act on it. The message is what a person reads; details is what a client can
 // point at.

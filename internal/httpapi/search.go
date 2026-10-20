@@ -101,7 +101,7 @@ func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID str
 		policy  ratelimit.Policy
 		subject string
 	}{
-		{user, userID},
+		{user, user.UserSubject(userID, requestClientID(r))},
 		{ip, s.limitSubject(r)},
 	} {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
