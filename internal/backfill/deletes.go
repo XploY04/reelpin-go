@@ -68,11 +68,15 @@ func (b *Backfiller) markGone(source legacySource) string {
 // canonical row that is already gone, through a cascade from its save, still
 // has its audit row moved.
 func (b *Backfiller) deleteCarried(source legacySource) string {
+	kept := ""
+	if source.name == sourceReels {
+		kept = b.stillResolved()
+	}
 	return `
 		WITH gone AS (` + b.gone(source) + `
 		  AND NOT EXISTS (SELECT 1 FROM ` + source.canonical + ` c
 		      JOIN reelpin.user_migrations m ON m.user_id = c.user_id
-		      WHERE c.` + source.canonicalKey + ` = a.source_id)
+		      WHERE c.` + source.canonicalKey + ` = a.source_id)` + kept + `
 		),
 		removed AS (
 			DELETE FROM ` + source.canonical + ` c USING gone
@@ -83,14 +87,35 @@ func (b *Backfiller) deleteCarried(source legacySource) string {
 		SELECT count(*)::int FROM removed`
 }
 
+// stillResolved keeps a carried save that another remaining legacy reel of
+// the same user still resolves to: one that lost a save conflict to it or was
+// merged into it. That reel's reminders and price tracks point at the save
+// through saveJoin, and the save is still the user's in Python. Its audit row
+// stays carried, so a later final delta deletes the save once no legacy reel
+// resolves to it.
+func (b *Backfiller) stillResolved() string {
+	shape := b.source.shape(sourceReels)
+	return `
+		  AND NOT EXISTS (SELECT 1 FROM reelpin.user_saves c
+		      JOIN reelpin.backfill_audit r
+		        ON r.backfill_version = $1 AND r.source_table = '` + sourceReels + `'
+		       AND r.action IN ('saved', 'skipped_conflict') AND r.content_id = c.content_id
+		      JOIN ` + b.source.table(sourceReels) + ` l
+		        ON ` + keyExpression(sourceReels, "id", shape) + ` = r.source_id
+		       AND lower(l.user_id::text) = c.user_id::text` + shape.environmentFilter() + `
+		      WHERE c.id = a.source_id)`
+}
+
 // deleteHiddenPins handles the one carried table with no single canonical id.
 // The preference names a location, which only the legacy row could resolve,
 // and that row is gone. So the deletion runs the other way: a hidden
 // preference of a user Go has not served that no remaining legacy hidden pin
-// resolves to came from a pin since unhidden in Python.
+// resolves to came from a pin since unhidden in Python. The gone audit rows
+// of a user Go has served are left as they are, found by the owner each one
+// was carried with.
 func (b *Backfiller) deleteHiddenPins(source legacySource) string {
 	return `
-		WITH gone AS (` + b.gone(source) + `),
+		WITH gone AS (` + b.gone(source) + ` AND NOT ` + noteOwnerMigrated + `),
 		removed AS (
 			DELETE FROM reelpin.user_pin_preferences p
 			WHERE p.hidden

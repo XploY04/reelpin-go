@@ -22,11 +22,11 @@ import (
 // recognised by its preserved id.
 //
 // --since turns it into a delta: only legacy rows that changed after the mark
-// are read, and the copy is idempotent by primary key. A delta leaves alone the
-// rows of every user Go has already served. A finished real run logs the mark
-// the next --since should use, which is --dumped-at less a safety margin. The
-// tables Python changes without moving a timestamp are copied whole on every
-// run, delta or not.
+// are read, and the copy is idempotent by primary key. Every run, delta or not,
+// leaves alone the rows of every user Go has already served. A finished real
+// run logs the mark the next --since should use, which is --dumped-at less a
+// safety margin. The tables Python changes without moving a timestamp are
+// copied whole on every run, delta or not.
 func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Config, args []string) error {
 	flags := flag.NewFlagSet("backfill-legacy", flag.ContinueOnError)
 	execute := flags.Bool("execute", false, "write changes instead of reporting them")

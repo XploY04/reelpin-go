@@ -340,7 +340,8 @@ func (v *Verifier) predicates(source legacySource) predicates {
 	case source.owned != "":
 		built.owned = source.owned
 		built.missing = `NOT EXISTS (SELECT 1 FROM ` + built.legacy + ` l
-			WHERE ` + built.key + ` = a.source_id AND (` + source.owned + ` OR ` + built.migrated + `))`
+			WHERE ` + built.key + ` = a.source_id AND (` + source.owned + ` OR ` + built.migrated + `))
+			AND NOT ` + noteOwnerMigrated
 	case source.owner != "":
 		built.owned = `EXISTS (SELECT 1 FROM ` + source.canonical + ` c
 			WHERE c.` + source.canonicalKey + ` = ` + built.key + `

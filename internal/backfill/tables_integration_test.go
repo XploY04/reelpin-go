@@ -41,6 +41,12 @@ const (
 	frozenReel   = "bbbbbbbb-0000-4000-8000-000000000006"
 	dualReminder = "ffffffff-0000-4000-8000-000000000007"
 
+	keptReel      = "bbbbbbbb-0000-4000-8000-000000000007"
+	mergedReel    = "bbbbbbbb-0000-4000-8000-000000000008"
+	mergedTrack   = "99999999-0000-4000-8000-000000000003"
+	keptReminder  = "ffffffff-0000-4000-8000-000000000008"
+	mergedContent = "https://www.instagram.com/reel/MERGE9/"
+
 	goodFeedback   = "88888888-0000-4000-8000-000000000001"
 	badTopic       = "88888888-0000-4000-8000-000000000002"
 	sharedConflict = "https://www.instagram.com/reel/SHARED9/"
@@ -837,6 +843,9 @@ func TestDeltasLeaveUsersGoHasServedAlone(t *testing.T) {
 	if !hiddenAt(t, pool, versionOf(t, pool, placeReel), 2) {
 		t.Error("the final delta unhid a pin of a user Go has served")
 	}
+	if action := auditAction(t, pool, "hidden_reel_map_pins", hiddenPin); action != "copied" {
+		t.Errorf("the hidden pin of a user Go has served is audited %q, want it left copied", action)
+	}
 
 	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
 	if err != nil {
@@ -893,5 +902,212 @@ func TestTheFinalDeltaUnhidesAPinUnhiddenInPython(t *testing.T) {
 	}
 	if !verified.OK() {
 		t.Errorf("the final delta does not verify: %+v", verified)
+	}
+}
+
+// A user still on Python saved the same reel twice. The second legacy reel
+// merged into the first one's save and hangs a reminder and a price track off
+// it. Deleting the first reel in Python leaves the user's save, so the final
+// delta must keep it until the second reel is gone too.
+func TestTheFinalDeltaKeepsASaveAnotherLegacyReelResolvesTo(t *testing.T) {
+	pool := testPool(t)
+	exec(t, pool, scratchLegacySchema)
+	ctx := context.Background()
+
+	exec(t, pool, `
+		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
+		VALUES ($1, $2, $3, 'Saved first', '2026-01-01T00:00:00Z'),
+		       ($4, $2, $3, 'Saved again', '2026-02-01T00:00:00Z')`,
+		keptReel, userB, mergedContent, mergedReel)
+	exec(t, pool, `
+		INSERT INTO legacy.reminders (id, user_id, reel_id, title, fire_at, created_at)
+		VALUES ($1, $2, $3, 'From the second save', '2027-02-01T09:00:00Z', '2026-02-02T00:00:00Z')`,
+		keptReminder, userB, mergedReel)
+	exec(t, pool, `
+		INSERT INTO legacy.price_tracks (id, user_id, reel_id, url, title, target_price, currency, created_at)
+		VALUES ($1, $2, $3, 'https://shop.example.com/p/9', 'Lamp', 999, 'INR', '2026-02-02T00:00:00Z')`,
+		mergedTrack, userB, mergedReel)
+
+	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snapshot.ConflictsMerged != 1 || auditAction(t, pool, sourceReels, mergedReel) != "skipped_conflict" {
+		t.Fatalf("the second reel did not merge into the first: %+v", snapshot)
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1 AND save_id = $2`, keptReminder, keptReel) ||
+		!exists(t, pool, `SELECT 1 FROM reelpin.price_tracks WHERE id = $1 AND save_id = $2`, mergedTrack, keptReel) {
+		t.Fatal("the merged reel's reminder and price track do not point at the kept save")
+	}
+
+	exec(t, pool, `DELETE FROM legacy.reels WHERE id = $1`, keptReel)
+	final, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: snapshot.HighWaterMark,
+		PropagateDeletes: true,
+	})
+	if err != nil {
+		t.Fatalf("final delta: %v", err)
+	}
+	if final.Deleted["reels"] != 0 {
+		t.Errorf("deleted = %v, want the save kept", final.Deleted)
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1 AND user_id = $2`, keptReel, userB) {
+		t.Error("the final delta deleted a save the merged legacy reel still resolves to")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1 AND save_id = $2`, keptReminder, keptReel) {
+		t.Error("the merged reel's reminder did not survive the final delta")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.price_tracks WHERE id = $1 AND save_id = $2`, mergedTrack, keptReel) {
+		t.Error("the merged reel's price track did not survive the final delta")
+	}
+	if action := auditAction(t, pool, sourceReels, keptReel); action != "saved" {
+		t.Errorf("the kept save is audited %q, want it still saved", action)
+	}
+
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !verified.OK() {
+		t.Errorf("the final delta does not verify: %+v", verified)
+	}
+
+	// Once the second reel is gone as well, nothing in Python names the save.
+	exec(t, pool, `DELETE FROM legacy.reels WHERE id = $1`, mergedReel)
+	again, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: snapshot.HighWaterMark,
+		PropagateDeletes: true,
+	})
+	if err != nil {
+		t.Fatalf("second final delta: %v", err)
+	}
+	if again.Deleted["reels"] != 1 || exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, keptReel) {
+		t.Errorf("deleted = %v, want the save gone once no legacy reel resolves to it", again.Deleted)
+	}
+}
+
+// A snapshot resumed, or rerun, after the dual run started is not a delta, and
+// still has to leave a user Go has served alone.
+func TestEveryRunLeavesUsersGoHasServedAlone(t *testing.T) {
+	pool := testPool(t)
+	seedScratch(t, pool)
+	ctx := context.Background()
+
+	partial, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, MaxRows: 1,
+	})
+	if err != nil {
+		t.Fatalf("partial snapshot: %v", err)
+	}
+	if partial.SavesCreated != 1 {
+		t.Fatalf("the partial snapshot created %d saves, want 1", partial.SavesCreated)
+	}
+
+	exec(t, pool, `INSERT INTO reelpin.user_migrations (user_id) VALUES ($1)`, userA)
+
+	resumed, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("resumed snapshot: %v", err)
+	}
+	if resumed.ReelsScanned != 0 || resumed.JobsScanned != 0 {
+		t.Errorf("the resumed snapshot read %d reels and %d jobs of a user Go has served",
+			resumed.ReelsScanned, resumed.JobsScanned)
+	}
+	if exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, placeReel) {
+		t.Error("the resumed snapshot carried a save of a user Go has served")
+	}
+	for _, table := range []string{
+		"reelpin.reminders", "reelpin.price_tracks", "reelpin.user_manual_pins",
+		"reelpin.user_pin_preferences", "reelpin.user_entitlements",
+	} {
+		if exists(t, pool, `SELECT 1 FROM `+table+` WHERE user_id = $1`, userA) {
+			t.Errorf("the resumed snapshot wrote %s for a user Go has served", table)
+		}
+	}
+	if exists(t, pool, `SELECT 1 FROM reelpin.profiles WHERE user_id = $1`, userA) {
+		t.Error("the resumed snapshot wrote the profile of a user Go has served")
+	}
+
+	// Pro granted in Go after the move. user_entitlements is copied whole on
+	// every run, so a rerun is where it would be overwritten.
+	exec(t, pool, `
+		INSERT INTO reelpin.user_entitlements (user_id, pro_expires_at, store, note)
+		VALUES ($1, '2030-01-01T00:00:00Z', 'manual', 'granted in go')`, userA)
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema}); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.user_entitlements
+		WHERE user_id = $1 AND pro_expires_at = '2030-01-01T00:00:00Z' AND note = 'granted in go'`, userA) {
+		t.Error("a rerun overwrote the Pro grant of a user Go has served")
+	}
+}
+
+// A user can move between the read of a page and the write of a row on it.
+// The page here is read first, then the user moves, then the rows are
+// written: none of them may land.
+func TestAUserWhoMovesAfterThePageWasReadIsNotWritten(t *testing.T) {
+	pool := testPool(t)
+	seedScratch(t, pool)
+	ctx := context.Background()
+
+	b := New(pool, quiet())
+	var err error
+	if b.source, err = newSource(scratchSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.source.describe(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	b.seen = map[string]bool{}
+
+	var reminders tableMapping
+	for _, mapping := range wave1Mappings {
+		if mapping.name == "reminders" {
+			reminders = mapping
+		}
+	}
+	shape := b.source.shape(reminders.name)
+	options := Options{Execute: true, BatchSize: 10, DumpedAt: dumpedNow(), LegacySchema: scratchSchema}
+
+	reels, err := b.readReels(ctx, "", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := b.readKeys(ctx, reminders, shape, "", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reels) != 2 || len(keys) != 2 {
+		t.Fatalf("read %d reels and %d reminders, want 2 of each", len(reels), len(keys))
+	}
+
+	exec(t, pool, `INSERT INTO reelpin.user_migrations (user_id) VALUES ($1)`, userA)
+
+	report := Report{Tables: map[string]TableReport{}}
+	for _, row := range reels {
+		if err := b.backfillOneReel(ctx, options, 1, row, &report); err != nil {
+			t.Fatalf("reel %s: %v", row.ID, err)
+		}
+	}
+	statement, err := b.upsertStatement(reminders, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := TableReport{SkippedByAction: map[string]int{}}
+	for _, key := range keys {
+		if err := b.copyOneRow(ctx, options, 1, reminders, statement, key, &counts); err != nil {
+			t.Fatalf("reminder %s: %v", key.id, err)
+		}
+	}
+
+	if total := count(t, pool, "reelpin.user_saves"); total != 0 {
+		t.Errorf("%d saves written for a user who moved after the page was read", total)
+	}
+	if total := count(t, pool, "reelpin.reminders"); total != 0 {
+		t.Errorf("%d reminders written for a user who moved after the page was read", total)
+	}
+	if counts.Copied != 0 || counts.Skipped != 0 || count(t, pool, "reelpin.backfill_audit") != 0 {
+		t.Errorf("counts = %+v and audit rows were written for a user who moved", counts)
 	}
 }

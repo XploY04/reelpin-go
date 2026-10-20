@@ -75,9 +75,10 @@ type Options struct {
 	LegacySchema string
 	// Since switches to a delta pass: only legacy rows that changed after it
 	// are read, no resume cursor is read or moved, and every table is
-	// scanned from the start of its keyspace. A delta also leaves alone every
-	// row owned by a user in reelpin.user_migrations: Go has served them, so
-	// their Go rows are theirs to change and their Python rows are frozen.
+	// scanned from the start of its keyspace. Every run, a delta or not,
+	// leaves alone every row owned by a user in reelpin.user_migrations: Go
+	// has served them, so their Go rows are theirs to change and their Python
+	// rows are frozen.
 	Since *time.Time
 	// DumpedAt is when the dump the legacy schema was restored from was taken,
 	// read off Supabase's clock just before pg_dump. The next delta's mark is
@@ -237,13 +238,28 @@ func (o Options) validate() error {
 	return nil
 }
 
-// skipMigrated is the predicate a delta adds to a per-user legacy table, over
-// the legacy row l and its owner column. A snapshot copies everyone.
-func (o Options) skipMigrated(owner string) string {
-	if o.Since == nil || owner == "" {
+// skipMigrated is the predicate every run adds to a per-user legacy table, over
+// the legacy row l and its owner column. A delta, a resumed snapshot and a
+// rerun all leave a user Go has served alone; before the dual run the table is
+// empty and it filters nothing.
+func skipMigrated(owner string) string {
+	if owner == "" {
 		return ""
 	}
 	return ` AND NOT ` + migrated(owner)
+}
+
+// isMigrated re-reads the record inside a row's own transaction. The page the
+// row came from was filtered when it was read, and a user can move between
+// that read and this write.
+func isMigrated(ctx context.Context, db querier, userID string) (bool, error) {
+	var moved bool
+	if err := db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM reelpin.user_migrations WHERE user_id::text = lower($1))`,
+		userID).Scan(&moved); err != nil {
+		return false, fmt.Errorf("checking whether Go has served the user: %w", err)
+	}
+	return moved, nil
 }
 
 // migrated is whether the owner of the legacy row l has been served by Go.
@@ -366,6 +382,14 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		return fmt.Errorf("starting the reel transaction: %w", err)
 	}
 	defer transaction.Rollback(ctx)
+
+	moved, err := isMigrated(ctx, transaction, row.UserID)
+	if err != nil {
+		return err
+	}
+	if moved {
+		return nil
+	}
 
 	contentID, versionID, created, err := findOrCreateContent(ctx, transaction, identity, scopeHash)
 	if err != nil {
@@ -682,7 +706,7 @@ func (b *Backfiller) readReels(ctx context.Context, cursor string, options Optio
 		FROM `+b.source.table(sourceReels)+` l
 		WHERE ($1::uuid IS NULL OR l.id > $1::uuid)
 		  AND ($3::timestamptz IS NULL OR `+shape.changed()+` > $3)`+shape.environmentFilter()+
-		options.skipMigrated("user_id")+`
+		skipMigrated("user_id")+`
 		ORDER BY l.id
 		LIMIT $2`, nullableUUID(cursor), options.BatchSize, options.Since)
 	if err != nil {

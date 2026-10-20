@@ -336,6 +336,33 @@ func skipAction(err error) (string, string, bool) {
 type legacyKey struct {
 	id  string
 	raw string
+	// owner is the lower-cased user the legacy row names, or "" for a table
+	// nobody owns.
+	owner string
+}
+
+// ownerNote is the audit note a carried hidden pin keeps. The preference it
+// became has no id of its own, so once the legacy row is gone this is the only
+// record of whose pin it was.
+func ownerNote(owner string) string { return ownerNotePrefix + owner }
+
+const ownerNotePrefix = "owner "
+
+// noteOwnerMigrated is whether the audit row a was carried, by ownerNote, for
+// a user Go has served.
+const noteOwnerMigrated = `EXISTS (SELECT 1 FROM reelpin.user_migrations m
+	WHERE a.note = '` + ownerNotePrefix + `' || m.user_id::text)`
+
+// upsertStatement is one mapping's per-row statement. It repeats the migrated
+// filter the page was read with, so a user who moved after the read is not
+// written.
+func (b *Backfiller) upsertStatement(mapping tableMapping, shape tableShape) (string, error) {
+	cast, err := keyCast(shape, mapping.key)
+	if err != nil {
+		return "", err
+	}
+	return mapping.insert(shape, b.source.table(mapping.name)+" l",
+		"l."+mapping.key+" = $1::"+cast+shape.environmentFilter()+skipMigrated(mapping.owner)), nil
 }
 
 func (b *Backfiller) copyTable(ctx context.Context, options Options, mapping tableMapping, report *Report) error {
@@ -347,12 +374,10 @@ func (b *Backfiller) copyTable(ctx context.Context, options Options, mapping tab
 		return nil
 	}
 
-	cast, err := keyCast(shape, mapping.key)
+	statement, err := b.upsertStatement(mapping, shape)
 	if err != nil {
 		return err
 	}
-	statement := mapping.insert(shape, b.source.table(mapping.name)+" l",
-		"l."+mapping.key+" = $1::"+cast+shape.environmentFilter())
 
 	// A table copied whole has no resume point: every run reads all of it.
 	resumable := options.Since == nil && mapping.changed != nil
@@ -408,12 +433,16 @@ func (b *Backfiller) readKeys(
 	} else {
 		changed = mapping.changed(shape)
 	}
+	owner := "''"
+	if mapping.owner != "" {
+		owner = "coalesce(lower(l." + mapping.owner + "::text), '')"
+	}
 	rows, err := b.pool.Query(ctx, `
-		SELECT (`+key+`)::text, l.`+mapping.key+`::text
+		SELECT (`+key+`)::text, l.`+mapping.key+`::text, `+owner+`
 		FROM `+b.source.table(mapping.name)+` l
 		WHERE ($1::uuid IS NULL OR `+key+` > $1::uuid)
 		  AND ($3::timestamptz IS NULL OR `+changed+` > $3)`+shape.environmentFilter()+
-		options.skipMigrated(mapping.owner)+`
+		skipMigrated(mapping.owner)+`
 		ORDER BY `+key+`
 		LIMIT $2`, nullableUUID(cursor), options.BatchSize, since)
 	if err != nil {
@@ -424,7 +453,7 @@ func (b *Backfiller) readKeys(
 	collected := []legacyKey{}
 	for rows.Next() {
 		var key legacyKey
-		if err := rows.Scan(&key.id, &key.raw); err != nil {
+		if err := rows.Scan(&key.id, &key.raw, &key.owner); err != nil {
 			return nil, fmt.Errorf("reading legacy %s: %w", mapping.name, err)
 		}
 		collected = append(collected, key)
@@ -466,6 +495,15 @@ func (b *Backfiller) copyOneRow(
 		return skip(action, note)
 	}
 	if tag.RowsAffected() == 0 {
+		if mapping.owner != "" {
+			moved, err := isMigrated(ctx, transaction, key.owner)
+			if err != nil {
+				return err
+			}
+			if moved {
+				return nil
+			}
+		}
 		if mapping.unmatched != "" {
 			return skip(mapping.unmatched, "")
 		}
@@ -486,7 +524,11 @@ func (b *Backfiller) copyOneRow(
 	if !options.Execute {
 		return nil
 	}
-	if err := auditTx(ctx, transaction, batch, mapping.name, key.id, "copied", nil, nil, nil, ""); err != nil {
+	note := ""
+	if mapping.canonicalKey == "" {
+		note = ownerNote(key.owner)
+	}
+	if err := auditTx(ctx, transaction, batch, mapping.name, key.id, "copied", nil, nil, nil, note); err != nil {
 		return err
 	}
 	return transaction.Commit(ctx)
