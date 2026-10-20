@@ -13,7 +13,7 @@ import (
 
 // MapView is what the API needs from the map service.
 type MapView interface {
-	Pins(ctx context.Context, userID string, bounds geo.Bounds, category string) ([]mapview.Pin, error)
+	Pins(ctx context.Context, userID string, bounds geo.Bounds, category string) ([]mapview.Pin, bool, error)
 	Nearby(ctx context.Context, userID string, centre geo.Point, radiusMetres float64, limit int) ([]mapview.Pin, error)
 	CreateManualPin(ctx context.Context, userID, name string, address *string, point geo.Point) (mapview.Pin, error)
 	DeleteManualPin(ctx context.Context, userID, pinID string) error
@@ -63,13 +63,13 @@ func (s *Server) handleMapPins(w http.ResponseWriter, r *http.Request) {
 	}
 
 	category := strings.TrimSpace(r.URL.Query().Get("category"))
-	pins, err := s.deps.Map.Pins(r.Context(), requestUserID(r), bounds, category)
+	pins, truncated, err := s.deps.Map.Pins(r.Context(), requestUserID(r), bounds, category)
 	if err != nil {
 		s.deps.Logger.Error("reading map pins failed", "error", err)
 		internalError(w, "map_failed", "Could not load the map right now.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pins": pins})
+	writeJSON(w, http.StatusOK, map[string]any{"pins": pins, "truncated": truncated})
 }
 
 func (s *Server) handleMapNearby(w http.ResponseWriter, r *http.Request) {

@@ -394,13 +394,14 @@ type fakeMap struct {
 	lastBounds   geo.Bounds
 	lastCategory string
 	lastCentre   geo.Point
+	truncated    bool
 	hidden       *bool
 	lastItemID   string
 }
 
-func (f *fakeMap) Pins(_ context.Context, userID string, bounds geo.Bounds, category string) ([]mapview.Pin, error) {
+func (f *fakeMap) Pins(_ context.Context, userID string, bounds geo.Bounds, category string) ([]mapview.Pin, bool, error) {
 	f.lastUserID, f.lastBounds, f.lastCategory = userID, bounds, category
-	return f.pins, f.err
+	return f.pins, f.truncated, f.err
 }
 
 func (f *fakeMap) Nearby(_ context.Context, userID string, centre geo.Point, _ float64, _ int) ([]mapview.Pin, error) {

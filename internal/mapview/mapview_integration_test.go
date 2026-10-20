@@ -141,7 +141,7 @@ func TestOnlyReachableLocationsAppear(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mine, err := service.Pins(ctx, userA, bounds, "")
+	mine, _, err := service.Pins(ctx, userA, bounds, "")
 	if err != nil {
 		t.Fatalf("Pins: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestOnlyReachableLocationsAppear(t *testing.T) {
 		t.Fatalf("pins = %+v; a location is visible only through the user's own save", mine)
 	}
 
-	theirs, err := service.Pins(ctx, userB, bounds, "")
+	theirs, _, err := service.Pins(ctx, userB, bounds, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestTwoUsersSharingContentEachSeeItOnce(t *testing.T) {
 	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
 
 	for _, user := range []string{userA, userB} {
-		pins, err := service.Pins(ctx, user, bounds, "")
+		pins, _, err := service.Pins(ctx, user, bounds, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,11 +190,11 @@ func TestHidingAPinIsPersonal(t *testing.T) {
 		t.Fatalf("hide: %v", err)
 	}
 
-	mine, _ := service.Pins(ctx, userA, bounds, "")
+	mine, _, _ := service.Pins(ctx, userA, bounds, "")
 	if len(mine) != 0 {
 		t.Fatalf("a hidden pin still appeared: %+v", mine)
 	}
-	theirs, _ := service.Pins(ctx, userB, bounds, "")
+	theirs, _, _ := service.Pins(ctx, userB, bounds, "")
 	if len(theirs) != 1 {
 		t.Fatal("one user's hidden pin removed it from another user's map")
 	}
@@ -203,7 +203,7 @@ func TestHidingAPinIsPersonal(t *testing.T) {
 	if err := service.HidePin(ctx, userA, locationID, false); err != nil {
 		t.Fatal(err)
 	}
-	mine, _ = service.Pins(ctx, userA, bounds, "")
+	mine, _, _ = service.Pins(ctx, userA, bounds, "")
 	if len(mine) != 1 {
 		t.Fatal("unhiding did not restore the pin")
 	}
@@ -235,7 +235,7 @@ func TestManualPinsAreOwnedAndPrivate(t *testing.T) {
 	}
 
 	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
-	theirs, _ := service.Pins(ctx, userB, bounds, "")
+	theirs, _, _ := service.Pins(ctx, userB, bounds, "")
 	if len(theirs) != 0 {
 		t.Fatal("a manual pin was visible to another user")
 	}
@@ -265,7 +265,7 @@ func TestABoxCrossingTheAntimeridianFindsThePacific(t *testing.T) {
 		t.Fatal("the test box does not cross the antimeridian")
 	}
 
-	pins, err := service.Pins(ctx, userA, pacific, "")
+	pins, _, err := service.Pins(ctx, userA, pacific, "")
 	if err != nil {
 		t.Fatalf("Pins: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestAPlacePinIsOnePerPlaceAndPerUser(t *testing.T) {
 	}
 
 	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
-	pins, err := service.Pins(ctx, userA, bounds, "")
+	pins, _, err := service.Pins(ctx, userA, bounds, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,10 +466,10 @@ func TestDeleteItemHidesReelPinsAndDeletesManualOnes(t *testing.T) {
 	if err := service.DeleteItem(ctx, userA, "reel:"+saveID+":0"); err != nil {
 		t.Fatalf("hiding a reel item: %v", err)
 	}
-	if mine, _ := service.Pins(ctx, userA, bounds, ""); len(mine) != 0 {
+	if mine, _, _ := service.Pins(ctx, userA, bounds, ""); len(mine) != 0 {
 		t.Fatalf("a removed reel item still appeared: %+v", mine)
 	}
-	if theirs, _ := service.Pins(ctx, userB, bounds, ""); len(theirs) != 1 {
+	if theirs, _, _ := service.Pins(ctx, userB, bounds, ""); len(theirs) != 1 {
 		t.Fatal("removing an item changed another user's map")
 	}
 
@@ -503,7 +503,7 @@ func TestDeleteItemHidesABareLocationIDForTheCallerOnly(t *testing.T) {
 	mineOnly := seedLocation(t, pool, "BARE2", "Artjuna", 15.59, 73.75, userA)
 	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
 
-	pins, err := service.Pins(ctx, userA, bounds, "")
+	pins, _, err := service.Pins(ctx, userA, bounds, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,10 +518,10 @@ func TestDeleteItemHidesABareLocationIDForTheCallerOnly(t *testing.T) {
 	if err := service.DeleteItem(ctx, userA, shared); err != nil {
 		t.Fatalf("hiding by bare location id: %v", err)
 	}
-	if mine, _ := service.Pins(ctx, userA, bounds, ""); len(mine) != 1 || mine[0].ID != mineOnly {
+	if mine, _, _ := service.Pins(ctx, userA, bounds, ""); len(mine) != 1 || mine[0].ID != mineOnly {
 		t.Fatalf("pins after the delete = %+v, want only %s", mine, mineOnly)
 	}
-	if theirs, _ := service.Pins(ctx, userB, bounds, ""); len(theirs) != 1 || theirs[0].ID != shared {
+	if theirs, _, _ := service.Pins(ctx, userB, bounds, ""); len(theirs) != 1 || theirs[0].ID != shared {
 		t.Fatal("removing an item changed another user's map")
 	}
 
@@ -533,7 +533,7 @@ func TestDeleteItemHidesABareLocationIDForTheCallerOnly(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrNotFound", name, err)
 		}
 	}
-	if mine, _ := service.Pins(ctx, userA, bounds, ""); len(mine) != 1 {
+	if mine, _, _ := service.Pins(ctx, userA, bounds, ""); len(mine) != 1 {
 		t.Fatal("a stranger's delete hid the owner's pin")
 	}
 }
@@ -592,7 +592,7 @@ func TestACategoryFiltersPinsInTheDatabase(t *testing.T) {
 	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
 	names := func(category string) map[string]Pin {
 		t.Helper()
-		pins, err := service.Pins(ctx, userA, bounds, category)
+		pins, _, err := service.Pins(ctx, userA, bounds, category)
 		if err != nil {
 			t.Fatalf("Pins(%q): %v", category, err)
 		}
@@ -619,5 +619,99 @@ func TestACategoryFiltersPinsInTheDatabase(t *testing.T) {
 	}
 	if none := names("food"); len(none) != 0 {
 		t.Errorf("food = %v, want nothing: the match is exact", none)
+	}
+}
+
+func TestPinsAreOrderedNewestFirstAndManualPinsAreNotStarved(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "OLD1", "Old content", 15.50, 73.70, userA)
+	if _, err := pool.Exec(ctx,
+		`UPDATE reelpin.content_locations SET created_at = now() - interval '2 days'`); err != nil {
+		t.Fatal(err)
+	}
+	seedLocation(t, pool, "NEW1", "New content", 15.51, 73.71, userA)
+	if _, err := service.CreateManualPin(ctx, userA, "Manual", nil, geo.Point{Latitude: 15.52, Longitude: 73.72}); err != nil {
+		t.Fatal(err)
+	}
+
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+	pins, truncated, err := service.Pins(ctx, userA, bounds, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Error("3 pins reported as truncated")
+	}
+	var names []string
+	for _, pin := range pins {
+		names = append(names, pin.Name)
+	}
+	if got := strings.Join(names, ","); got != "Manual,New content,Old content" {
+		t.Errorf("order = %s, want newest first across both kinds", got)
+	}
+}
+
+func TestPinsPastTheCapAreTruncatedAndKeepTheNewest(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "OLD1", "Old content", 15.50, 73.70, userA)
+	if _, err := pool.Exec(ctx,
+		`UPDATE reelpin.content_locations SET created_at = now() - interval '2 days'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO reelpin.user_manual_pins (user_id, name, point)
+		SELECT $1, 'm' || n, ST_MakePoint(73.7, 15.5)::geography
+		FROM generate_series(1, $2::int) n`, userA, MaxPins); err != nil {
+		t.Fatal(err)
+	}
+
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+	pins, truncated, err := service.Pins(ctx, userA, bounds, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated || len(pins) != MaxPins {
+		t.Fatalf("truncated = %v, pins = %d, want true and %d", truncated, len(pins), MaxPins)
+	}
+	for _, pin := range pins {
+		if pin.Name == "Old content" {
+			t.Fatal("the oldest pin survived the cap over newer manual pins")
+		}
+	}
+}
+
+func TestCountPinsMatchesTheMap(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "COUNT1", "Shown cafe", 15.58, 73.74, userA)
+	hidden := seedLocation(t, pool, "COUNT2", "Hidden cafe", 15.59, 73.75, userA)
+	if err := service.HidePin(ctx, userA, hidden, true); err != nil {
+		t.Fatalf("hide: %v", err)
+	}
+	if _, err := service.CreateManualPin(ctx, userA, "My spot", nil, geo.Point{Latitude: 15.6, Longitude: 73.76}); err != nil {
+		t.Fatalf("manual pin: %v", err)
+	}
+
+	got, err := service.CountPins(ctx, userA)
+	if err != nil {
+		t.Fatalf("CountPins: %v", err)
+	}
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+	pins, _, err := service.Pins(ctx, userA, bounds, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 2 || got != len(pins) {
+		t.Fatalf("CountPins = %d, map shows %d, want 2", got, len(pins))
+	}
+
+	other, err := service.CountPins(ctx, userB)
+	if err != nil || other != 0 {
+		t.Fatalf("another user's count = %d, %v; want 0", other, err)
 	}
 }
