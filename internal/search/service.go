@@ -21,6 +21,14 @@ type Filters struct {
 	SavedDate   string
 }
 
+// Params are one search. View chooses how much of each reel comes back.
+type Params struct {
+	Query   string
+	Filters Filters
+	Limit   int
+	View    reels.View
+}
+
 type Service struct {
 	pool     *pgxpool.Pool
 	embedder embed.Embedder
@@ -33,6 +41,8 @@ type Service struct {
 	// Metrics is optional: nil counts nothing, which is what the tests and the
 	// evaluation harness run with.
 	Metrics SearchMeters
+	// WebBaseURL is the public site each result's page lives on.
+	WebBaseURL string
 }
 
 // SearchMeters is the slice of the metrics registry search touches. It is an
@@ -55,7 +65,8 @@ func NewService(pool *pgxpool.Pool, embedder embed.Embedder, logger *slog.Logger
 }
 
 // Search runs the three arms, fuses them, and returns display reels.
-func (s *Service) Search(ctx context.Context, userID, query string, filters Filters, limit int) (response Response, err error) {
+func (s *Service) Search(ctx context.Context, userID string, params Params) (response Response, err error) {
+	query, filters, limit := params.Query, params.Filters, params.Limit
 	started := s.now()
 	// Named returns and a deferred observation, so the two paths that answer
 	// nothing are counted too. An empty result is exactly what the relevance
@@ -127,6 +138,7 @@ func (s *Service) Search(ctx context.Context, userID, query string, filters Filt
 	}
 
 	best := fused[0].Score
+	display := reels.Display{Now: s.now().UTC(), WebBaseURL: s.WebBaseURL, View: params.View}
 	results := make([]Result, 0, len(fused))
 	for _, hit := range fused {
 		record, ok := records[hit.ReelID]
@@ -136,7 +148,7 @@ func (s *Service) Search(ctx context.Context, userID, query string, filters Filt
 		}
 		percent := RelevancePercent(hit.Score, best)
 		results = append(results, Result{
-			Reel:              reels.BuildDisplayReel(record, s.now().UTC()),
+			Reel:              reels.BuildDisplayReel(record, display),
 			RelevanceScore:    hit.Score,
 			RelevancePercent:  percent,
 			DisplayScoreLabel: ScoreLabel(percent),

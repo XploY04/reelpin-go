@@ -113,7 +113,7 @@ func TestBuildListResponseDedupes(t *testing.T) {
 		{ID: "b", Title: "second"},
 	}
 
-	response := BuildListResponse(records, 10, now)
+	response := BuildListResponse(records, 10, Display{Now: now})
 	if len(response.Reels) != 2 {
 		t.Fatalf("reels = %d, want 2", len(response.Reels))
 	}
@@ -135,7 +135,7 @@ func TestBuildListResponsePages(t *testing.T) {
 
 	// The caller over-fetched: limit 3, got 4, so there is another page and the
 	// cursor resumes after the third row.
-	response := BuildListResponse(records, 3, now)
+	response := BuildListResponse(records, 3, Display{Now: now})
 	if len(response.Reels) != 3 {
 		t.Fatalf("reels = %d, want the limit", len(response.Reels))
 	}
@@ -155,7 +155,7 @@ func TestBuildListResponseWithoutASavedTimeEndsThePage(t *testing.T) {
 	// A row with no saved time has no resumable position. The honest answer is
 	// the last page, never a cursor that restarts from the top.
 	records := []ReelRecord{{ID: "a"}, {ID: "b"}}
-	response := BuildListResponse(records, 1, now)
+	response := BuildListResponse(records, 1, Display{Now: now})
 	if response.HasMore || response.NextCursor != nil {
 		t.Errorf("response = %+v, want a final page", response)
 	}

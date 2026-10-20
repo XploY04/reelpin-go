@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHashHidesTheSubjectAndStaysStable(t *testing.T) {
@@ -58,5 +59,36 @@ func TestPlanPolicies(t *testing.T) {
 	}
 	if MapPinIP.Requests != 60 || MapPinIP.Window.Hours() != 1 {
 		t.Errorf("map_pin_ip = %+v, want 60 per hour", MapPinIP)
+	}
+}
+
+func TestAPerClientPolicyAddsAClientBucketToTheUsers(t *testing.T) {
+	app := Search.UserSubjects("user-1", "")
+	agent := Search.UserSubjects("user-1", "mcp-client")
+	extension := Search.UserSubjects("user-1", "extension")
+
+	if len(app) != 1 || app[0] != "user-1" {
+		t.Errorf("an app session keys %q, want the plain user bucket", app)
+	}
+	for _, subjects := range [][]string{agent, extension} {
+		if len(subjects) != 2 || subjects[1] != "user-1" {
+			t.Errorf("a client keys %q, want its own bucket and then the user's total", subjects)
+		}
+	}
+	if agent[0] == "user-1" || agent[0] == extension[0] {
+		t.Errorf("clients share a bucket: agent=%q extension=%q", agent, extension)
+	}
+	if other := Search.UserSubjects("user-2", "mcp-client"); other[0] == agent[0] {
+		t.Error("one client shares a bucket across users")
+	}
+
+	perUser := Policy{Name: "per_user", Requests: 1, Window: time.Minute}
+	if got := perUser.UserSubjects("user-1", "mcp-client"); len(got) != 1 || got[0] != "user-1" {
+		t.Errorf("a per-user policy keyed %q, want the user alone", got)
+	}
+	for _, policy := range []Policy{Submission, Search, MapPin} {
+		if !policy.PerClient {
+			t.Errorf("%s is not per client", policy.Name)
+		}
 	}
 }

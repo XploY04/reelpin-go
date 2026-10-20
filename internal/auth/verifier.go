@@ -67,15 +67,15 @@ func (v *Verifier) Shutdown(ctx context.Context) error {
 	return v.cache.Shutdown(ctx)
 }
 
-func (v *Verifier) Authenticate(ctx context.Context, raw string) (string, error) {
+func (v *Verifier) Authenticate(ctx context.Context, raw string) (Principal, error) {
 	keyID, err := es256KeyID(raw)
 	if err != nil {
-		return "", err
+		return Principal{}, err
 	}
 
 	set, err := v.keySet(ctx, keyID)
 	if err != nil {
-		return "", err
+		return Principal{}, err
 	}
 
 	token, err := jwt.Parse([]byte(raw),
@@ -86,22 +86,31 @@ func (v *Verifier) Authenticate(ctx context.Context, raw string) (string, error)
 		jwt.WithAcceptableSkew(clockSkew),
 	)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrUnauthenticated, err)
+		return Principal{}, fmt.Errorf("%w: %v", ErrUnauthenticated, err)
 	}
 
 	var role string
 	if err := token.Get("role", &role); err != nil || role != requiredRole {
-		return "", fmt.Errorf("%w: role is not %s", ErrUnauthenticated, requiredRole)
+		return Principal{}, fmt.Errorf("%w: role is not %s", ErrUnauthenticated, requiredRole)
 	}
 
 	subject, ok := token.Subject()
 	if !ok {
-		return "", fmt.Errorf("%w: token has no subject", ErrUnauthenticated)
+		return Principal{}, fmt.Errorf("%w: token has no subject", ErrUnauthenticated)
 	}
 	if _, err := uuid.Parse(subject); err != nil {
-		return "", fmt.Errorf("%w: subject is not a uuid", ErrUnauthenticated)
+		return Principal{}, fmt.Errorf("%w: subject is not a uuid", ErrUnauthenticated)
 	}
-	return subject, nil
+
+	// A client_id that is present must be a usable string: it keys a rate
+	// limit, and a token that cannot say which client it is gets no bucket.
+	var clientID string
+	if token.Has("client_id") {
+		if err := token.Get("client_id", &clientID); err != nil || strings.TrimSpace(clientID) == "" {
+			return Principal{}, fmt.Errorf("%w: client_id is not a string", ErrUnauthenticated)
+		}
+	}
+	return Principal{UserID: subject, ClientID: clientID}, nil
 }
 
 func (v *Verifier) keySet(ctx context.Context, keyID string) (jwk.Set, error) {

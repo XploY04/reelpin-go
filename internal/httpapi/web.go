@@ -82,11 +82,11 @@ func (s *Server) optionalUserID(r *http.Request) string {
 	if token == "" {
 		return ""
 	}
-	userID, err := s.deps.Auth.Authenticate(r.Context(), token)
+	principal, err := s.deps.Auth.Authenticate(r.Context(), token)
 	if err != nil {
 		return ""
 	}
-	return userID
+	return principal.UserID
 }
 
 func (s *Server) handleSubmitFeedback(w http.ResponseWriter, r *http.Request) {

@@ -110,6 +110,26 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 		return enqueue.Result{}, err
 	}
 
+	// The same link again answers with the save or the job the user already
+	// has, before anything is counted or created. A second key is a second
+	// attempt, not a second copy of the content.
+	existing, err := findExisting(ctx, tx, submission.UserID, submission.Identity.NormalizedURL)
+	if err != nil {
+		return enqueue.Result{}, err
+	}
+	if existing.Kind == enqueue.AlreadySaved {
+		if err := fileSubmission(ctx, tx, submission, existing.SaveID); err != nil {
+			return enqueue.Result{}, err
+		}
+		return e.finish(ctx, tx, submission, hash, existing)
+	}
+	if existing.Kind == enqueue.InFlight {
+		if err := mergeJobCollections(ctx, tx, existing.JobID, submission.CollectionIDs); err != nil {
+			return enqueue.Result{}, err
+		}
+		return e.finish(ctx, tx, submission, hash, existing)
+	}
+
 	// The cap counts live jobs under the advisory lock, so the third
 	// concurrent submission is always the one refused.
 	var active int
@@ -184,7 +204,7 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 		if err := fileSubmission(ctx, tx, submission, saveID); err != nil {
 			return enqueue.Result{}, err
 		}
-		return e.finish(ctx, tx, submission, hash, storedResult{Kind: enqueue.AlreadySaved, SaveID: saveID})
+		return e.finish(ctx, tx, submission, hash, storedResult{Kind: enqueue.Reused, SaveID: saveID})
 	}
 
 	// Unprocessed content: join the live run if one exists, start one if not.
@@ -194,6 +214,7 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 	}
 
 	// One private job per user per run; a duplicate submission reuses it.
+	kind := enqueue.Accepted
 	var jobID string
 	err = tx.QueryRow(ctx, `
 		SELECT id::text FROM reelpin.processing_jobs
@@ -214,15 +235,12 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 		}
 	} else if err != nil {
 		return enqueue.Result{}, fmt.Errorf("finding the existing job: %w", err)
-	} else if len(submission.CollectionIDs) > 0 {
-		// A second submission of the same link under a new key may name other
-		// collections. The job's intent is the union, so neither list is lost.
-		if _, err := tx.Exec(ctx, `
-			UPDATE reelpin.processing_jobs
-			SET collection_ids = ARRAY(SELECT DISTINCT unnest(collection_ids || $2::uuid[])),
-			    updated_at = now()
-			WHERE id = $1`, jobID, submission.CollectionIDs); err != nil {
-			return enqueue.Result{}, fmt.Errorf("recording the collections on the job: %w", err)
+	} else {
+		// The same content reached through another URL: still the job the
+		// user already has.
+		kind = enqueue.InFlight
+		if err := mergeJobCollections(ctx, tx, jobID, submission.CollectionIDs); err != nil {
+			return enqueue.Result{}, err
 		}
 	}
 
@@ -239,7 +257,62 @@ func (e *Enqueue) submitNew(ctx context.Context, tx pgx.Tx, submission enqueue.S
 		}
 	}
 
-	return e.finish(ctx, tx, submission, hash, storedResult{Kind: enqueue.Accepted, JobID: jobID})
+	return e.finish(ctx, tx, submission, hash, storedResult{Kind: kind, JobID: jobID})
+}
+
+// findExisting looks for what this user already has at this normalized URL: a
+// processed save first, then a job still queued or running. The zero result,
+// Kind Accepted with no ids, means neither.
+func findExisting(ctx context.Context, tx pgx.Tx, userID, normalizedURL string) (storedResult, error) {
+	var saveID string
+	err := tx.QueryRow(ctx, `
+		SELECT s.id::text
+		FROM reelpin.user_saves s
+		JOIN reelpin.contents c ON c.id = s.content_id
+		WHERE s.user_id = $1 AND c.normalized_url_hash = $2 AND c.normalized_url = $3
+		  AND c.current_version_id IS NOT NULL
+		ORDER BY s.saved_at DESC
+		LIMIT 1`,
+		userID, sourceidentity.URLHash(normalizedURL), normalizedURL,
+	).Scan(&saveID)
+	if err == nil {
+		return storedResult{Kind: enqueue.AlreadySaved, SaveID: saveID}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return storedResult{}, fmt.Errorf("looking for an existing save: %w", err)
+	}
+
+	var jobID string
+	err = tx.QueryRow(ctx, `
+		SELECT id::text FROM reelpin.processing_jobs
+		WHERE user_id = $1 AND normalized_url = $2 AND status IN ('queued', 'processing')
+		ORDER BY created_at DESC
+		LIMIT 1`,
+		userID, normalizedURL,
+	).Scan(&jobID)
+	if err == nil {
+		return storedResult{Kind: enqueue.InFlight, JobID: jobID}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return storedResult{}, fmt.Errorf("looking for a job in flight: %w", err)
+	}
+	return storedResult{Kind: enqueue.Accepted}, nil
+}
+
+// mergeJobCollections adds a repeat submission's collections to the job it
+// joined. The job's intent is the union, so neither list is lost.
+func mergeJobCollections(ctx context.Context, tx pgx.Tx, jobID string, collectionIDs []string) error {
+	if len(collectionIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE reelpin.processing_jobs
+		SET collection_ids = ARRAY(SELECT DISTINCT unnest(collection_ids || $2::uuid[])),
+		    updated_at = now()
+		WHERE id = $1`, jobID, collectionIDs); err != nil {
+		return fmt.Errorf("recording the collections on the job: %w", err)
+	}
+	return nil
 }
 
 // finish stores the idempotent response and loads the wire shapes, inside the
@@ -260,29 +333,30 @@ func (e *Enqueue) finish(ctx context.Context, tx pgx.Tx, submission enqueue.Subm
 	return e.replay(ctx, tx, submission.UserID, stored)
 }
 
+// statusFor keeps every job body on 202, so a 200 is always a reel.
 func statusFor(kind enqueue.OutcomeKind) int {
-	if kind == enqueue.AlreadySaved {
-		return 200
+	if kind == enqueue.Accepted || kind == enqueue.InFlight {
+		return 202
 	}
-	return 202
+	return 200
 }
 
 // replay rebuilds a Result from its stored identifiers, used both for the
 // first response and for an idempotent retry.
 func (e *Enqueue) replay(ctx context.Context, tx pgx.Tx, userID string, stored storedResult) (enqueue.Result, error) {
-	if stored.Kind == enqueue.AlreadySaved {
+	if stored.Kind == enqueue.AlreadySaved || stored.Kind == enqueue.Reused {
 		record, err := loadSavedReel(ctx, tx, userID, stored.SaveID)
 		if err != nil {
 			return enqueue.Result{}, err
 		}
-		return enqueue.Result{Kind: enqueue.AlreadySaved, Reel: &record}, nil
+		return enqueue.Result{Kind: stored.Kind, Reel: &record}, nil
 	}
 
 	job, err := loadJob(ctx, tx, userID, stored.JobID)
 	if err != nil {
 		return enqueue.Result{}, err
 	}
-	return enqueue.Result{Kind: enqueue.Accepted, Job: &job}, nil
+	return enqueue.Result{Kind: stored.Kind, Job: &job}, nil
 }
 
 // requireFilableCollections refuses the whole submission when any named id is

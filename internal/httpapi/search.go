@@ -13,7 +13,7 @@ import (
 
 // Searcher is what the API needs from the search service.
 type Searcher interface {
-	Search(ctx context.Context, userID, query string, filters search.Filters, limit int) (search.Response, error)
+	Search(ctx context.Context, userID string, params search.Params) (search.Response, error)
 }
 
 type searchRequest struct {
@@ -47,18 +47,27 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	view, ok := viewParam(w, r.URL.Query())
+	if !ok {
+		return
+	}
 
 	userID := requestUserID(r)
 	if !s.allowSearch(w, r, userID) {
 		return
 	}
 
-	response, err := s.deps.Search.Search(r.Context(), userID, request.Query, search.Filters{
-		Platforms:   platforms,
-		Category:    request.Category,
-		Subcategory: request.Subcategory,
-		SavedDate:   savedDate,
-	}, request.Limit)
+	response, err := s.deps.Search.Search(r.Context(), userID, search.Params{
+		Query: request.Query,
+		Filters: search.Filters{
+			Platforms:   platforms,
+			Category:    request.Category,
+			Subcategory: request.Subcategory,
+			SavedDate:   savedDate,
+		},
+		Limit: request.Limit,
+		View:  view,
+	})
 	if err != nil {
 		s.deps.Logger.Error("search failed", "error", err)
 		internalError(w, "search_failed", "Could not search right now.")
@@ -76,6 +85,21 @@ func (s *Server) allowSearch(w http.ResponseWriter, r *http.Request, userID stri
 		"Too many searches. Try again later.")
 }
 
+type meteredCheck struct {
+	policy  ratelimit.Policy
+	subject string
+}
+
+// meteredChecks are the buckets one metered request draws on, in order: the
+// OAuth client's under the user if any, the user's total, then the IP's.
+func meteredChecks(r *http.Request, userID string, user, ip ratelimit.Policy, ipSubject string) []meteredCheck {
+	var checks []meteredCheck
+	for _, subject := range user.UserSubjects(userID, requestClientID(r)) {
+		checks = append(checks, meteredCheck{user, subject})
+	}
+	return append(checks, meteredCheck{ip, ipSubject})
+}
+
 // allowMetered checks the user window, then the IP window, and answers the
 // refusal itself. A missing or unreachable limiter answers unavailable.
 func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID string, user, ip ratelimit.Policy, unavailableBody errorBody, limitedMessage string) bool {
@@ -88,13 +112,7 @@ func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID str
 		return false
 	}
 
-	for _, check := range []struct {
-		policy  ratelimit.Policy
-		subject string
-	}{
-		{user, userID},
-		{ip, s.limitSubject(r)},
-	} {
+	for _, check := range meteredChecks(r, userID, user, ip, s.limitSubject(r)) {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {
 			unavailable()

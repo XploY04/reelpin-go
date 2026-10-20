@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/outbox"
@@ -51,6 +52,18 @@ var stageTimeouts = map[string]time.Duration{
 	stageExtract:    90 * time.Second,
 	stageCategorize: 45 * time.Second,
 	stagePersist:    30 * time.Second,
+}
+
+// StageBudgets are every stage in the order a run passes through them, each
+// with its budget. The API estimates a job's remaining time from these, so the
+// estimate moves whenever a budget here does.
+func StageBudgets() []jobs.StageBudget {
+	order := []string{stagePrepare, stageDownload, stageTranscribe, stageExtract, stageCategorize, stagePersist}
+	budgets := make([]jobs.StageBudget, 0, len(order))
+	for _, stage := range order {
+		budgets = append(budgets, jobs.StageBudget{Name: stage, Budget: stageTimeouts[stage]})
+	}
+	return budgets
 }
 
 const runLifetime = 30 * time.Minute

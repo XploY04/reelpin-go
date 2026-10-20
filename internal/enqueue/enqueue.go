@@ -55,7 +55,8 @@ type Request struct {
 	Endpoint string
 }
 
-// OutcomeKind says which of the contract's two success shapes to answer with.
+// OutcomeKind says which success shape to answer with. The values are stored
+// in idempotency rows, so a new kind is appended, never inserted.
 type OutcomeKind int
 
 const (
@@ -63,7 +64,19 @@ const (
 	AlreadySaved OutcomeKind = iota
 	// Accepted answers 202 with the job to poll.
 	Accepted
+	// InFlight answers 202 with the job the user already has running for this
+	// content. No second job is made.
+	InFlight
+	// Reused answers 200 with a reel this submission just saved from content
+	// someone else already processed. It is ready, but it is new to the user.
+	Reused
 )
+
+// WasAlreadySaved reports whether the user had this content, saved or on its
+// way, before this submission.
+func (r Result) WasAlreadySaved() bool {
+	return r.Kind == AlreadySaved || r.Kind == InFlight
+}
 
 type Result struct {
 	Kind OutcomeKind

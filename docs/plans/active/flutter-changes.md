@@ -71,8 +71,15 @@ v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
   submission attempt in the UI; reuse it for network retries of that attempt;
   new deliberate submission = new key. Reusing a key with a different body is a
   `409`.
-- `200` = already saved, body is the reel itself (no job to poll).
-- `202` = queued or already in flight, body is the processing job to poll.
+- Every success body carries `already_saved`: `true` when this user had the
+  link before this submission, saved or still processing.
+- `200` = the reel is ready, no job to poll. `already_saved` is `false` only when it was saved just now from content
+  someone else had already processed.
+- `202` = a processing job to poll. With `already_saved: false` it is new
+  work. With `already_saved: true` it is **the job this user already has
+  processing for the same link**; no second job was made.
+- The lookup is by the normalized URL and runs before the active-job cap, so a
+  user at the cap who shares a link already in flight gets that job, not `429`.
 - v1's single-status behaviour is gone; handle both.
 - **`collection_ids` files the save into those collections.** When the filing
   becomes visible depends on which status came back. On a `200` the save
@@ -349,6 +356,17 @@ list the app sees is not fixed at build time.
   `failed`, `dead_lettered`); on terminal failures match `failure_code`, which
   is stable, not the message.
 - `collection_ids` on a job is always an array, never null.
+- Every job also carries `stage` (short words such as `Transcribing`),
+  `estimated_seconds_remaining` (an upper bound from the pipeline's stage
+  budgets; null once terminal or when the step is unknown) and `summary` (the
+  first line of the saved reel's summary, null until completed).
+- Every reel, collection and collection item carries `web_url`, its public page:
+  `https://reelpin.in/r/{reel_id}` or
+  `https://reelpin.in/collections/{collection_id}`.
+- `GET /reels`, `POST /search` and `GET /collections/{id}` accept
+  `?view=concise`, which leaves out `key_facts`, `people_mentioned`,
+  `actionable_items` and `events`. The default is `detailed`, which is what the
+  app already reads, so the app needs no change.
 
 ## Auth
 
@@ -406,8 +424,8 @@ than `shared_preferences`.
 
 Each of these is a real, expected answer that reads like a bug:
 
-1. **`200` on submission** means the content was already saved. There is no job
-   to poll. Show the reel.
+1. **`202` with `already_saved: true` on submission** is not a duplicate. It
+   is the job already in flight for this link: poll it as you would a new one.
 2. **`data_deleted: true` with `identity_deleted: false` and `pending: true`**
    is a successful account deletion in progress. Sign out.
 3. **`{"supported": false}` from share resolve is a `200`.** It is a preview

@@ -282,8 +282,11 @@ func TestCompletedPublicContentIsReusedWithoutAProviderRun(t *testing.T) {
 	// User B submits the same public link: a save and a completed job appear,
 	// no new content, no new run, no new event, no provider spend.
 	result := submit(t, service, userB, publicReel)
-	if result.Kind != enqueue.AlreadySaved {
+	if result.Kind != enqueue.Reused {
 		t.Fatalf("kind = %v, want the reel straight back", result.Kind)
+	}
+	if result.WasAlreadySaved() {
+		t.Error("a reel user B never had was reported as already saved")
 	}
 	if result.Reel.Title != "Shared reel" {
 		t.Fatalf("reel title = %q", result.Reel.Title)
@@ -329,9 +332,113 @@ func TestAlreadySavedAnswersTheReelAndNothingChanges(t *testing.T) {
 	if result.Kind != enqueue.AlreadySaved || result.Reel.Title != "Mine already" {
 		t.Fatalf("result = %+v", result)
 	}
+	if !result.WasAlreadySaved() {
+		t.Error("the user's own save was not reported as already saved")
+	}
 	_, _, jobs, saves, events := counts(t, pool)
 	if jobs != jobsBefore || saves != savesBefore || events != eventsBefore {
 		t.Fatal("an already-saved submission changed state")
+	}
+}
+
+func TestANewLinkIsNewWork(t *testing.T) {
+	service, _ := testService(t)
+
+	result := submit(t, service, userA, publicReel)
+	if result.Kind != enqueue.Accepted || result.WasAlreadySaved() {
+		t.Fatalf("kind = %v already_saved = %v, want new accepted work", result.Kind, result.WasAlreadySaved())
+	}
+}
+
+// A second attempt at a link still processing is the job the user already
+// has, answered as already saved with a 202, with nothing new behind it.
+func TestTheSameLinkInFlightAnswersItsJob(t *testing.T) {
+	service, pool := testService(t)
+
+	first := submit(t, service, userA, publicReel)
+	_, _, jobsBefore, _, eventsBefore := counts(t, pool)
+
+	again := submit(t, service, userA, publicReel)
+	if again.Kind != enqueue.InFlight || !again.WasAlreadySaved() {
+		t.Fatalf("kind = %v, want the job in flight", again.Kind)
+	}
+	if again.Job.ID != first.Job.ID {
+		t.Fatalf("answered job %s, want the first submission's %s", again.Job.ID, first.Job.ID)
+	}
+	_, _, jobs, _, events := counts(t, pool)
+	if jobs != jobsBefore || events != eventsBefore {
+		t.Fatalf("jobs %d->%d events %d->%d; a repeat must create nothing", jobsBefore, jobs, eventsBefore, events)
+	}
+	var not202 int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM reelpin.idempotency_keys WHERE response_status <> 202`,
+	).Scan(&not202); err != nil {
+		t.Fatal(err)
+	}
+	if not202 != 0 {
+		t.Fatalf("%d stored responses are not 202; a job in flight answers 202", not202)
+	}
+}
+
+// The lookup runs before the cap is counted: a user at the cap who shares a
+// link they already have running is shown that job, not refused.
+func TestALinkInFlightIsAnsweredEvenAtTheCap(t *testing.T) {
+	service, _ := testService(t)
+
+	first := submit(t, service, userA, publicReel)
+	for i := 1; i < enqueue.MaxActiveJobs; i++ {
+		submit(t, service, userA, fmt.Sprintf("https://www.instagram.com/reel/FILL%04d/", i))
+	}
+
+	again := submit(t, service, userA, publicReel)
+	if again.Kind != enqueue.InFlight || again.Job.ID != first.Job.ID {
+		t.Fatalf("result = %+v, want the job already in flight", again)
+	}
+}
+
+// The repeat answers the saved reel even when the save sits on content
+// another submission path created, as long as the normalized URL is the same.
+func TestTheSameLinkSavedAnswersTheReel(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	first := submit(t, service, userA, publicReel)
+	var contentID string
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM reelpin.contents`).Scan(&contentID); err != nil {
+		t.Fatal(err)
+	}
+	// The pipeline finishes: a version, the user's save, a completed job.
+	if _, err := pool.Exec(ctx, `
+		WITH v AS (
+			INSERT INTO reelpin.content_versions
+				(content_id, processor_version, prompt_version, schema_version, model_version, title)
+			VALUES ($1, 'go-v1', 'p1', 's1', 'm1', 'Done now')
+			RETURNING id
+		)
+		UPDATE reelpin.contents SET current_version_id = (SELECT id FROM v) WHERE id = $1`,
+		contentID); err != nil {
+		t.Fatal(err)
+	}
+	var saveID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2) RETURNING id::text`,
+		userA, contentID).Scan(&saveID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE reelpin.processing_jobs SET status = 'completed', user_save_id = $2 WHERE id = $1`,
+		first.Job.ID, saveID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, jobsBefore, savesBefore, _ := counts(t, pool)
+	again := submit(t, service, userA, publicReel)
+	if again.Kind != enqueue.AlreadySaved || !again.WasAlreadySaved() || again.Reel.ID != saveID {
+		t.Fatalf("result = %+v, want the saved reel %s", again, saveID)
+	}
+	_, _, jobs, saves, _ := counts(t, pool)
+	if jobs != jobsBefore || saves != savesBefore {
+		t.Fatal("a repeat of a saved link created a job or a save")
 	}
 }
 

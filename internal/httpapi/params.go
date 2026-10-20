@@ -15,9 +15,43 @@ import (
 	"github.com/google/uuid"
 )
 
+// cursorParam reads the opaque page cursor. A cursor this service did not
+// issue cannot be honoured, and guessing a position would silently skip or
+// repeat saves.
+func cursorParam(w http.ResponseWriter, query url.Values) (*reels.Cursor, bool) {
+	raw := strings.TrimSpace(query.Get("cursor"))
+	if raw == "" {
+		return nil, true
+	}
+	cursor, err := reels.DecodeCursor(raw)
+	if err != nil {
+		validationError(w, "cursor", "is not a cursor this API issued")
+		return nil, false
+	}
+	return &cursor, true
+}
+
+// viewParam reads how much of each reel to send. Absent is detailed, which is
+// what the app has always received.
+func viewParam(w http.ResponseWriter, query url.Values) (reels.View, bool) {
+	view, err := reels.ParseView(query.Get("view"))
+	if err != nil {
+		validationError(w, "view", "must be concise or detailed")
+		return "", false
+	}
+	return view, true
+}
+
 func requestUserID(r *http.Request) string {
 	userID, _ := auth.UserID(r.Context())
 	return userID
+}
+
+// requestClientID is the OAuth client the bearer token was issued to, empty
+// for an app session or a share token. It only ever selects a rate-limit
+// bucket; authorization stays with the user id.
+func requestClientID(r *http.Request) string {
+	return auth.ClientID(r.Context())
 }
 
 // validationError carries the offending field in details when the caller can

@@ -36,6 +36,10 @@ type Config struct {
 	// on. It is the web boundary's domain, not this service's.
 	ShareBaseURL string
 
+	// PublicWebBaseURL is the site every reel and collection names as its
+	// web_url: /r/{reel_id} and /collections/{collection_id} on this origin.
+	PublicWebBaseURL string
+
 	// AdminKey guards the Prometheus endpoints. Empty means neither process
 	// exposes one: queue depths and failure rates are operational detail, and
 	// an unauthenticated scrape target is worse than none.
@@ -161,6 +165,7 @@ func Load() (Config, error) {
 		SupabaseURL:            strings.TrimSpace(os.Getenv("SUPABASE_URL")),
 		SupabaseServiceRoleKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
 		ShareBaseURL:           envOr("SHARE_BASE_URL", "https://reelpin.in"),
+		PublicWebBaseURL:       envOr("PUBLIC_WEB_BASE_URL", "https://reelpin.in"),
 		RabbitMQURL:            strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
 		WorkerID:               envOr("WORKER_ID", defaultWorkerID()),
 

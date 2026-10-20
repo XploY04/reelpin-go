@@ -25,6 +25,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/outbox"
+	"github.com/XploY04/reelpin-go/internal/pipeline"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/pricetracks"
 	"github.com/XploY04/reelpin-go/internal/profiles"
@@ -185,6 +186,7 @@ func run(logger *slog.Logger) error {
 
 	searchService := search.NewService(pool, embedder, logger, time.Now)
 	searchService.Metrics = meters
+	searchService.WebBaseURL = cfg.PublicWebBaseURL
 
 	// Without a service-role key the account deletion still removes every row
 	// and then reports that the identity is still there, which the app already
@@ -234,6 +236,9 @@ func run(logger *slog.Logger) error {
 		Workers:        workerCounter(liveWorkers),
 		Logger:         logger,
 		Version:        cfg.Version,
+
+		PublicWebBaseURL: cfg.PublicWebBaseURL,
+		StageBudgets:     pipeline.StageBudgets(),
 	})
 	if err != nil {
 		return err

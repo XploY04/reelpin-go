@@ -11,13 +11,39 @@ import (
 // reasons apart in a response.
 var ErrUnauthenticated = errors.New("token rejected")
 
+// Principal is who a verified token speaks for.
+type Principal struct {
+	UserID string
+	// ClientID is the OAuth client a Supabase OAuth-server token was issued
+	// to, such as an MCP server or the browser extension. An app session token
+	// carries none, and it is empty.
+	ClientID string
+}
+
 type Authenticator interface {
-	Authenticate(ctx context.Context, token string) (string, error)
+	Authenticate(ctx context.Context, token string) (Principal, error)
 }
 
 type contextKey struct{}
 
-var userIDKey contextKey
+type clientIDContextKey struct{}
+
+var (
+	userIDKey   contextKey
+	clientIDKey clientIDContextKey
+)
+
+// WithClientID carries the token's OAuth client, when it has one.
+func WithClientID(ctx context.Context, clientID string) context.Context {
+	return context.WithValue(ctx, clientIDKey, clientID)
+}
+
+// ClientID is the OAuth client the request's token was issued to, or empty
+// for an app session.
+func ClientID(ctx context.Context) string {
+	clientID, _ := ctx.Value(clientIDKey).(string)
+	return clientID
+}
 
 func WithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userIDKey, userID)

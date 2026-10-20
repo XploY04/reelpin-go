@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
@@ -85,6 +86,52 @@ func TestAlreadySavedAnswersTwoHundredWithTheReel(t *testing.T) {
 	}
 	if body["id"] != testReelID {
 		t.Fatalf("body = %v, want the reel", body)
+	}
+}
+
+// A submission answers whether the user already had the content, and the
+// status says whether there is a reel to show or a job to poll.
+func TestSubmissionSaysWhetherTheContentWasAlreadySaved(t *testing.T) {
+	record := sampleReel(testReelID, testUserID)
+	step := "download"
+	running := &enqueue.Job{ID: testJobID, Status: "processing", CurrentStep: &step, CollectionIDs: []string{}}
+
+	tests := []struct {
+		name       string
+		result     enqueue.Result
+		wantStatus int
+		wantSaved  bool
+		wantID     string
+	}{
+		{name: "new work", result: enqueue.Result{Kind: enqueue.Accepted, Job: running},
+			wantStatus: http.StatusAccepted, wantSaved: false, wantID: testJobID},
+		{name: "a reel the user has", result: enqueue.Result{Kind: enqueue.AlreadySaved, Reel: &record},
+			wantStatus: http.StatusOK, wantSaved: true, wantID: testReelID},
+		{name: "a job the user has in flight", result: enqueue.Result{Kind: enqueue.InFlight, Job: running},
+			wantStatus: http.StatusAccepted, wantSaved: true, wantID: testJobID},
+		{name: "someone else's finished content, new to this user", result: enqueue.Result{Kind: enqueue.Reused, Reel: &record},
+			wantStatus: http.StatusOK, wantSaved: false, wantID: testReelID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := post(submitDeps(&fakeSubmitter{result: tt.result}), "/api/v2/processing-jobs/reels",
+				`{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+				map[string]string{"Authorization": "Bearer good.token", "Idempotency-Key": validKey})
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["already_saved"] != tt.wantSaved {
+				t.Errorf("already_saved = %v, want %v", body["already_saved"], tt.wantSaved)
+			}
+			if body["id"] != tt.wantID {
+				t.Errorf("id = %v, want %s", body["id"], tt.wantID)
+			}
+		})
 	}
 }
 
@@ -438,4 +485,99 @@ func TestAnUnconfiguredServiceBelievesNoBucket(t *testing.T) {
 	if got != "10.0.0.1" {
 		t.Fatalf("subject = %q, want the socket peer", got)
 	}
+}
+
+// A token from an OAuth client draws on its own bucket and on the user's
+// total; an app session draws on the user's total alone. Search shares the
+// rule through allowMetered.
+func TestAnOAuthClientCountsAgainstItsBucketAndTheUsers(t *testing.T) {
+	for _, call := range []struct {
+		target string
+		body   string
+		policy ratelimit.Policy
+	}{
+		{"/api/v2/processing-jobs/reels", `{"url":"https://www.instagram.com/reel/C8abc123/"}`, ratelimit.Submission},
+		{"/api/v2/search", `{"query":"cafe"}`, ratelimit.Search},
+	} {
+		for clientID, wantBuckets := range map[string]int{"": 1, "mcp-client": 2} {
+			limiter := &policyLimiter{}
+			deps := submitDeps(&fakeSubmitter{})
+			deps.Limiter = limiter
+			deps.Auth = fakeAuth{userID: testUserID, clientID: clientID}
+
+			rec := post(deps, call.target, call.body,
+				map[string]string{"Authorization": "Bearer good.token", "Idempotency-Key": validKey})
+			if rec.Code >= 300 {
+				t.Fatalf("%s as client %q: status = %d (%s)", call.target, clientID, rec.Code, rec.Body.String())
+			}
+			buckets := limiter.buckets(call.policy)
+			if len(buckets) != wantBuckets || limiter.used[call.policy.Name+"/"+testUserID] != 1 {
+				t.Errorf("%s as client %q drew on %q, want %d buckets including the user's total",
+					call.policy.Name, clientID, buckets, wantBuckets)
+			}
+		}
+	}
+}
+
+// Registering a second OAuth client must not buy a user a second allowance:
+// once one client has spent the user's total, another is refused too.
+func TestASecondClientCannotExceedTheUsersTotal(t *testing.T) {
+	for _, call := range []struct {
+		target string
+		body   string
+		policy ratelimit.Policy
+	}{
+		{"/api/v2/processing-jobs/reels", `{"url":"https://www.instagram.com/reel/C8abc123/"}`, ratelimit.Submission},
+		{"/api/v2/search", `{"query":"cafe"}`, ratelimit.Search},
+	} {
+		limiter := &policyLimiter{}
+		send := func(clientID string) int {
+			deps := submitDeps(&fakeSubmitter{})
+			deps.Limiter = limiter
+			deps.Auth = fakeAuth{userID: testUserID, clientID: clientID}
+			return post(deps, call.target, call.body,
+				map[string]string{"Authorization": "Bearer good.token", "Idempotency-Key": validKey}).Code
+		}
+
+		for i := 0; i < call.policy.Requests; i++ {
+			if code := send("first-client"); code >= 300 {
+				t.Fatalf("%s: request %d from the first client = %d, want it within the user's total", call.target, i, code)
+			}
+		}
+		if code := send("second-client"); code != http.StatusTooManyRequests {
+			t.Errorf("%s: the second client got %d after the user's total was spent, want 429", call.target, code)
+		}
+		if code := send(""); code != http.StatusTooManyRequests {
+			t.Errorf("%s: the app got %d after the user's total was spent, want 429", call.target, code)
+		}
+	}
+}
+
+// policyLimiter is an in-memory token count: each policy and subject pair
+// allows that policy's Requests and refuses the rest.
+type policyLimiter struct {
+	used map[string]int
+}
+
+func (l *policyLimiter) Allow(_ context.Context, policy ratelimit.Policy, subject string) (ratelimit.Decision, error) {
+	if l.used == nil {
+		l.used = map[string]int{}
+	}
+	key := policy.Name + "/" + subject
+	if l.used[key] >= policy.Requests {
+		return ratelimit.Decision{Allowed: false, RetryAfter: time.Minute}, nil
+	}
+	l.used[key]++
+	return ratelimit.Decision{Allowed: true}, nil
+}
+
+// buckets are the subjects one policy was drawn on.
+func (l *policyLimiter) buckets(policy ratelimit.Policy) []string {
+	var subjects []string
+	for key := range l.used {
+		if subject, ok := strings.CutPrefix(key, policy.Name+"/"); ok {
+			subjects = append(subjects, subject)
+		}
+	}
+	return subjects
 }

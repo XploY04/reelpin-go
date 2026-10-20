@@ -29,7 +29,7 @@ func TestAQueryTooShortToRunIsStillCounted(t *testing.T) {
 	meters := &recordingMeters{}
 	service := &Service{now: time.Now, Metrics: meters}
 
-	response, err := service.Search(context.Background(), "user", "a", Filters{}, 10)
+	response, err := service.Search(context.Background(), "user", Params{Query: "a", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("searching: %v", err)
 	}

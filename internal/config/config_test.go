@@ -43,6 +43,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.GoogleMapsAPIKey != "" || cfg.GoogleMapsTimeout != 10*time.Second {
 		t.Errorf("google maps = %q and %v, want no key and 10s", cfg.GoogleMapsAPIKey, cfg.GoogleMapsTimeout)
 	}
+	if cfg.PublicWebBaseURL != "https://reelpin.in" {
+		t.Errorf("PublicWebBaseURL = %q, want https://reelpin.in", cfg.PublicWebBaseURL)
+	}
 }
 
 var configKeys = []string{
@@ -50,7 +53,7 @@ var configKeys = []string{
 	"SUPABASE_URL", "SUPABASE_JWT_AUDIENCE",
 	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
 	"REEL_THUMBNAIL_BUCKET", "YT_DLP_PATH", "FFMPEG_PATH",
-	"GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_TIMEOUT_SECONDS",
+	"GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_TIMEOUT_SECONDS", "PUBLIC_WEB_BASE_URL",
 	"INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64",
 	"INSTAGRAM_BACKUP_COOKIE_DATA_BASE64",
 	"INSTAGRAM_TERTIARY_COOKIE_DATA_BASE64",

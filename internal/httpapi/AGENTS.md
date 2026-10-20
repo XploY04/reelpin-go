@@ -35,9 +35,13 @@ correct and tested.
   them tells a stranger which ids exist.
 - **A list field is `[]`, never `null`.** The app decodes into a non-nullable
   list and a `null` is a crash on a phone.
-- **Handlers do not build presentation.** They call a builder in `reels` or
-  `jobs` and write the result. A handler that formats a date is doing the
-  domain's job in the wrong package.
+- **Handlers decode, call, encode.** The use case is a function in a domain
+  package taking `(ctx, userID, params)`: `reels.Service`, `jobs.Service`,
+  `collections.Service`, `entitlements.Service`, `search.Service`, and the
+  others in `Deps`. The website, the MCP server and the browser extension call
+  the same functions, so logic left in a handler is logic they do not get. A
+  handler that formats a date or chains two reads is doing the domain's job in
+  the wrong package.
 
 ## Testing
 

@@ -9,8 +9,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/api"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/search"
 	"gopkg.in/yaml.v3"
@@ -294,11 +297,18 @@ func TestFixturesMatchTheContract(t *testing.T) {
 		// searchResponse installs a search service answering with exactly this,
 		// so a ranking fixture does not need a database.
 		searchResponse *search.Response
+		// jobRecords installs a job reader answering with these.
+		jobRecords []jobs.JobRecord
+		// submission installs a submitter answering with this.
+		submission *enqueue.Result
 	}{
 		{name: "health_live", method: "GET", target: "/api/v2/health/live", status: 200},
 		{name: "reel_page", method: "GET", target: "/api/v2/reels?limit=25", token: "Bearer good.token", status: 200},
 		{name: "reel_detail", method: "GET", target: "/api/v2/reels/" + testReelID, token: "Bearer good.token", status: 200},
-		{name: "job_list", method: "GET", target: "/api/v2/processing-jobs", token: "Bearer good.token", status: 200},
+		{
+			name: "job_list", method: "GET", target: "/api/v2/processing-jobs", token: "Bearer good.token", status: 200,
+			jobRecords: fixtureJobs(),
+		},
 		{name: "library_stats", method: "GET", target: "/api/v2/account/library-stats", token: "Bearer good.token", status: 200},
 		{name: "error_unauthorized", method: "GET", target: "/api/v2/reels", status: 401},
 		{name: "error_not_found", method: "GET", target: "/api/v2/reels/00000000-0000-4000-8000-000000000000", token: "Bearer good.token", status: 404},
@@ -315,6 +325,13 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			token: "Bearer good.token", status: 202,
 			headers: map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
 			body:    `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+		},
+		{
+			name: "submission_in_flight", method: "POST", target: "/api/v2/processing-jobs/reels",
+			token: "Bearer good.token", status: 202,
+			headers:    map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
+			body:       `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+			submission: fixtureInFlight(),
 		},
 		{
 			name: "error_idempotency_conflict", method: "POST", target: "/api/v2/processing-jobs/reels",
@@ -337,7 +354,7 @@ func TestFixturesMatchTheContract(t *testing.T) {
 				SearchMode: "dense+sparse+fuzzy",
 				Total:      1,
 				Results: []search.Result{{
-					Reel:              reels.BuildDisplayReel(record, testNow),
+					Reel:              reels.BuildDisplayReel(record, reels.Display{Now: testNow, WebBaseURL: testWebBaseURL}),
 					RelevanceScore:    0.0492,
 					RelevancePercent:  100,
 					DisplayScoreLabel: "Strong match",
@@ -360,6 +377,12 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			deps.Reels = reader
 			if tt.searchResponse != nil {
 				deps.Search = &fakeSearch{response: *tt.searchResponse}
+			}
+			if tt.jobRecords != nil {
+				deps.Jobs = &fakeJobs{records: tt.jobRecords}
+			}
+			if tt.submission != nil {
+				deps.Enqueue = &fakeSubmitter{result: *tt.submission}
 			}
 			// Fixture cases that exercise submissions need the metered path
 			// open and deterministic outcomes.
@@ -415,6 +438,47 @@ func TestFixturesMatchTheContract(t *testing.T) {
 				t.Fatalf("fixture %s is stale; run: go test ./internal/httpapi -update", tt.name)
 			}
 		})
+	}
+}
+
+// fixtureInFlight is a second submission of a link the user already has
+// processing: the same job, answered 202 with already_saved true.
+func fixtureInFlight() *enqueue.Result {
+	step := "download"
+	created := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	updated := created.Add(time.Minute)
+	return &enqueue.Result{Kind: enqueue.InFlight, Job: &enqueue.Job{
+		ID:              "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Status:          "processing",
+		URL:             "https://www.instagram.com/reel/C8abc123/",
+		CurrentStep:     &step,
+		ProgressPercent: 40,
+		CollectionIDs:   []string{},
+		CreatedAt:       &created,
+		UpdatedAt:       &updated,
+	}}
+}
+
+// fixtureJobs are one job mid-pipeline and one finished, so the fixture shows
+// the stage, the estimate and the summary in both states.
+func fixtureJobs() []jobs.JobRecord {
+	running := "download"
+	updated := testNow.Add(-60 * time.Second)
+	created := testNow.Add(-5 * time.Minute)
+	finishedCreated := testNow.Add(-2 * time.Hour)
+	completedAt := testNow.Add(-time.Hour)
+	reelID := testReelID
+	return []jobs.JobRecord{
+		{
+			ID: testJobID, UserID: testUserID, URL: "https://www.instagram.com/reel/C8abc123/",
+			Status: jobs.StatusProcessing, CurrentStep: &running, ProgressPercent: 40,
+			CreatedAt: &created, UpdatedAt: &updated,
+		},
+		{
+			ID: "88888888-8888-4888-8888-888888888888", UserID: testUserID, URL: "https://www.instagram.com/reel/abc/",
+			Status: jobs.StatusCompleted, ProgressPercent: 100, ResultReelID: &reelID,
+			CreatedAt: &finishedCreated, UpdatedAt: &completedAt, CompletedAt: &completedAt,
+		},
 	}
 }
 

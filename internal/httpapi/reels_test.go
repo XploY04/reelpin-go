@@ -259,7 +259,7 @@ func TestGetReel(t *testing.T) {
 				return
 			}
 
-			var body ReelResponse
+			var body reels.Reel
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("body is not a reel: %v", err)
 			}
@@ -293,5 +293,59 @@ func TestListReelsDoesNotReturnTranscripts(t *testing.T) {
 
 	if body := rec.Body.String(); strings.Contains(body, "spoken words") {
 		t.Fatalf("list response carries a transcript: %s", body)
+	}
+}
+
+func TestListReelsConciseViewDropsTheLongFormFields(t *testing.T) {
+	reader := &fakeReels{records: []reels.ReelRecord{sampleReel(testReelID, testUserID)}}
+
+	concise := serve(listServer(reader), "GET", "/api/v2/reels?view=concise", "Bearer good.token")
+	if concise.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", concise.Code, concise.Body.String())
+	}
+	if body := concise.Body.String(); strings.Contains(body, "key_facts") || strings.Contains(body, "Opens at 8am") {
+		t.Errorf("concise carries key facts: %s", body)
+	}
+
+	// No view is the detailed view, which is what the app has always read.
+	detailed := serve(listServer(reader), "GET", "/api/v2/reels", "Bearer good.token")
+	if body := detailed.Body.String(); !strings.Contains(body, "Opens at 8am") {
+		t.Errorf("the default view lost key facts: %s", body)
+	}
+	if reels := decodeList(t, detailed).Reels; len(reels) != 1 || reels[0].WebURL != testWebBaseURL+"/r/"+testReelID {
+		t.Errorf("reels = %+v, want one with its web_url", reels)
+	}
+}
+
+func TestAnUnknownViewIsAValidationError(t *testing.T) {
+	deps := testDeps(&fakePinger{})
+	deps.Limiter = allowAllLimiter{}
+
+	for _, target := range []struct{ method, path, body string }{
+		{"GET", "/api/v2/reels?view=full", ""},
+		{"POST", "/api/v2/search?view=full", `{"query":"cafe"}`},
+		{"GET", "/api/v2/collections/" + testCollectionID + "?view=full", ""},
+	} {
+		rec := request(deps, target.method, target.path, target.body, "Bearer good.token")
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s %s: status = %d, want 422", target.method, target.path, rec.Code)
+			continue
+		}
+		if details := decodeError(t, rec).Error.Details; details["field"] != "view" {
+			t.Errorf("%s %s: details = %v, want the view field named", target.method, target.path, details)
+		}
+	}
+}
+
+func TestGetReelLinksItsPublicPage(t *testing.T) {
+	reader := &fakeReels{byID: map[string]reels.ReelRecord{testReelID: sampleReel(testReelID, testUserID)}}
+	rec := serve(listServer(reader), "GET", "/api/v2/reels/"+testReelID, "Bearer good.token")
+
+	var body reels.Reel
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.WebURL != testWebBaseURL+"/r/"+testReelID {
+		t.Errorf("web_url = %q", body.WebURL)
 	}
 }

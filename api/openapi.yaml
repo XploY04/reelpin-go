@@ -113,6 +113,7 @@ paths:
         - $ref: "#/components/parameters/Category"
         - $ref: "#/components/parameters/Subcategory"
         - $ref: "#/components/parameters/SavedDate"
+        - $ref: "#/components/parameters/View"
       responses:
         "200":
           description: One page of saved reels.
@@ -249,9 +250,12 @@ paths:
       description: |
         Submits one URL for processing.
 
-        `200` means this user already has the content saved and the reel is
-        returned with no new work. `202` means work is queued or already in
-        flight, and the response carries the job to poll.
+        Before anything is created, the user's save or job in flight for the
+        same normalized URL is looked up. `200` means the reel is ready, with
+        no job to poll. `202` carries a job to poll: new work, or the job this
+        user already has in flight for the same link. On both,
+        `already_saved` says whether the user had the link before this
+        submission.
 
         `Idempotency-Key` is required. Retrying a failed network call with the
         same key returns the same outcome; reusing a key with a different body
@@ -265,12 +269,14 @@ paths:
             schema: { $ref: "#/components/schemas/SubmitReelRequest" }
       responses:
         "200":
-          description: Already saved. No new work was started.
+          description: The reel is ready. No job to poll.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Reel" }
         "202":
-          description: Work is queued or already in flight.
+          description: |
+            A job to poll: new work, or the job this user already has in flight
+            for the same link (`already_saved` true). No second job is made.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProcessingJob" }
@@ -304,12 +310,14 @@ paths:
             schema: { $ref: "#/components/schemas/NativeShareRequest" }
       responses:
         "200":
-          description: Already saved. No new work was started.
+          description: The reel is ready. No job to poll.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Reel" }
         "202":
-          description: Work is queued or already in flight.
+          description: |
+            A job to poll: new work, or the job this user already has in flight
+            for the same link (`already_saved` true). No second job is made.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProcessingJob" }
@@ -807,6 +815,8 @@ paths:
 
         A query costs one embedding call, so this endpoint is rate limited and
         answers `503 search_unavailable` when it cannot be metered.
+      parameters:
+        - $ref: "#/components/parameters/View"
       requestBody:
         required: true
         content:
@@ -967,10 +977,15 @@ paths:
 
         A collection this user cannot see answers 404, identically to one that
         does not exist.
+
+        `view` is accepted for parity with the reel list and search. Items are
+        cards and never carry the fields `concise` leaves out, so both views
+        answer the same body.
       parameters:
         - $ref: "#/components/parameters/CollectionID"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/View"
       responses:
         "200":
           description: The collection detail.
@@ -1382,6 +1397,19 @@ components:
         An opaque cursor from a previous page's `next_cursor`. Do not construct
         or decode it. A value this API did not issue is a validation error.
       schema: { type: string }
+    View:
+      name: view
+      in: query
+      required: false
+      description: |
+        How much of each reel to send. `detailed`, the default, is the full
+        display shape. `concise` leaves out `transcript`, `key_facts`,
+        `people_mentioned`, `actionable_items` and `events`, which an agent or a
+        browser card pays for without showing.
+      schema:
+        type: string
+        enum: [concise, detailed]
+        default: detailed
     Limit:
       name: limit
       in: query
@@ -1610,6 +1638,9 @@ components:
       properties:
         id: { type: string, format: uuid }
         url: { type: string }
+        web_url:
+          type: string
+          description: The reel's public page, `{PUBLIC_WEB_BASE_URL}/r/{id}`.
         thumbnail_url: { type: string, nullable: true }
         source_platform: { type: string, nullable: true }
         source_content_type: { type: string, nullable: true }
@@ -1621,13 +1652,37 @@ components:
         category: { type: string }
         subcategory: { type: string }
         secondary_categories: { type: array, items: { type: string } }
-        key_facts: { type: array, items: { type: string } }
-        people_mentioned: { type: array, items: { type: string } }
-        actionable_items: { type: array, items: { type: string } }
+        key_facts:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        people_mentioned:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        actionable_items:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        events:
+          type: array
+          description: Left out under `view=concise`.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              date: { type: string }
+              time: { type: string }
         locations:
           type: array
           items: { $ref: "#/components/schemas/Location" }
         saved_at: { type: string, nullable: true, format: date-time }
+        already_saved:
+          type: boolean
+          description: |
+            Only on a submission's `200`. True when this user had the reel
+            before this submission. False when it was saved just now from
+            content someone else had already processed.
 
     Location:
       type: object
@@ -1748,11 +1803,38 @@ components:
         current_step: { type: string, nullable: true }
         progress_percent: { type: integer, minimum: 0, maximum: 100 }
         status_message: { type: string }
+        stage:
+          type: string
+          description: |
+            Where the job is, in short words a person or an agent can repeat:
+            `Queued`, `Reading the link`, `Downloading`, `Transcribing`,
+            `Extracting details`, `Categorizing`, `Saving`, `Waiting to retry`,
+            `Done` or `Failed`. For display; match on `status`.
+          example: Transcribing
+        estimated_seconds_remaining:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            An upper bound in seconds: the time budgets of the pipeline stages
+            still to run, less what the current one has used, plus any wait
+            before a scheduled retry. Null once the job is terminal or when its
+            step is not one the estimate knows.
         failure_code:
           type: string
           nullable: true
           description: A stable code on a terminal failure. Match on this.
         result_reel_id: { type: string, nullable: true, format: uuid }
+        summary:
+          type: string
+          nullable: true
+          description: The first line of the saved reel's summary. Null until the job completes.
+        already_saved:
+          type: boolean
+          description: |
+            Only on a submission's `202`. True when this is the job the user
+            already had in flight for the same link, so no second job was made.
+            False when the submission started new work.
         collection_ids:
           type: array
           items: { type: string, format: uuid }
@@ -2113,6 +2195,9 @@ components:
       required: [id, name, description, visibility, role, item_count, member_count]
       properties:
         id: { type: string, format: uuid }
+        web_url:
+          type: string
+          description: The collection's public page, `{PUBLIC_WEB_BASE_URL}/collections/{id}`.
         name: { type: string }
         description: { type: string }
         cover_reel_id: { type: string, nullable: true, format: uuid }
@@ -2150,6 +2235,9 @@ components:
         title: { type: string }
         summary: { type: string }
         url: { type: string }
+        web_url:
+          type: string
+          description: The reel's public page, `{PUBLIC_WEB_BASE_URL}/r/{reel_id}`.
         thumbnail_url: { type: string, nullable: true }
         source_platform: { type: string }
         saved_at: { type: string, nullable: true, format: date-time }

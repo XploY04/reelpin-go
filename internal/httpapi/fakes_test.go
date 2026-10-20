@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/mapview"
@@ -42,15 +43,16 @@ func (f *fakePinger) Ping(context.Context) error {
 }
 
 type fakeAuth struct {
-	userID string
-	err    error
+	userID   string
+	clientID string
+	err      error
 }
 
-func (f fakeAuth) Authenticate(context.Context, string) (string, error) {
+func (f fakeAuth) Authenticate(context.Context, string) (auth.Principal, error) {
 	if f.err != nil {
-		return "", f.err
+		return auth.Principal{}, f.err
 	}
-	return f.userID, nil
+	return auth.Principal{UserID: f.userID, ClientID: f.clientID}, nil
 }
 
 type fakeReels struct {
@@ -185,7 +187,23 @@ func testDeps(pinger Pinger) Deps {
 		Logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Version:       "test",
 		Now:           func() time.Time { return testNow },
+
+		PublicWebBaseURL: testWebBaseURL,
+		StageBudgets:     testStageBudgets,
 	}
+}
+
+const testWebBaseURL = "https://reelpin.in"
+
+// testStageBudgets are round numbers in the pipeline's shape, so a fixture's
+// estimate can be checked by hand.
+var testStageBudgets = []jobs.StageBudget{
+	{Name: "prepare", Budget: 180 * time.Second},
+	{Name: "download", Budget: 180 * time.Second},
+	{Name: "transcribe", Budget: 300 * time.Second},
+	{Name: "extract", Budget: 90 * time.Second},
+	{Name: "categorize", Budget: 45 * time.Second},
+	{Name: "persist", Budget: 30 * time.Second},
 }
 
 // newServer builds from deps that are expected to be complete. A test that
@@ -420,10 +438,12 @@ type fakeSearch struct {
 	lastQuery   string
 	lastFilters search.Filters
 	lastLimit   int
+	lastView    reels.View
 }
 
-func (f *fakeSearch) Search(_ context.Context, userID, query string, filters search.Filters, limit int) (search.Response, error) {
-	f.lastUserID, f.lastQuery, f.lastFilters, f.lastLimit = userID, query, filters, limit
+func (f *fakeSearch) Search(_ context.Context, userID string, params search.Params) (search.Response, error) {
+	f.lastUserID, f.lastQuery, f.lastFilters, f.lastLimit = userID, params.Query, params.Filters, params.Limit
+	f.lastView = params.View
 	if f.err != nil {
 		return search.Response{}, f.err
 	}

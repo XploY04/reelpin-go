@@ -231,7 +231,7 @@ func TestSearchFindsByMeaningWordsAndSpelling(t *testing.T) {
 	// The query vector points at the first save's axis.
 	embedder.vectors["artjuna cafe"] = axis(5)
 
-	response, err := service.Search(ctx, userA, "artjuna cafe", Filters{}, 10)
+	response, err := service.Search(ctx, userA, Params{Query: "artjuna cafe", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestAMissingQueryVectorStillSearches(t *testing.T) {
 	seedSave(t, pool, seed{userID: userA, title: "Artjuna cafe", summary: "Coffee", vectorAxis: 3})
 	embedder.err = errors.New("the embedding provider is down")
 
-	response, err := service.Search(ctx, userA, "artjuna", Filters{}, 10)
+	response, err := service.Search(ctx, userA, Params{Query: "artjuna", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("a provider outage failed the search: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestMisspellingsAreFound(t *testing.T) {
 	embedder.err = errors.New("no vectors, so only words and spelling")
 
 	// "artjunna" is not a word in the row, so only the trigram arm can find it.
-	response, err := service.Search(ctx, userA, "artjunna", Filters{}, 10)
+	response, err := service.Search(ctx, userA, Params{Query: "artjunna", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestASaveWithNoEmbeddingIsStillFoundByWords(t *testing.T) {
 
 	seedSave(t, pool, seed{userID: userA, title: "Artjuna cafe", summary: "Coffee", noEmbedding: true})
 
-	response, err := service.Search(context.Background(), userA, "artjuna cafe", Filters{}, 10)
+	response, err := service.Search(context.Background(), userA, Params{Query: "artjuna cafe", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestVectorsFromAnotherModelAreIgnored(t *testing.T) {
 	}
 	embedder.vectors["a calm quiet place"] = axis(5)
 
-	response, err := service.Search(ctx, userA, "a calm quiet place", Filters{}, 10)
+	response, err := service.Search(ctx, userA, Params{Query: "a calm quiet place", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestFiltersApplyInsideTheSearch(t *testing.T) {
 	seedSave(t, pool, seed{userID: userA, title: "Artjuna trek", category: "travel", platform: "youtube", vectorAxis: 4})
 	embedder.vectors["artjuna"] = axis(4)
 
-	byCategory, err := service.Search(ctx, userA, "artjuna", Filters{Category: "food"}, 10)
+	byCategory, err := service.Search(ctx, userA, Params{Query: "artjuna", Filters: Filters{Category: "food"}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestFiltersApplyInsideTheSearch(t *testing.T) {
 		t.Fatalf("category filter = %+v", byCategory.Results)
 	}
 
-	byPlatform, err := service.Search(ctx, userA, "artjuna", Filters{Platforms: []string{"youtube"}}, 10)
+	byPlatform, err := service.Search(ctx, userA, Params{Query: "artjuna", Filters: Filters{Platforms: []string{"youtube"}}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestFiltersApplyInsideTheSearch(t *testing.T) {
 func TestShortQueriesDoNotSearch(t *testing.T) {
 	service, _, embedder := testService(t)
 
-	response, err := service.Search(context.Background(), userA, "a", Filters{}, 10)
+	response, err := service.Search(context.Background(), userA, Params{Query: "a", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestShortQueriesDoNotSearch(t *testing.T) {
 func TestAnEmptyLibraryReturnsAnEmptyList(t *testing.T) {
 	service, _, _ := testService(t)
 
-	response, err := service.Search(context.Background(), userA, "anything at all", Filters{}, 10)
+	response, err := service.Search(context.Background(), userA, Params{Query: "anything at all", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestAQueryAboutSomethingUnsavedComesBackEmpty(t *testing.T) {
 	// An unrelated query: orthogonal to everything saved, and sharing no words.
 	embedder.vectors["scuba diving in switzerland"] = axis(500)
 
-	response, err := service.Search(context.Background(), userA, "scuba diving in switzerland", Filters{}, 10)
+	response, err := service.Search(context.Background(), userA, Params{Query: "scuba diving in switzerland", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestTheDenseGateCanBeOpened(t *testing.T) {
 	embedder.vectors["scuba diving in switzerland"] = axis(500)
 
 	service.MaxDistance = 1
-	response, err := service.Search(context.Background(), userA, "scuba diving in switzerland", Filters{}, 10)
+	response, err := service.Search(context.Background(), userA, Params{Query: "scuba diving in switzerland", Filters: Filters{}, Limit: 10})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

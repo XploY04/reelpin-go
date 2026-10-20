@@ -30,8 +30,11 @@ type Response struct {
 	Retryable                   bool               `json:"retryable"`
 	StatusLabel                 string             `json:"status_label"`
 	StatusMessage               string             `json:"status_message"`
+	Stage                       string             `json:"stage"`
+	EstimatedSecondsRemaining   *int               `json:"estimated_seconds_remaining"`
 	RecommendedPollAfterSeconds *int               `json:"recommended_poll_after_seconds"`
 	ResultReelID                *string            `json:"result_reel_id"`
+	Summary                     *string            `json:"summary"`
 	CollectionIDs               []string           `json:"collection_ids"`
 	StepDurations               map[string]float64 `json:"step_durations"`
 	CreatedAt                   *string            `json:"created_at"`
@@ -42,8 +45,8 @@ type Response struct {
 }
 
 // BuildResponse presents one job. `reel` is the saved reel this job produced,
-// when the caller could load it.
-func BuildResponse(record JobRecord, reel *reels.DisplayReel, now time.Time) Response {
+// when the caller could load it; budgets are the pipeline's stages in order.
+func BuildResponse(record JobRecord, reel *reels.DisplayReel, budgets []StageBudget, now time.Time) Response {
 	record = Normalize(record)
 
 	durations := record.StepDurations
@@ -54,6 +57,10 @@ func BuildResponse(record JobRecord, reel *reels.DisplayReel, now time.Time) Res
 	collectionIDs := record.CollectionIDs
 	if collectionIDs == nil {
 		collectionIDs = []string{}
+	}
+	var summary *string
+	if reel != nil && record.Status == StatusCompleted {
+		summary = SummaryLine(reel.Summary)
 	}
 
 	return Response{
@@ -80,8 +87,11 @@ func BuildResponse(record JobRecord, reel *reels.DisplayReel, now time.Time) Res
 		Retryable:                   Retryable(record),
 		StatusLabel:                 StatusLabel(record),
 		StatusMessage:               StatusMessage(record),
+		Stage:                       Stage(record, budgets),
+		EstimatedSecondsRemaining:   EstimatedSecondsRemaining(record, budgets, now),
 		RecommendedPollAfterSeconds: RecommendedPollAfterSeconds(record, now),
 		ResultReelID:                record.ResultReelID,
+		Summary:                     summary,
 		CollectionIDs:               collectionIDs,
 		StepDurations:               durations,
 		CreatedAt:                   isoTimestamp(record.CreatedAt),
