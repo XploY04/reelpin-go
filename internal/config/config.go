@@ -78,6 +78,10 @@ type Config struct {
 	// mismatch is a corrupt vector set rather than a slow query.
 	EmbeddingModel     string
 	EmbeddingDimension int
+	// SearchDenseMaxDistance overrides the vector arm's relevance gate. The
+	// gate was calibrated on one embedding model, and a host running another
+	// needs its own measured value. Zero means the search package's default.
+	SearchDenseMaxDistance float64
 	// The cost gate. These four are the only product values in this file, and
 	// they are read as raw strings because parsing them belongs to
 	// internal/spend, which config may not import. All four together enable the
@@ -221,6 +225,12 @@ func Load() (Config, error) {
 	}
 	cfg.Port = port
 
+	denseMaxDistance, err := distanceFrom("SEARCH_DENSE_MAX_DISTANCE")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.SearchDenseMaxDistance = denseMaxDistance
+
 	googleMapsTimeout, err := secondsFrom("GOOGLE_MAPS_TIMEOUT_SECONDS", 10*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -337,6 +347,20 @@ func secondsFrom(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s %q is not a number of seconds between 0 and 15", key, raw)
 	}
 	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+// distanceFrom reads a cosine distance, which lies between 0 and 2. Empty is
+// zero, which leaves the caller's default in place.
+func distanceFrom(key string) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, nil
+	}
+	distance, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(distance) || distance <= 0 || distance > 2 {
+		return 0, fmt.Errorf("%s %q is not a cosine distance between 0 and 2", key, raw)
+	}
+	return distance, nil
 }
 
 // cookieSlots reads the standardized slots, in the order they are tried. The

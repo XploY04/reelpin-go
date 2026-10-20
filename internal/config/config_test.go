@@ -46,6 +46,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.PublicWebBaseURL != "https://reelpin.in" {
 		t.Errorf("PublicWebBaseURL = %q, want https://reelpin.in", cfg.PublicWebBaseURL)
 	}
+	if cfg.SearchDenseMaxDistance != 0 {
+		t.Errorf("SearchDenseMaxDistance = %v, want 0 so search keeps its own default", cfg.SearchDenseMaxDistance)
+	}
 }
 
 var configKeys = []string{
@@ -54,6 +57,7 @@ var configKeys = []string{
 	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
 	"REEL_THUMBNAIL_BUCKET", "YT_DLP_PATH", "FFMPEG_PATH",
 	"GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_TIMEOUT_SECONDS", "PUBLIC_WEB_BASE_URL",
+	"SEARCH_DENSE_MAX_DISTANCE",
 	"INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64",
 	"INSTAGRAM_BACKUP_COOKIE_DATA_BASE64",
 	"INSTAGRAM_TERTIARY_COOKIE_DATA_BASE64",
@@ -212,6 +216,34 @@ func TestLoad(t *testing.T) {
 			env: map[string]string{
 				"SUPABASE_URL":                "https://project.supabase.co",
 				"GOOGLE_MAPS_TIMEOUT_SECONDS": "0",
+			},
+			wantErr: true,
+		},
+		{
+			name: "a dense search gate",
+			env: map[string]string{
+				"SUPABASE_URL":              "https://project.supabase.co",
+				"SEARCH_DENSE_MAX_DISTANCE": " 0.35 ",
+			},
+			check: func(t *testing.T, c Config) {
+				if c.SearchDenseMaxDistance != 0.35 {
+					t.Errorf("SearchDenseMaxDistance = %v, want 0.35", c.SearchDenseMaxDistance)
+				}
+			},
+		},
+		{
+			name: "a dense search gate that is not a cosine distance",
+			env: map[string]string{
+				"SUPABASE_URL":              "https://project.supabase.co",
+				"SEARCH_DENSE_MAX_DISTANCE": "2.5",
+			},
+			wantErr: true,
+		},
+		{
+			name: "a dense search gate of zero",
+			env: map[string]string{
+				"SUPABASE_URL":              "https://project.supabase.co",
+				"SEARCH_DENSE_MAX_DISTANCE": "0",
 			},
 			wantErr: true,
 		},

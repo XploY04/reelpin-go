@@ -188,6 +188,9 @@ func run(logger *slog.Logger) error {
 	searchService := search.NewService(pool, embedder, logger, time.Now)
 	searchService.Metrics = meters
 	searchService.WebBaseURL = cfg.PublicWebBaseURL
+	if cfg.SearchDenseMaxDistance > 0 {
+		searchService.MaxDistance = cfg.SearchDenseMaxDistance
+	}
 
 	// Without a service-role key the account deletion still removes every row
 	// and then reports that the identity is still there, which the app already

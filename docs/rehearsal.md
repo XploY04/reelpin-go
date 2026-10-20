@@ -129,7 +129,7 @@ read, and only the first dump's time puts the mark before them.
 | `--execute` | false | Write. Without it the run reports what it would do and writes nothing. |
 | `--batch-size` | 500 | Rows per keyset page. |
 | `--max-rows` | 0 (all) | Stop the reel pass after this many rows, for a trial on a big table. Later passes are skipped. |
-| `--since` | empty | Delta: an RFC3339 instant. Only rows changed after it are read, except the tables copied whole (below). Rows of users Go has served are never read. |
+| `--since` | empty | Delta: an RFC3339 instant. Only rows changed after it are read, except the tables copied whole (below). Rows of users Go has served are never read, by a delta or any other run. |
 | `--dumped-at` | empty | RFC3339 instant the Supabase dump was taken, from `SELECT now()` on Supabase just before `pg_dump`. Required with `--execute` or `--since`. Must be later than `--since`. |
 | `--propagate-deletes` | false | Final delta only, with Python stopped. Deletes carried rows whose legacy row is gone, for users Go has not served. Needs `--since`. |
 | `--legacy-schema` | `legacy` | Schema the restored Python tables are read from. |
@@ -186,6 +186,24 @@ carried vectors are then searchable, and new saves are embedded with the same
 model. `backfill-verify` logs `embedding_models`, the carried vectors counted
 per model; anything there other than the model the hosts are configured with is
 a search hole.
+
+The dense search gate has to be measured again on that model.
+`internal/search` gates the vector arm at `MaxDenseDistance`, 0.40, which was
+calibrated on `gemini-embedding-2` vectors (see `docs/cutover.md` and
+`api/eval/REPORT.md`). Distances from `gemini-embedding-001` sit on their own
+scale, so 0.40 may let unrelated reels through or hide related ones. After the
+snapshot backfill, with `EMBEDDING_MODEL=gemini-embedding-001` on the host:
+
+```sh
+maintenance search-eval --user <uuid> --out report.json
+maintenance search-eval --user <uuid> --max-distance 0.5   # one tuning point
+```
+
+`--user` is an evaluation user with the corpus seeded under
+`gemini-embedding-001`, or a real user with `--set` labeled from their own
+reels. Pick the widest gate at which every unrelated query still returns
+nothing, as the report did for the current value, and set it on every API host
+as `SEARCH_DENSE_MAX_DISTANCE`. Unset, the gate stays 0.40.
 
 Moving to `gemini-embedding-2` is later maintenance: a `backfill-embeddings` run
 that embeds every version under the new model, then the config change. Today
@@ -276,12 +294,20 @@ of them: it sets `sent_at` when a legacy reminder fires and `last_checked_at`
 when it checks a legacy price track. Carrying those would overwrite what the
 user changed in Go. Users not in the table get the full upsert.
 
-Two consequences to know before the dual run starts:
+What this means for users, before the dual run starts:
 
-- A row a user wrote on the old app after the last delta's dump and before
-  their first Go request is never carried.
-- Pro granted by hand in the Supabase SQL editor does not reach a user who has
-  moved. Grant it in the Go database instead.
+- **Anything a user writes on the old app between the last delta's dump and
+  their first Go request is lost.** A save, a reminder, a pin or a profile
+  change made in that gap is never copied to Go. The nightly deltas keep the
+  gap to at most a day, and keeping the dual run short keeps the number of
+  users who fall into it small.
+- **Pro granted by hand has to go into the Go database once a user has
+  migrated.** A grant made in the Supabase SQL editor after that never reaches
+  them, because every run skips their entitlement row.
+
+The same filter applies to every run, not only a delta: a resumed snapshot or a
+rerun skips these users too. Each row's write checks the table again, so a user
+who moves while a run is under way is not written after their page was read.
 
 ### Each night while both apps run
 
@@ -311,7 +337,10 @@ served, a row this backfill carried whose legacy row is gone is deleted in Go,
 and a hidden pin unhidden in Python is unhidden. Deleting a save takes its
 collection items, reminders and price tracks with it, as it does in the app. It
 never touches a user Go has served, and it does not delete feedback or link
-clicks. Run it only here: while Python still serves, a user can move between the
+clicks. A carried save stays while another legacy reel of the same user still
+resolves to it, one that lost a save conflict to it or merged into it, because
+that reel's reminders and price tracks point at the save. A later final delta
+deletes it once no legacy reel does. Run it only here: while Python still serves, a user can move between the
 dump and the delete.
 
 What no delta carries: a row deleted in Python after the snapshot stays in Go
