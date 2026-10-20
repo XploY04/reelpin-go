@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +66,32 @@ func TestAuthorizationHeader(t *testing.T) {
 				t.Error("no request id to quote")
 			}
 		})
+	}
+}
+
+type seenUsers struct{ users []string }
+
+func (s *seenUsers) Seen(_ context.Context, userID string) { s.users = append(s.users, userID) }
+
+// The backfill stops writing a user's rows once Go has served them, so every
+// verified request reports the user, and a rejected one never does.
+func TestAVerifiedRequestRecordsTheUser(t *testing.T) {
+	seen := &seenUsers{}
+	deps := testDeps(&fakePinger{})
+	deps.Migrations = seen
+
+	if rec := serve(deps, "GET", "/api/v2/reels", "Bearer good.token"); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(seen.users) != 1 || seen.users[0] != testUserID {
+		t.Errorf("seen = %v, want just the verified user", seen.users)
+	}
+
+	deps.Auth = fakeAuth{err: errFake}
+	serve(deps, "GET", "/api/v2/reels", "Bearer bad.token")
+	serve(deps, "GET", "/api/v2/reels", "")
+	if len(seen.users) != 1 {
+		t.Errorf("seen = %v after rejected requests, want them ignored", seen.users)
 	}
 }
 

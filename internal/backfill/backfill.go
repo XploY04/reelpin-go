@@ -42,10 +42,22 @@ const jobWindow = 60 * 24 * time.Hour
 // to today's standard, and it is not.
 const legacyVersion = "python-legacy"
 
+// legacyEmbeddingModel is what Python embedded reels with when a row does not
+// record its own embedding_model. A vector is only comparable with others from
+// the same model, so the tag travels with it.
+const legacyEmbeddingModel = "gemini-embedding-001"
+
 const (
 	sourceReels = "reels"
 	sourceJobs  = "processing_jobs"
+	sourceCache = "processing_cache"
 )
+
+// deltaOverlap is subtracted from the dump time to make the high-water mark a
+// run prints. A legacy row stamped just before the dump can commit just after
+// the dump's snapshot was taken, and so be missing from it. Copies are
+// idempotent, so reading a few minutes twice costs nothing.
+const deltaOverlap = 5 * time.Minute
 
 // blocklistViolation is the SQLSTATE the blocklist trigger raises. A purged
 // source appearing in the legacy tables is expected, not a reason to stop.
@@ -58,6 +70,27 @@ type Options struct {
 	BatchSize int
 	// MaxRows stops the reel pass early, for a rehearsal on a big table.
 	MaxRows int
+	// LegacySchema is where the legacy tables are read from. Empty means
+	// DefaultLegacySchema.
+	LegacySchema string
+	// Since switches to a delta pass: only legacy rows that changed after it
+	// are read, no resume cursor is read or moved, and every table is
+	// scanned from the start of its keyspace. Every run, a delta or not,
+	// leaves alone every row owned by a user in reelpin.user_migrations: Go
+	// has served them, so their Go rows are theirs to change and their Python
+	// rows are frozen.
+	Since *time.Time
+	// DumpedAt is when the dump the legacy schema was restored from was taken,
+	// read off Supabase's clock just before pg_dump. The next delta's mark is
+	// derived from it and from nothing else: a row Python wrote after the dump
+	// is not in this restore however long the restore took. A real run and
+	// every delta need it.
+	DumpedAt *time.Time
+	// PropagateDeletes makes a delta delete the canonical rows it carried for
+	// users not in reelpin.user_migrations whose legacy row is gone. It is for
+	// the final delta only, with Python stopped: while Python still runs, a
+	// user can move between the dump and the delete.
+	PropagateDeletes bool
 }
 
 // Report counts what happened. It carries no content and no user data.
@@ -71,20 +104,44 @@ type Report struct {
 	InvalidURLs       int `json:"invalid_urls"`
 	Unreadable        int `json:"unreadable"`
 	Blocklisted       int `json:"blocklisted"`
-	Conflicts         int `json:"conflicts"`
-	Failures          int `json:"failures"`
+	// Conflicts counts legacy reels whose user already had a save of the same
+	// content under another id; see resolveConflict. ConflictsMerged is how
+	// many of those were newer and moved the existing save's saved_at.
+	Conflicts       int `json:"conflicts"`
+	ConflictsMerged int `json:"conflicts_merged"`
+	Failures        int `json:"failures"`
+
+	// LocationsCopied and EmbeddingsCopied count content_locations and
+	// content_embeddings rows this run wrote or refreshed from the legacy
+	// reels; see copyReelPlacesAndEmbeddings.
+	LocationsCopied  int `json:"locations_copied"`
+	EmbeddingsCopied int `json:"embeddings_copied"`
 
 	JobsScanned      int `json:"jobs_scanned"`
 	JobsCreated      int `json:"jobs_created"`
 	JobsAlreadyThere int `json:"jobs_already_there"`
 	JobsUncertain    int `json:"jobs_uncertain"`
 	RunsCreated      int `json:"runs_created"`
+
+	Tables map[string]TableReport `json:"tables"`
+
+	// MigratedUsers is how many users Go has served. A delta leaves their rows
+	// alone.
+	MigratedUsers int `json:"migrated_users"`
+	// Deleted counts, per legacy table, the canonical rows --propagate-deletes
+	// removed because their legacy row is gone.
+	Deleted map[string]int `json:"deleted"`
+
+	// HighWaterMark is what the next --since should be: the dump time less
+	// deltaOverlap. Only a real run that finished sets it.
+	HighWaterMark *time.Time `json:"high_water_mark,omitempty"`
 }
 
 type Backfiller struct {
 	pool     *pgxpool.Pool
 	logger   *slog.Logger
 	resolver *sourceidentity.Resolver
+	source   source
 	// seen dedupes identities during a dry run, which writes nothing and so
 	// cannot ask the database what it already created. It counts what this
 	// pass would build from an empty canonical schema.
@@ -97,13 +154,29 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Backfiller {
 	return &Backfiller{pool: pool, logger: logger, resolver: &sourceidentity.Resolver{}}
 }
 
-// Run copies reels and then jobs, resuming from the recorded cursor. Jobs run
-// second because a job is only copied once its content exists.
+// Run copies reels, their places and embeddings, then jobs, then the wave 1
+// tables, resuming from the recorded cursor. Jobs run after reels because a
+// job is only copied once its content exists, and reminders, price tracks and
+// hidden pins point at saves and at the places on them.
 func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if options.BatchSize <= 0 {
 		options.BatchSize = 500
 	}
+	if err := options.validate(); err != nil {
+		return Report{}, err
+	}
 	b.seen = map[string]bool{}
+
+	var err error
+	if b.source, err = newSource(options.LegacySchema); err != nil {
+		return Report{}, err
+	}
+	if err := b.source.describe(ctx, b.pool); err != nil {
+		return Report{}, err
+	}
+	if err := b.source.require(sourceReels, sourceJobs, sourceCache); err != nil {
+		return Report{}, err
+	}
 
 	release, err := b.lock(ctx)
 	if err != nil {
@@ -111,7 +184,11 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	}
 	defer release()
 
-	report := Report{}
+	report := Report{Tables: map[string]TableReport{}}
+	if err := b.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.user_migrations`).
+		Scan(&report.MigratedUsers); err != nil {
+		return report, fmt.Errorf("counting the users Go has served: %w", err)
+	}
 	if err := b.backfillReels(ctx, options, &report); err != nil {
 		return report, err
 	}
@@ -121,10 +198,73 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if options.MaxRows > 0 && report.ReelsScanned >= options.MaxRows {
 		return report, nil
 	}
+	if err := b.copyReelPlacesAndEmbeddings(ctx, options, &report); err != nil {
+		return report, err
+	}
 	if err := b.copyJobs(ctx, options, &report); err != nil {
 		return report, err
 	}
+	for _, mapping := range wave1Mappings {
+		if err := b.copyTable(ctx, options, mapping, &report); err != nil {
+			return report, err
+		}
+	}
+	if options.PropagateDeletes {
+		if err := b.propagateDeletes(ctx, options, &report); err != nil {
+			return report, err
+		}
+	}
+
+	if options.Execute {
+		mark := options.DumpedAt.Add(-deltaOverlap)
+		report.HighWaterMark = &mark
+	}
 	return report, nil
+}
+
+func (o Options) validate() error {
+	if (o.Execute || o.Since != nil) && o.DumpedAt == nil {
+		return errors.New("a real run or a delta needs the time the legacy dump was taken")
+	}
+	// A mark at or after the dump reads nothing from it, and the mark this
+	// run prints would then skip every row written in between.
+	if o.Since != nil && !o.Since.Before(*o.DumpedAt) {
+		return fmt.Errorf("the delta mark %s is not before the dump time %s",
+			o.Since.UTC().Format(time.RFC3339), o.DumpedAt.UTC().Format(time.RFC3339))
+	}
+	if o.PropagateDeletes && o.Since == nil {
+		return errors.New("deletes are propagated by the final delta only, which needs a mark")
+	}
+	return nil
+}
+
+// skipMigrated is the predicate every run adds to a per-user legacy table, over
+// the legacy row l and its owner column. A delta, a resumed snapshot and a
+// rerun all leave a user Go has served alone; before the dual run the table is
+// empty and it filters nothing.
+func skipMigrated(owner string) string {
+	if owner == "" {
+		return ""
+	}
+	return ` AND NOT ` + migrated(owner)
+}
+
+// isMigrated re-reads the record inside a row's own transaction. The page the
+// row came from was filtered when it was read, and a user can move between
+// that read and this write.
+func isMigrated(ctx context.Context, db querier, userID string) (bool, error) {
+	var moved bool
+	if err := db.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM reelpin.user_migrations WHERE user_id::text = lower($1))`,
+		userID).Scan(&moved); err != nil {
+		return false, fmt.Errorf("checking whether Go has served the user: %w", err)
+	}
+	return moved, nil
+}
+
+// migrated is whether the owner of the legacy row l has been served by Go.
+func migrated(owner string) string {
+	return `EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id::text = lower(l.` + owner + `::text))`
 }
 
 func (b *Backfiller) lock(ctx context.Context) (func(), error) {
@@ -171,14 +311,17 @@ type reelRow struct {
 }
 
 func (b *Backfiller) backfillReels(ctx context.Context, options Options, report *Report) error {
-	cursor, err := b.cursor(ctx, sourceReels)
-	if err != nil {
-		return err
+	cursor := ""
+	if options.Since == nil {
+		var err error
+		if cursor, err = b.cursor(ctx, sourceReels); err != nil {
+			return err
+		}
 	}
 
 	batch := int64(0)
 	for {
-		rows, err := b.readReels(ctx, cursor, options.BatchSize)
+		rows, err := b.readReels(ctx, cursor, options)
 		if err != nil {
 			return err
 		}
@@ -240,6 +383,14 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 	}
 	defer transaction.Rollback(ctx)
 
+	moved, err := isMigrated(ctx, transaction, row.UserID)
+	if err != nil {
+		return err
+	}
+	if moved {
+		return nil
+	}
+
 	contentID, versionID, created, err := findOrCreateContent(ctx, transaction, identity, scopeHash)
 	if err != nil {
 		if isBlocklisted(err) {
@@ -260,7 +411,7 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 	// A second user's save of the same content reuses the version the first
 	// one built. Only the first save of a content pays for reading the cache.
 	if versionID == "" {
-		cached, err := readCache(ctx, transaction, identity)
+		cached, err := readCache(ctx, transaction, b.source.table(sourceCache), identity)
 		if err != nil {
 			return err
 		}
@@ -275,6 +426,22 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		report.ContentVersions++
 	}
 
+	kept, merged, err := b.resolveConflict(ctx, transaction, row, contentID, report)
+	if err != nil {
+		return err
+	}
+	if kept != "" {
+		note := "kept the newer save " + kept
+		if merged {
+			note = "merged into the existing save " + kept
+		}
+		if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "skipped_conflict",
+			&contentID, &versionID, nil, note); err != nil {
+			return err
+		}
+		return transaction.Commit(ctx)
+	}
+
 	tag, err := transaction.Exec(ctx, `
 		INSERT INTO reelpin.user_saves (id, user_id, content_id, saved_at)
 		VALUES ($1, $2, $3, coalesce($4, now()))
@@ -284,19 +451,183 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		report.Failures++
 		return fmt.Errorf("creating the save: %w", err)
 	}
-	if tag.RowsAffected() == 1 {
-		report.SavesCreated++
-	} else {
-		// The same user saved this content twice under two legacy rows. One
-		// save survives; the other is reported rather than forced in.
+	if tag.RowsAffected() == 0 {
+		// The app saved the same content between the conflict check and the
+		// insert. The app's save is the newer one.
 		report.Conflicts++
+		b.logger.Info("save conflict: kept the newer save", "kept", "concurrent", "dropped", row.ID)
+		if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "skipped_conflict",
+			&contentID, &versionID, nil, "a concurrent save of the same content"); err != nil {
+			return err
+		}
+		return transaction.Commit(ctx)
 	}
+	report.SavesCreated++
 
 	if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "saved", &contentID, &versionID, nil, ""); err != nil {
 		return err
 	}
 	return transaction.Commit(ctx)
 }
+
+// resolveConflict applies the one conflict rule: when this user already has a
+// save of the same content under another id, from an earlier legacy row or
+// from the new app during the dual run, the existing save always stays and
+// the legacy row never becomes a second one. It returns the existing save's
+// id, or "" when there is none and the legacy row goes in.
+//
+// The existing save is never deleted: collection items, reminders and price
+// tracks cascade from it. When the legacy row is newer, its saved_at is
+// written onto the existing save instead, which keeps its id and everything
+// hanging off it, and merged is true. A legacy row with no created_at is never
+// newer, because nothing says it is.
+func (b *Backfiller) resolveConflict(
+	ctx context.Context,
+	tx pgx.Tx,
+	row reelRow,
+	contentID string,
+	report *Report,
+) (string, bool, error) {
+	var existingID string
+	var existingSavedAt time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT id::text, saved_at FROM reelpin.user_saves
+		WHERE user_id = $1 AND content_id = $2
+		FOR UPDATE`,
+		row.UserID, contentID,
+	).Scan(&existingID, &existingSavedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("checking for a conflicting save: %w", err)
+	}
+
+	report.Conflicts++
+	if row.CreatedAt == nil || !row.CreatedAt.After(existingSavedAt) {
+		b.logger.Info("save conflict: kept the newer save", "kept", existingID, "dropped", row.ID)
+		return existingID, false, nil
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE reelpin.user_saves SET saved_at = $2 WHERE id = $1`,
+		existingID, *row.CreatedAt); err != nil {
+		return "", false, fmt.Errorf("merging a newer legacy save: %w", err)
+	}
+	report.ConflictsMerged++
+	b.logger.Info("save conflict: merged the newer legacy save into the existing one",
+		"kept", existingID, "merged", row.ID,
+		"saved_at_was", existingSavedAt, "saved_at", *row.CreatedAt)
+	return existingID, true, nil
+}
+
+// copyReelPlacesAndEmbeddings carries what Python keeps on the reel row beside
+// the extraction: the geocoded places and the embedding. Python writes both
+// after the reel row exists, the embedding at the index step and places again
+// from the geocode backfill, and the row has no updated_at to show it. So this
+// reads every carried reel on every run, --since or not, and writes only what
+// is new or changed.
+//
+// Only versions this backfill built are touched; a version the Go pipeline
+// built has places and an embedding of its own. A dry run executes the same
+// statements and rolls them back.
+func (b *Backfiller) copyReelPlacesAndEmbeddings(ctx context.Context, options Options, report *Report) error {
+	shape := b.source.shape(sourceReels)
+	reels := b.source.table(sourceReels)
+
+	transaction, err := b.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("starting the places and embeddings transaction: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	if shape.has("locations") {
+		tag, err := transaction.Exec(ctx, `
+			WITH chosen AS (`+chosenReels(reels, shape, `l.locations AS value`,
+			`jsonb_typeof(l.locations) = 'array'`)+`)
+			INSERT INTO reelpin.content_locations AS cl
+				(content_version_id, ordinal, name, address, locality, country, point, source)
+			SELECT chosen.version_id, p.ordinal - 1,
+			       coalesce(nullif(btrim(p.entry->>'name'), ''), nullif(btrim(p.entry->>'address'), ''), ''),
+			       nullif(btrim(p.entry->>'address'), ''),
+			       nullif(btrim(p.entry->>'city'), ''),
+			       nullif(btrim(p.entry->>'country'), ''),
+			       ST_MakePoint((p.entry->>'longitude')::float8, (p.entry->>'latitude')::float8)::geography,
+			       'provider'
+			FROM chosen
+			CROSS JOIN LATERAL jsonb_array_elements(chosen.value) WITH ORDINALITY AS p(entry, ordinal)
+			WHERE `+locatedEntry+`
+			ON CONFLICT (content_version_id, ordinal) DO UPDATE SET
+				name = EXCLUDED.name,
+				address = EXCLUDED.address,
+				locality = EXCLUDED.locality,
+				country = EXCLUDED.country,
+				point = EXCLUDED.point
+			WHERE (cl.name, cl.address, cl.locality, cl.country, cl.point::text) IS DISTINCT FROM
+			      (EXCLUDED.name, EXCLUDED.address, EXCLUDED.locality, EXCLUDED.country, EXCLUDED.point::text)`,
+			legacyVersion)
+		if err != nil {
+			return fmt.Errorf("copying legacy reel places: %w", err)
+		}
+		report.LocationsCopied = int(tag.RowsAffected())
+	}
+
+	if shape.has("embedding") {
+		tag, err := transaction.Exec(ctx, `
+			WITH chosen AS (`+chosenReels(reels, shape,
+			`l.embedding::text AS embedding,
+			 coalesce(nullif(btrim((`+shape.col("embedding_model")+`)::text), ''), $2) AS model`,
+			`l.embedding IS NOT NULL`)+`)
+			INSERT INTO reelpin.content_embeddings AS e
+				(content_version_id, embedding, model, dimension, document_version, document_hash)
+			SELECT chosen.version_id, chosen.embedding::public.vector, chosen.model, 768, $1,
+			       md5(chosen.model || '|' || chosen.embedding)
+			FROM chosen
+			ON CONFLICT (content_version_id) DO UPDATE SET
+				embedding = EXCLUDED.embedding,
+				model = EXCLUDED.model,
+				dimension = EXCLUDED.dimension,
+				document_hash = EXCLUDED.document_hash,
+				embedded_at = now()
+			WHERE e.document_version = EXCLUDED.document_version
+			  AND e.document_hash IS DISTINCT FROM EXCLUDED.document_hash`,
+			legacyVersion, legacyEmbeddingModel)
+		if err != nil {
+			return fmt.Errorf("copying legacy reel embeddings: %w", err)
+		}
+		report.EmbeddingsCopied = int(tag.RowsAffected())
+	}
+
+	if !options.Execute {
+		return nil
+	}
+	return transaction.Commit(ctx)
+}
+
+// chosenReels picks, for every content version this backfill built, the one
+// carried legacy reel its places and embedding come from: the reel the version
+// was built from, which shares its created_at, and otherwise the lowest id.
+// Taking every field from one reel keeps a location's ordinal its index in
+// that reel's locations array, which is what a hidden pin's location_index
+// and a reel:{id}:{ordinal} pin id name.
+func chosenReels(reels string, shape tableShape, columns, filter string) string {
+	return `
+		SELECT DISTINCT ON (v.id) v.id AS version_id, ` + columns + `
+		FROM ` + reels + ` l
+		JOIN reelpin.user_saves s ON s.id = l.id
+		JOIN reelpin.contents c ON c.id = s.content_id
+		JOIN reelpin.content_versions v ON v.id = c.current_version_id AND v.processor_version = $1
+		WHERE ` + filter + shape.environmentFilter() + `
+		ORDER BY v.id, (l.created_at IS NOT DISTINCT FROM v.created_at) DESC, l.id`
+}
+
+// locatedEntry is a legacy location the Python map drew a pin for: numeric
+// latitude and longitude, in range. The entry is aliased p.entry. The CASE
+// keeps the casts away from an entry whose coordinates are not numbers.
+const locatedEntry = `CASE
+	WHEN jsonb_typeof(p.entry->'latitude') = 'number' AND jsonb_typeof(p.entry->'longitude') = 'number'
+	THEN (p.entry->>'latitude')::float8 BETWEEN -90 AND 90
+	 AND (p.entry->>'longitude')::float8 BETWEEN -180 AND 180
+	ELSE false END`
 
 // reportOneReel is the dry run: it reads what a real run would read and counts
 // what it would write, without a transaction and without a cursor.
@@ -311,7 +642,7 @@ func (b *Backfiller) reportOneReel(ctx context.Context, identity sourceidentity.
 	report.UniqueContent++
 	report.ContentVersions++
 
-	cached, err := readCache(ctx, b.pool, identity)
+	cached, err := readCache(ctx, b.pool, b.source.table(sourceCache), identity)
 	if err != nil {
 		return err
 	}
@@ -368,13 +699,16 @@ func scanReel(source pgx.Row) (reelRow, error) {
 	return row, nil
 }
 
-func (b *Backfiller) readReels(ctx context.Context, cursor string, limit int) ([]reelRow, error) {
+func (b *Backfiller) readReels(ctx context.Context, cursor string, options Options) ([]reelRow, error) {
+	shape := b.source.shape(sourceReels)
 	rows, err := b.pool.Query(ctx, `
 		SELECT `+reelColumns+`
-		FROM public.reels l
+		FROM `+b.source.table(sourceReels)+` l
 		WHERE ($1::uuid IS NULL OR l.id > $1::uuid)
+		  AND ($3::timestamptz IS NULL OR `+shape.changed()+` > $3)`+shape.environmentFilter()+
+		skipMigrated("user_id")+`
 		ORDER BY l.id
-		LIMIT $2`, nullableUUID(cursor), limit)
+		LIMIT $2`, nullableUUID(cursor), options.BatchSize, options.Since)
 	if err != nil {
 		return nil, fmt.Errorf("reading legacy reels: %w", err)
 	}
@@ -441,7 +775,7 @@ type querier interface {
 
 // readCache prefers the global extraction Python already paid for over the
 // per-user copy on the reel row.
-func readCache(ctx context.Context, db querier, identity sourceidentity.SourceIdentity) (*cacheRow, error) {
+func readCache(ctx context.Context, db querier, table string, identity sourceidentity.SourceIdentity) (*cacheRow, error) {
 	if identity.ContentID == "" {
 		return nil, nil
 	}
@@ -450,7 +784,7 @@ func readCache(ctx context.Context, db querier, identity sourceidentity.SourceId
 	var transcript, caption *string
 	err := db.QueryRow(ctx, `
 		SELECT transcript, caption, thumbnail_url, extracted_data
-		FROM public.processing_cache
+		FROM `+table+`
 		WHERE source_platform = $1 AND source_content_id = $2
 		ORDER BY updated_at DESC NULLS LAST
 		LIMIT 1`,

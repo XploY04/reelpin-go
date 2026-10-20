@@ -37,6 +37,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/XploY04/reelpin-go/internal/spend"
+	"github.com/XploY04/reelpin-go/internal/usermigration"
 	"github.com/XploY04/reelpin-go/internal/website"
 	"github.com/XploY04/reelpin-go/internal/workerhealth"
 	"github.com/redis/go-redis/v9"
@@ -187,6 +188,9 @@ func run(logger *slog.Logger) error {
 	searchService := search.NewService(pool, embedder, logger, time.Now)
 	searchService.Metrics = meters
 	searchService.WebBaseURL = cfg.PublicWebBaseURL
+	if cfg.SearchDenseMaxDistance > 0 {
+		searchService.MaxDistance = cfg.SearchDenseMaxDistance
+	}
 
 	// Without a service-role key the account deletion still removes every row
 	// and then reports that the identity is still there, which the app already
@@ -229,6 +233,7 @@ func run(logger *slog.Logger) error {
 		PriceTracks:    pricetracks.NewService(postgres.NewPriceTracks(pool)),
 		Limiter:        limiter,
 		Cache:          invalidator,
+		Migrations:     usermigration.New(pool, logger),
 		Metrics:        meters,
 		AdminKey:       cfg.AdminKey,
 		IPBucketSecret: cfg.IPBucketSecret,

@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,6 +30,10 @@ const (
 	completedJob = "cccccccc-0000-4000-8000-000000000001"
 	queuedJob    = "cccccccc-0000-4000-8000-000000000002"
 	brokenJob    = "cccccccc-0000-4000-8000-000000000003"
+
+	// publicSchema is where these fixtures keep the Python tables, the way a
+	// restored copy of Supabase holds them, rather than the default legacy.
+	publicSchema = "public"
 )
 
 // legacySchema is the shape the Python service left behind, trimmed to what the
@@ -81,6 +87,13 @@ CREATE TABLE public.processing_cache (
 `
 
 func quiet() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }
+
+// dumpedNow is a dump taken as the run starts: the fixtures write straight into
+// the legacy tables, so nothing in them is newer than that.
+func dumpedNow() *time.Time {
+	now := time.Now()
+	return &now
+}
 
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
@@ -214,15 +227,15 @@ func TestDryRunIsRepeatableAndWritesNothing(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	first, err := New(pool, quiet()).Run(ctx, Options{})
+	first, err := New(pool, quiet()).Run(ctx, Options{LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("first dry run: %v", err)
 	}
-	second, err := New(pool, quiet()).Run(ctx, Options{})
+	second, err := New(pool, quiet()).Run(ctx, Options{LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("second dry run: %v", err)
 	}
-	if first != second {
+	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("dry runs disagree:\nfirst  %+v\nsecond %+v", first, second)
 	}
 
@@ -259,7 +272,7 @@ func TestExecuteIsIdempotentAndDeduplicates(t *testing.T) {
 
 	legacyBefore := legacySnapshot(t, pool)
 
-	first, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	first, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -358,7 +371,7 @@ func TestExecuteIsIdempotentAndDeduplicates(t *testing.T) {
 		t.Fatalf("clearing the cursor: %v", err)
 	}
 
-	second, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	second, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("second execute: %v", err)
 	}
@@ -384,7 +397,7 @@ func TestJobsCopyOnlyWhenUnambiguous(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -455,7 +468,7 @@ func TestResumeContinuesFromTheCursor(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	partial, err := New(pool, quiet()).Run(ctx, Options{Execute: true, BatchSize: 2, MaxRows: 2})
+	partial, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema, BatchSize: 2, MaxRows: 2})
 	if err != nil {
 		t.Fatalf("partial run: %v", err)
 	}
@@ -476,7 +489,9 @@ func TestResumeContinuesFromTheCursor(t *testing.T) {
 		t.Fatalf("cursor = %q, want the second reel", cursor)
 	}
 
-	rest, err := New(pool, quiet()).Run(ctx, Options{Execute: true, BatchSize: 2})
+	// The resume reads the same restore, so it passes the same dump time.
+	dumped := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	rest, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: &dumped, LegacySchema: publicSchema, BatchSize: 2})
 	if err != nil {
 		t.Fatalf("resumed run: %v", err)
 	}
@@ -485,6 +500,40 @@ func TestResumeContinuesFromTheCursor(t *testing.T) {
 	}
 	if total := count(t, pool, "reelpin.user_saves"); total != 4 {
 		t.Errorf("%d saves after resuming, want 4", total)
+	}
+
+	// The mark is the dump time less the margin, never the clock of the
+	// database the restore landed in: a restore can take far longer than the
+	// margin, and every row Python wrote meanwhile is missing from it.
+	if partial.HighWaterMark != nil {
+		t.Error("a run stopped by --max-rows printed a high-water mark")
+	}
+	if want := dumped.Add(-deltaOverlap); rest.HighWaterMark == nil || !rest.HighWaterMark.Equal(want) {
+		t.Errorf("the resumed run's mark = %v, want the dump time less the margin, %v", rest.HighWaterMark, want)
+	}
+}
+
+func TestARealRunOrADeltaNeedsTheDumpTime(t *testing.T) {
+	pool := testPool(t)
+	seed(t, pool)
+	ctx := context.Background()
+	dumped := time.Now()
+	later := dumped.Add(time.Minute)
+
+	for name, options := range map[string]Options{
+		"a snapshot without a dump time":  {Execute: true},
+		"a delta without a dump time":     {Since: &dumped},
+		"a mark after the dump":           {Execute: true, Since: &later, DumpedAt: &dumped},
+		"a mark equal to the dump":        {Execute: true, Since: &dumped, DumpedAt: &dumped},
+		"deletes propagated with no mark": {Execute: true, DumpedAt: &dumped, PropagateDeletes: true},
+	} {
+		options.LegacySchema = publicSchema
+		if _, err := New(pool, quiet()).Run(ctx, options); err == nil {
+			t.Errorf("%s ran", name)
+		}
+	}
+	if total := count(t, pool, "reelpin.user_saves"); total != 0 {
+		t.Errorf("%d saves after refused runs, want 0", total)
 	}
 }
 
@@ -500,7 +549,7 @@ func TestABlocklistedSourceIsSkippedNotFatal(t *testing.T) {
 		t.Fatalf("blocklisting the source: %v", err)
 	}
 
-	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -541,7 +590,7 @@ func TestOnlyOneBackfillRunsAtATime(t *testing.T) {
 	}
 	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, advisoryLockKey)
 
-	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true}); err == nil {
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema}); err == nil {
 		t.Fatal("a second backfill ran while one held the lock")
 	}
 }

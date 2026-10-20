@@ -28,15 +28,18 @@ type jobRow struct {
 // a job id the app is still holding keeps answering. A job whose identity or
 // content is ambiguous is left alone and counted, never guessed at.
 func (b *Backfiller) copyJobs(ctx context.Context, options Options, report *Report) error {
-	cursor, err := b.cursor(ctx, sourceJobs)
-	if err != nil {
-		return err
+	cursor := ""
+	if options.Since == nil {
+		var err error
+		if cursor, err = b.cursor(ctx, sourceJobs); err != nil {
+			return err
+		}
 	}
 	cutoff := time.Now().Add(-jobWindow)
 
 	batch := int64(0)
 	for {
-		rows, err := b.readJobs(ctx, cursor, cutoff, options.BatchSize)
+		rows, err := b.readJobs(ctx, cursor, cutoff, options)
 		if err != nil {
 			return err
 		}
@@ -95,6 +98,14 @@ func (b *Backfiller) copyOneJob(ctx context.Context, options Options, batch int6
 		return fmt.Errorf("starting the job transaction: %w", err)
 	}
 	defer transaction.Rollback(ctx)
+
+	moved, err := isMigrated(ctx, transaction, row.UserID)
+	if err != nil {
+		return err
+	}
+	if moved {
+		return nil
+	}
 
 	// The content has to exist from the reel pass already. If it does not, this
 	// job describes something no save survived, and creating content for it
@@ -252,15 +263,20 @@ func isTerminal(status string) bool {
 
 func normalize(status string) string { return strings.ToLower(strings.TrimSpace(status)) }
 
-func (b *Backfiller) readJobs(ctx context.Context, cursor string, cutoff time.Time, limit int) ([]jobRow, error) {
+// readJobs skips the jobs the development stack queued into the shared
+// Supabase project: they belong to nobody in production.
+func (b *Backfiller) readJobs(ctx context.Context, cursor string, cutoff time.Time, options Options) ([]jobRow, error) {
+	shape := b.source.shape(sourceJobs)
 	rows, err := b.pool.Query(ctx, `
-		SELECT id::text, user_id::text, url, normalized_url, status, failure_code,
-		       attempt_count, max_attempts, created_at, completed_at
-		FROM public.processing_jobs
-		WHERE ($1::uuid IS NULL OR id > $1::uuid) AND created_at >= $2
-		ORDER BY id
+		SELECT l.id::text, l.user_id::text, l.url, l.normalized_url, l.status, l.failure_code,
+		       l.attempt_count, l.max_attempts, l.created_at, l.completed_at
+		FROM `+b.source.table(sourceJobs)+` l
+		WHERE ($1::uuid IS NULL OR l.id > $1::uuid) AND l.created_at >= $2
+		  AND ($4::timestamptz IS NULL OR `+shape.changed()+` > $4)`+shape.environmentFilter()+
+		skipMigrated("user_id")+`
+		ORDER BY l.id
 		LIMIT $3`,
-		nullableUUID(cursor), cutoff, limit)
+		nullableUUID(cursor), cutoff, options.BatchSize, options.Since)
 	if err != nil {
 		return nil, fmt.Errorf("reading legacy processing jobs: %w", err)
 	}

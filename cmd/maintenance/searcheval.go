@@ -27,7 +27,13 @@ func runSearchEval(ctx context.Context, logger *slog.Logger, cfg config.Config, 
 	flags := flag.NewFlagSet("search-eval", flag.ContinueOnError)
 	userID := flags.String("user", "", "the user whose library the labeled set is judged against")
 	setPath := flags.String("set", "api/eval/search-v1.json", "path to the labeled query set")
-	maxDistance := flags.Float64("max-distance", search.MaxDenseDistance, "vector arm relevance gate, for tuning runs")
+	// The default is the gate the API runs with, so a run without the flag
+	// measures what users get.
+	gate := search.MaxDenseDistance
+	if cfg.SearchDenseMaxDistance > 0 {
+		gate = cfg.SearchDenseMaxDistance
+	}
+	maxDistance := flags.Float64("max-distance", gate, "vector arm relevance gate, for tuning runs")
 	out := flags.String("out", "", "write the report as JSON to this path as well as logging it")
 	minCoverage := flags.Float64("min-coverage", 0.8,
 		"refuse to run unless this fraction of the set's judged reels are in the library")

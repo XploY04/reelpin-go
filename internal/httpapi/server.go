@@ -83,6 +83,10 @@ type Deps struct {
 	// Cache is optional: when set, every successful write a user makes drops
 	// their cached reads before the response goes out.
 	Cache CacheInvalidator
+	// Migrations records the first authenticated request this process serves
+	// for each user, which tells the legacy backfill to stop writing that
+	// user's rows. Nil records nothing.
+	Migrations UserMigrations
 	// Redis and Workers are readiness inputs. Each is optional: a process
 	// without one is ready without it.
 	Redis   Pinger
@@ -262,9 +266,18 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok {
 			holder.hashedUser = metrics.Hash(principal.UserID)
 		}
+		if s.deps.Migrations != nil {
+			s.deps.Migrations.Seen(r.Context(), principal.UserID)
+		}
 		ctx := auth.WithClientID(auth.WithUserID(r.Context(), principal.UserID), principal.ClientID)
 		next(s.invalidatingWrites(w, r, principal.UserID), r.WithContext(ctx))
 	}
+}
+
+// UserMigrations notes that a user has reached this backend. It writes at
+// most once per user per process, so it is safe on every request.
+type UserMigrations interface {
+	Seen(ctx context.Context, userID string)
 }
 
 // CacheInvalidator drops a user's cached reads.
