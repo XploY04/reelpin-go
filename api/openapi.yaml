@@ -892,7 +892,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
-        "503": { description: The rate limiter cannot answer, so the write is refused. }
+        "503": { description: "The rate limiter cannot answer, so the write is refused." }
 
   /api/v2/link-clicks:
     post:
@@ -914,7 +914,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
-        "503": { description: The rate limiter cannot answer, so the write is refused. }
+        "503": { description: "The rate limiter cannot answer, so the write is refused." }
 
   /api/v2/collections:
     get:
@@ -1944,6 +1944,7 @@ components:
           enum: [content, manual]
           description: The pin's kind for an `existing` result; null for `google`.
         map_item:
+          type: object
           allOf: [{ $ref: "#/components/schemas/Pin" }]
           nullable: true
         google_place_id: { type: string, nullable: true }
