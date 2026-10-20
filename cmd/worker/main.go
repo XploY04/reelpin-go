@@ -251,9 +251,9 @@ func run(logger *slog.Logger) error {
 	// Reminders are fired from Redis's due set, so without Redis there is
 	// nothing to read and the dispatcher does not run.
 	if reminderSchedule != nil {
-		dispatcher := reminders.NewDispatcher(postgres.NewReminders(pool), reminderSchedule, notifications, logger, time.Now)
+		reminderDispatcher := reminders.NewDispatcher(postgres.NewReminders(pool), reminderSchedule, notifications, logger, time.Now)
 		started++
-		go func() { done <- dispatcher.Run(ctx, reminders.TickInterval) }()
+		go func() { done <- reminderDispatcher.Run(ctx, reminders.TickInterval) }()
 	}
 
 	for _, name := range queue.WorkQueues {
