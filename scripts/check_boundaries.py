@@ -27,7 +27,22 @@ FORBIDDEN = {
     ],
     "internal/httpapi": [
         ("internal/postgres", "handlers talk to the reader interfaces, not to SQL"),
-        ("github.com/jackc/pgx", "handlers never touch the driver"),
+        ("github.com/jackc/", "handlers never touch the driver or its types"),
+        ("database/sql", "handlers never touch a database"),
+    ],
+    # The use cases the website, the MCP server and the extension share with
+    # the app. Each takes its storage as a port.
+    "internal/collections": [
+        ("net/http", "the domain does not know about transport"),
+        ("github.com/jackc/pgx", "the domain does not know about the driver"),
+        ("internal/postgres", "the domain does not depend on its storage"),
+        ("internal/httpapi", "the domain does not depend on transport"),
+    ],
+    "internal/entitlements": [
+        ("net/http", "the domain does not know about transport"),
+        ("github.com/jackc/pgx", "the domain does not know about the driver"),
+        ("internal/postgres", "the domain does not depend on its storage"),
+        ("internal/httpapi", "the domain does not depend on transport"),
     ],
     "internal/postgres": [
         ("net/http", "storage does not know about transport"),

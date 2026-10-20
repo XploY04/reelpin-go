@@ -81,8 +81,12 @@ is stale before it is read.
 `POST /api/v2/processing-jobs/reels` and `POST /api/v2/native-shares/reels`
 require an `Idempotency-Key` header (a client-generated UUID per attempt).
 Retrying with the same key returns the same outcome; the same key with a
-different body is a `409`. `200` means already saved and carries the reel;
-`202` means work is queued or in flight and carries the job to poll.
+different body is a `409`. That is the attempt. The content is checked too:
+before anything is created, the user's existing save or job still in flight
+for the same normalized URL is looked up, so a second attempt at the same link
+never makes a second job. `200` carries either the reel or that job in flight;
+`202` carries a new job to poll. Every success body has `already_saved`, true
+when the user had the link before this submission.
 
 The native-share endpoint resolves and enqueues in one request, because a share
 extension can be killed between two calls.
@@ -92,10 +96,27 @@ smuggle a `user_id` past the token. Provider-costing endpoints fail closed —
 without a working rate limiter they answer `503 processing_unavailable` rather
 than spending unmetered — while reads never consult the limiter at all.
 
-## Transcripts
+## Transcripts and views
 
 A transcript appears only in `GET /api/v2/reels/{reel_id}`, never in a list.
 Adding it to the list is a silent payload and cost regression.
+
+`view=concise` on the reel list, search and collection detail drops the other
+long-form fields as well (`key_facts`, `people_mentioned`, `actionable_items`,
+`events`). `detailed` is the default, so a client that never sends it is
+unaffected. The projection lives in `reels.Display`, not in a handler, so the
+MCP server applies the same one.
+
+## Public URLs
+
+Every reel and collection carries `web_url`, built on `PUBLIC_WEB_BASE_URL`:
+`/r/{reel_id}` and `/c/{collection_id}`.
+
+## Rate limits per client
+
+A Supabase OAuth-server token carries a `client_id`. The submission, search
+and map-pin limits count such a token against its own bucket under the user;
+an app session, which has no client, keeps the plain per-user bucket.
 
 ## Changing this
 

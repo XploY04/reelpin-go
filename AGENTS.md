@@ -31,7 +31,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `internal/httpapi/` | Routes, middleware, handlers, response shapes. The transport layer. |
 | `internal/config/` | `Load()` and its validation. The only reader of the environment. |
 | `internal/auth/`, `internal/sharetoken/` | Who is asking: Supabase JWKS verification, and the long-lived tokens the native share extensions use. |
-| `internal/reels/`, `internal/jobs/`, `internal/collections/`, `internal/mapview/` | Domain types and their reader ports. No transport, no driver. |
+| `internal/reels/`, `internal/jobs/`, `internal/collections/`, `internal/mapview/`, `internal/entitlements/` | Domain types, their reader ports, and the services every client calls (the app's handlers, the website, the MCP server). |
 | `internal/enqueue/`, `internal/pipeline/`, `internal/queue/`, `internal/outbox/`, `internal/lease/` | Submission through to a persisted version: idempotency and dedupe, the staged run, RabbitMQ, the transactional outbox, and the fencing leases that keep two workers off one run. |
 | `internal/sourceidentity/`, `internal/platform/` | What a shared link *is*, and the per-platform handlers that read it. |
 | `internal/ai/`, `internal/embed/`, `internal/search/`, `internal/taxonomy/` | Extraction and categorization, the embedding index, the three search arms and their fusion, and the category tree the prompt is built from. |
