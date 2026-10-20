@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/api"
+	"github.com/XploY04/reelpin-go/internal/collections"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/search"
 	"gopkg.in/yaml.v3"
@@ -301,6 +303,10 @@ func TestFixturesMatchTheContract(t *testing.T) {
 		jobRecords []jobs.JobRecord
 		// submission installs a submitter answering with this.
 		submission *enqueue.Result
+		// collectionItems installs a collection store answering with these.
+		collectionItems []collections.ItemRecord
+		// mapPins installs a map answering with these.
+		mapPins []mapview.Pin
 	}{
 		{name: "health_live", method: "GET", target: "/api/v2/health/live", status: 200},
 		{name: "reel_page", method: "GET", target: "/api/v2/reels?limit=25", token: "Bearer good.token", status: 200},
@@ -362,6 +368,21 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			},
 		},
 		{
+			name: "collection_detail", method: "GET", target: "/api/v2/collections/" + testCollectionID,
+			token: "Bearer good.token", status: 200,
+			collectionItems: fixtureCollectionItems(record),
+		},
+		{
+			name: "shared_collection", method: "GET", target: "/api/v2/shared-collections/sometoken?view=concise",
+			status:          200,
+			collectionItems: fixtureCollectionItems(record),
+		},
+		{
+			name: "map_pins", method: "GET", target: "/api/v2/map/pins?south=15&west=73&north=16&east=74&category=food_and_drink",
+			token: "Bearer good.token", status: 200,
+			mapPins: fixtureMapPins(),
+		},
+		{
 			name: "search_empty", method: "POST", target: "/api/v2/search",
 			token: "Bearer good.token", status: 200,
 			body: `{"query":"scuba diving in switzerland"}`,
@@ -383,6 +404,14 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			}
 			if tt.submission != nil {
 				deps.Enqueue = &fakeSubmitter{result: *tt.submission}
+			}
+			if tt.collectionItems != nil {
+				fake := newFakeCollections()
+				fake.items = tt.collectionItems
+				deps.Collections = fake
+			}
+			if tt.mapPins != nil {
+				deps.Map = &fakeMap{pins: tt.mapPins}
 			}
 			// Fixture cases that exercise submissions need the metered path
 			// open and deterministic outcomes.
@@ -439,6 +468,29 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fixtureCollectionItems is one save filed by a collaborator, so the fixture
+// shows an item that the reader could not fetch through getReel.
+func fixtureCollectionItems(record reels.ReelRecord) []collections.ItemRecord {
+	addedAt := testNow.Add(-time.Hour)
+	addedBy := otherUserID
+	return []collections.ItemRecord{{Reel: record, AddedAt: &addedAt, AddedBy: &addedBy}}
+}
+
+// fixtureMapPins is one content pin, carrying the subcategory under both names
+// for the release that keeps the old one.
+func fixtureMapPins() []mapview.Pin {
+	category, subcategory := "food_and_drink", "cafes"
+	address := "Anjuna, Goa"
+	reelID := testReelID
+	confidence := 0.9
+	return []mapview.Pin{{
+		ID: "66666666-6666-4666-8666-666666666666", Kind: "content", Name: "Artjuna Cafe",
+		Address: &address, Latitude: 15.5834, Longitude: 73.7407, ReelID: &reelID,
+		Confidence: &confidence, Category: &category, SubCategory: &subcategory,
+		Subcategory: &subcategory, PlaceTypes: []string{},
+	}}
 }
 
 // fixtureInFlight is a second submission of a link the user already has

@@ -129,7 +129,7 @@ func TestDuplicateEventsProduceOneNotification(t *testing.T) {
 	service, sender, pool := testService(t)
 	ctx := context.Background()
 
-	if err := service.RegisterToken(ctx, userA, "token-a", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userA, Device{Token: "token-a", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func TestAnInvalidTokenIsRemovedAndARetryableOneIsNot(t *testing.T) {
 	service, sender, pool := testService(t)
 	ctx := context.Background()
 
-	if err := service.RegisterToken(ctx, userA, "dead-token", "android"); err != nil {
+	if err := service.RegisterToken(ctx, userA, Device{Token: "dead-token", Platform: "android"}); err != nil {
 		t.Fatal(err)
 	}
 	sender.invalid["dead-token"] = true
@@ -188,7 +188,7 @@ func TestAnInvalidTokenIsRemovedAndARetryableOneIsNot(t *testing.T) {
 	}
 
 	// A transient refusal keeps the token: it will work again.
-	if err := service.RegisterToken(ctx, userB, "flaky-token", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userB, Device{Token: "flaky-token", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
 	sender.retryable = true
@@ -234,10 +234,10 @@ func TestATokenMovesToItsNewestUser(t *testing.T) {
 	ctx := context.Background()
 
 	// A shared phone: the newest sign-in owns the device.
-	if err := service.RegisterToken(ctx, userA, "shared-phone", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userA, Device{Token: "shared-phone", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.RegisterToken(ctx, userB, "shared-phone", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userB, Device{Token: "shared-phone", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,7 +256,7 @@ func TestAnotherUsersTokenAndNotificationAreNotFound(t *testing.T) {
 	service, _, pool := testService(t)
 	ctx := context.Background()
 
-	if err := service.RegisterToken(ctx, userA, "a-token", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userA, Device{Token: "a-token", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.DeleteToken(ctx, userB, "a-token"); !errors.Is(err, ErrNotFound) {
@@ -294,7 +294,7 @@ func TestAProviderOutageDoesNotLoseTheRecord(t *testing.T) {
 	service, sender, pool := testService(t)
 	ctx := context.Background()
 
-	if err := service.RegisterToken(ctx, userA, "token-a", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userA, Device{Token: "token-a", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
 	sender.fail = true
@@ -320,7 +320,7 @@ func TestConcurrentDeliveriesOfOneEventBuzzOnce(t *testing.T) {
 	service, sender, _ := testService(t)
 	ctx := context.Background()
 
-	if err := service.RegisterToken(ctx, userA, "token-a", "ios"); err != nil {
+	if err := service.RegisterToken(ctx, userA, Device{Token: "token-a", Platform: "ios"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -338,5 +338,76 @@ func TestConcurrentDeliveriesOfOneEventBuzzOnce(t *testing.T) {
 
 	if sender.count() != 1 {
 		t.Fatalf("the provider was called %d times for one event", sender.count())
+	}
+}
+
+// TestARegistrationRecordsItsBuild is what the forced-update rollout reads: each
+// registration overwrites the build fields, so a row describes the build that
+// registered it last, and the live count groups tokens by platform and build.
+func TestARegistrationRecordsItsBuild(t *testing.T) {
+	service, _, pool := testService(t)
+	ctx := context.Background()
+
+	version, build, zone, locale := "2.4.0", 412, "Asia/Kolkata", "en-IN"
+	if err := service.RegisterToken(ctx, userA, Device{
+		Token: "phone", Platform: "android",
+		AppVersion: &version, AppBuild: &build, Timezone: &zone, Locale: &locale,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotVersion, gotZone, gotLocale *string
+	var gotBuild *int
+	read := func() {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `
+			SELECT app_version, app_build, timezone, locale
+			FROM reelpin.device_push_tokens WHERE fcm_token = 'phone'`).Scan(
+			&gotVersion, &gotBuild, &gotZone, &gotLocale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read()
+	if gotVersion == nil || *gotVersion != version || gotBuild == nil || *gotBuild != build ||
+		gotZone == nil || *gotZone != zone || gotLocale == nil || *gotLocale != locale {
+		t.Fatalf("stored %v %v %v %v", gotVersion, gotBuild, gotZone, gotLocale)
+	}
+
+	newer := 415
+	if err := service.RegisterToken(ctx, userA, Device{Token: "phone", Platform: "android", AppBuild: &newer}); err != nil {
+		t.Fatal(err)
+	}
+	read()
+	if gotBuild == nil || *gotBuild != newer || gotVersion != nil {
+		t.Fatalf("after re-registering: build %v, version %v; want 415 and the old version gone", gotBuild, gotVersion)
+	}
+
+	if err := service.RegisterToken(ctx, userB, Device{Token: "tablet", Platform: "android", AppBuild: &newer}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RegisterToken(ctx, userB, Device{Token: "old-iphone", Platform: "ios"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RegisterToken(ctx, userB, Device{Token: "stale", Platform: "ios", AppBuild: &build}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE reelpin.device_push_tokens SET last_seen_at = now() - interval '90 days'
+		WHERE fcm_token = 'stale'`); err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := service.LiveBuilds(ctx, time.Now().Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != 2 {
+		t.Fatalf("counts = %+v, want android 415 and ios unreported", counts)
+	}
+	if counts[0].Platform != "android" || counts[0].AppBuild == nil || *counts[0].AppBuild != newer || counts[0].Tokens != 2 {
+		t.Errorf("first = %+v, want two android tokens on 415", counts[0])
+	}
+	if counts[1].Platform != "ios" || counts[1].AppBuild != nil || counts[1].Tokens != 1 {
+		t.Errorf("second = %+v, want one ios token with no build, and the stale one left out", counts[1])
 	}
 }

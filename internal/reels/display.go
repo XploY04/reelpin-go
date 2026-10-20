@@ -200,7 +200,10 @@ func BuildListResponse(records []ReelRecord, limit int, display Display) ListRes
 	return response
 }
 
-// Reel is the full single-reel body, transcript included.
+// Reel is the full single-reel body, transcript included, with the display
+// projection a list item carries. Subcategory repeats SubCategory under the
+// name this shape sent before sub_category was the one name; it is deprecated
+// and goes after one release.
 type Reel struct {
 	ID                  string     `json:"id"`
 	UserID              string     `json:"user_id"`
@@ -225,11 +228,25 @@ type Reel struct {
 	Locations           []Location `json:"locations"`
 	PeopleMentioned     []string   `json:"people_mentioned"`
 	ActionableItems     []string   `json:"actionable_items"`
+	Events              []Event    `json:"events"`
 	CreatedAt           *string    `json:"created_at"`
+
+	ParseStatus          string             `json:"parse_status"`
+	SubCategory          string             `json:"sub_category"`
+	CategoryLabel        string             `json:"category_label"`
+	SubCategoryLabel     string             `json:"sub_category_label"`
+	DisplayDate          string             `json:"display_date"`
+	RelativeDate         string             `json:"relative_date"`
+	SavedDateKey         *string            `json:"saved_date_key"`
+	HasMapLocations      bool               `json:"has_map_locations"`
+	MappableLocations    []MappableLocation `json:"mappable_locations"`
+	PrimaryLocationLabel *string            `json:"primary_location_label"`
+	MapLocationCount     int                `json:"map_location_count"`
 }
 
-// BuildReel presents one reel in full.
-func BuildReel(record ReelRecord, webBaseURL string) Reel {
+// BuildReel presents one reel in full. The display fields come from the same
+// BuildDisplayReel a list uses, so a reel reads the same in both places.
+func BuildReel(record ReelRecord, display Display) Reel {
 	category := record.Category
 	if strings.TrimSpace(category) == "" {
 		category = "Other"
@@ -242,12 +259,14 @@ func BuildReel(record ReelRecord, webBaseURL string) Reel {
 	if locations == nil {
 		locations = []Location{}
 	}
+	display.View = ViewDetailed
+	card := BuildDisplayReel(record, display)
 
 	return Reel{
 		ID:                  record.ID,
 		UserID:              record.UserID,
 		URL:                 record.URL,
-		WebURL:              WebURL(webBaseURL, record.ID),
+		WebURL:              card.WebURL,
 		ThumbnailURL:        cleanOptional(record.ThumbnailURL),
 		NormalizedURL:       record.NormalizedURL,
 		SourcePlatform:      record.SourcePlatform,
@@ -267,7 +286,20 @@ func BuildReel(record ReelRecord, webBaseURL string) Reel {
 		Locations:           locations,
 		PeopleMentioned:     nonNil(record.PeopleMentioned),
 		ActionableItems:     nonNil(record.ActionableItems),
+		Events:              card.Events,
 		CreatedAt:           isoTimestamp(record.CreatedAt),
+
+		ParseStatus:          card.ParseStatus,
+		SubCategory:          subcategory,
+		CategoryLabel:        card.CategoryLabel,
+		SubCategoryLabel:     card.SubCategoryLabel,
+		DisplayDate:          card.DisplayDate,
+		RelativeDate:         card.RelativeDate,
+		SavedDateKey:         card.SavedDateKey,
+		HasMapLocations:      card.HasMapLocations,
+		MappableLocations:    card.MappableLocations,
+		PrimaryLocationLabel: card.PrimaryLocationLabel,
+		MapLocationCount:     card.MapLocationCount,
 	}
 }
 

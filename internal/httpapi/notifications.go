@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/XploY04/reelpin-go/internal/notify"
 )
@@ -12,7 +14,7 @@ import (
 // administration is deliberately absent: it is an operator command, not part
 // of the product API.
 type Notifications interface {
-	RegisterToken(ctx context.Context, userID, token, platform string) error
+	RegisterToken(ctx context.Context, userID string, device notify.Device) error
 	DeleteToken(ctx context.Context, userID, token string) error
 	MarkOpened(ctx context.Context, userID, notificationID string) error
 }
@@ -22,10 +24,31 @@ type devicePushTokenInput struct {
 	Platform string `json:"platform"`
 }
 
+// deviceRegistrationInput is the register body: the token and, optionally,
+// what the app says about the build sending it. Removing a device takes the
+// token alone.
+type deviceRegistrationInput struct {
+	Token      string  `json:"token"`
+	Platform   string  `json:"platform"`
+	AppVersion *string `json:"app_version"`
+	AppBuild   *int    `json:"app_build"`
+	Timezone   *string `json:"timezone"`
+	Locale     *string `json:"locale"`
+}
+
+// The bounds on what an app reports about itself. A build number is a
+// PostgreSQL integer; the strings are short labels, never free text.
+const (
+	maxAppBuild      = 1<<31 - 1
+	maxAppVersionLen = 64
+	maxTimezoneLen   = 64
+	maxLocaleLen     = 35
+)
+
 var devicePlatforms = map[string]bool{"ios": true, "android": true, "web": true}
 
 func (s *Server) handleRegisterPushToken(w http.ResponseWriter, r *http.Request) {
-	var input devicePushTokenInput
+	var input deviceRegistrationInput
 	if !decodeBody(w, r, &input) {
 		return
 	}
@@ -37,9 +60,33 @@ func (s *Server) handleRegisterPushToken(w http.ResponseWriter, r *http.Request)
 		validationError(w, "platform", "must be ios, android or web")
 		return
 	}
+	if input.AppBuild != nil && (*input.AppBuild < 0 || *input.AppBuild > maxAppBuild) {
+		validationError(w, "app_build", "must be between 0 and "+strconv.Itoa(maxAppBuild))
+		return
+	}
+	for _, field := range []struct {
+		name  string
+		value *string
+		limit int
+	}{
+		{"app_version", input.AppVersion, maxAppVersionLen},
+		{"timezone", input.Timezone, maxTimezoneLen},
+		{"locale", input.Locale, maxLocaleLen},
+	} {
+		if field.value != nil && len(*field.value) > field.limit {
+			validationError(w, field.name, "must be at most "+strconv.Itoa(field.limit)+" characters")
+			return
+		}
+	}
 
-	if err := s.deps.Notifications.RegisterToken(
-		r.Context(), requestUserID(r), input.Token, input.Platform); err != nil {
+	if err := s.deps.Notifications.RegisterToken(r.Context(), requestUserID(r), notify.Device{
+		Token:      input.Token,
+		Platform:   input.Platform,
+		AppVersion: blankAsNil(input.AppVersion),
+		AppBuild:   input.AppBuild,
+		Timezone:   blankAsNil(input.Timezone),
+		Locale:     blankAsNil(input.Locale),
+	}); err != nil {
 		// The token is a credential, so neither it nor the driver error is
 		// echoed back.
 		s.deps.Logger.Error("registering a device token failed", "error", err)
@@ -90,4 +137,17 @@ func (s *Server) handleNotificationOpened(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"opened": true})
+}
+
+// blankAsNil trims a reported label, and treats one that is only whitespace as
+// not reported.
+func blankAsNil(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }

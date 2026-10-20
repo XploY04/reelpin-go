@@ -112,7 +112,7 @@ func TestEveryReelShapeLinksItsPublicPage(t *testing.T) {
 	if got := BuildDisplayReel(record, Display{WebBaseURL: testWebBase + "/"}).WebURL; got != want {
 		t.Errorf("display web_url = %q, want %q", got, want)
 	}
-	if got := BuildReel(record, testWebBase).WebURL; got != want {
+	if got := BuildReel(record, Display{WebBaseURL: testWebBase}).WebURL; got != want {
 		t.Errorf("full reel web_url = %q, want %q", got, want)
 	}
 }
@@ -131,6 +131,65 @@ func TestServiceListOverFetchesAndProjects(t *testing.T) {
 	if len(page.Reels) != 1 || page.Reels[0].KeyFacts != nil {
 		t.Errorf("reels = %+v, want one concise reel", page.Reels)
 	}
+}
+
+// TestServiceGetCarriesTheListProjection pins that one reel reads the same in
+// the detail view as it does in a list: every display field the list item
+// carries is on the detail body with the same value, and the subcategory has
+// one name, with the old one kept beside it for a release.
+func TestServiceGetCarriesTheListProjection(t *testing.T) {
+	record := longFormRecord()
+	record.Category = "food_and_drink"
+	record.Subcategory = "cafes"
+	record.CreatedAt = ptr(now.AddDate(0, 0, -2))
+	record.Locations = []Location{
+		{Name: "Artjuna Cafe", Latitude: ptr(15.5834), Longitude: ptr(73.7407)},
+		{Name: "No coordinates"},
+	}
+	service := NewService(&stubReader{records: []ReelRecord{record}}, testWebBase, func() time.Time { return now })
+
+	reel, err := service.Get(context.Background(), "user", uuid.MustParse(record.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.List(context.Background(), "user", ListParams{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	detail := encodedKeys(t, reel)
+	card := encodedKeys(t, page.Reels[0])
+	for _, key := range []string{
+		"category_label", "sub_category", "sub_category_label", "relative_date",
+		"display_date", "saved_date_key", "content_type", "parse_status", "has_map_locations",
+		"mappable_locations", "map_location_count", "primary_location_label", "events",
+	} {
+		if _, present := detail[key]; !present {
+			t.Errorf("the detail body has no %s", key)
+			continue
+		}
+		if got, want := mustMarshal(t, detail[key]), mustMarshal(t, card[key]); got != want {
+			t.Errorf("%s = %s on the detail, %s on the list", key, got, want)
+		}
+	}
+	if detail["sub_category"] != "cafes" || detail["subcategory"] != "cafes" {
+		t.Errorf("sub_category = %v, subcategory = %v, want cafes for both", detail["sub_category"], detail["subcategory"])
+	}
+	if detail["relative_date"] != "2 days ago" || detail["map_location_count"] != float64(1) {
+		t.Errorf("relative_date = %v, map_location_count = %v", detail["relative_date"], detail["map_location_count"])
+	}
+	if detail["transcript"] != "spoken words" {
+		t.Errorf("transcript = %v, the detail keeps every record field", detail["transcript"])
+	}
+}
+
+func mustMarshal(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestServiceGetKeepsNotFound(t *testing.T) {

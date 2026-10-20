@@ -23,6 +23,10 @@ const (
 	collaborator = "33333333-3333-4333-8333-333333333333"
 )
 
+// firstPage is the item page most tests read: the default size, transcripts
+// included, as the detailed view asks.
+var firstPage = collections.ItemQuery{Limit: 25, Transcripts: true}
+
 // collectionPool builds one throwaway database per test with a
 // production-shaped auth.users, then migrates it. Cleanup drops WITH (FORCE),
 // so a connection left open by a failure cannot hang the package.
@@ -156,7 +160,7 @@ func TestOnlyPeopleWithAccessSeeACollection(t *testing.T) {
 		run  func() error
 	}{
 		{"get", func() error { _, err := c.Get(ctx, collection.ID, strangerID); return err }},
-		{"detail", func() error { _, err := c.Detail(ctx, collection.ID, strangerID, nil, 25); return err }},
+		{"detail", func() error { _, _, err := c.Detail(ctx, collection.ID, strangerID, firstPage); return err }},
 		{"members", func() error { _, _, err := c.Members(ctx, collection.ID, strangerID); return err }},
 		{"update", func() error {
 			name := "Stolen"
@@ -329,7 +333,7 @@ func TestMembershipIsIdempotentAndRoleBound(t *testing.T) {
 	if _, err := c.AddItems(ctx, collection.ID, collaborator, []string{saveID}); !errors.Is(err, collections.ErrForbidden) {
 		t.Errorf("a viewer adding items = %v, want ErrForbidden", err)
 	}
-	if _, err := c.Detail(ctx, collection.ID, collaborator, nil, 25); err != nil {
+	if _, _, err := c.Detail(ctx, collection.ID, collaborator, firstPage); err != nil {
 		t.Errorf("a viewer cannot read: %v", err)
 	}
 }
@@ -391,27 +395,27 @@ func TestAShareTokenRevealsNothingWhenItShouldNot(t *testing.T) {
 		t.Fatalf("EnableLink: %v", err)
 	}
 
-	shared, err := c.SharedByToken(ctx, token, nil, 25)
+	shared, page, err := c.SharedByToken(ctx, token, firstPage)
 	if err != nil {
 		t.Fatalf("a live token: %v", err)
 	}
-	if len(shared.Items) != 1 {
-		t.Fatalf("items = %d, want the filed save", len(shared.Items))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %d, want the filed save", len(page.Items))
 	}
 	// The token grants a view of the saves, not of who can see them.
-	if shared.Collection.OwnerID != "" || shared.Collection.MemberCount != 0 {
-		t.Errorf("the anonymous view leaks membership: %+v", shared.Collection)
+	if shared.OwnerID != "" || shared.MemberCount != 0 {
+		t.Errorf("the anonymous view leaks membership: %+v", shared)
 	}
 
 	// Malformed, revoked and expired all answer the same.
-	if _, err := c.SharedByToken(ctx, "not-a-token", nil, 25); !errors.Is(err, collections.ErrNotFound) {
+	if _, _, err := c.SharedByToken(ctx, "not-a-token", firstPage); !errors.Is(err, collections.ErrNotFound) {
 		t.Errorf("a malformed token = %v, want ErrNotFound", err)
 	}
 
 	if err := c.DisableLink(ctx, collection.ID, ownerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.SharedByToken(ctx, token, nil, 25); !errors.Is(err, collections.ErrNotFound) {
+	if _, _, err := c.SharedByToken(ctx, token, firstPage); !errors.Is(err, collections.ErrNotFound) {
 		t.Errorf("a revoked token = %v, want ErrNotFound", err)
 	}
 
@@ -424,7 +428,7 @@ func TestAShareTokenRevealsNothingWhenItShouldNot(t *testing.T) {
 		collection.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.SharedByToken(ctx, fresh, nil, 25); !errors.Is(err, collections.ErrNotFound) {
+	if _, _, err := c.SharedByToken(ctx, fresh, firstPage); !errors.Is(err, collections.ErrNotFound) {
 		t.Errorf("an expired token = %v, want ErrNotFound", err)
 	}
 }
@@ -505,7 +509,7 @@ func TestItemPagesResumeWithoutRepeating(t *testing.T) {
 		}
 	}
 
-	first, err := c.Detail(ctx, collection.ID, ownerID, nil, 2)
+	_, first, err := c.Detail(ctx, collection.ID, ownerID, collections.ItemQuery{Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +521,7 @@ func TestItemPagesResumeWithoutRepeating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the cursor does not decode: %v", err)
 	}
-	second, err := c.Detail(ctx, collection.ID, ownerID, &cursor, 2)
+	_, second, err := c.Detail(ctx, collection.ID, ownerID, collections.ItemQuery{After: &cursor, Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,8 +530,8 @@ func TestItemPagesResumeWithoutRepeating(t *testing.T) {
 	}
 	for _, shown := range first.Items {
 		for _, next := range second.Items {
-			if shown.ReelID == next.ReelID {
-				t.Fatalf("reel %s appears on both pages", shown.ReelID)
+			if shown.Reel.ID == next.Reel.ID {
+				t.Fatalf("reel %s appears on both pages", shown.Reel.ID)
 			}
 		}
 	}
@@ -556,5 +560,101 @@ func TestDeletingACollectionKeepsTheSaves(t *testing.T) {
 	}
 	if saves != 1 {
 		t.Fatal("deleting a collection deleted the save it held")
+	}
+}
+
+// TestACollaboratorReadsTheFullReel is why items carry the whole reel: the
+// collaborator cannot read another user's save through the reel reader, so the
+// item has to bring the extraction with it, and the concise page never reads
+// the transcript at all.
+func TestACollaboratorReadsTheFullReel(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+
+	collection, _, err := c.Create(ctx, ownerID, "Trips", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AcceptInvite(ctx, token, collaborator); err != nil {
+		t.Fatal(err)
+	}
+
+	var contentID, versionID string
+	if err := c.pool.QueryRow(ctx, `
+		INSERT INTO reelpin.contents
+			(source_platform, source_content_type, source_content_id,
+			 normalized_url, normalized_url_hash, access_scope_hash)
+		VALUES ('instagram', 'reel', 'FULL1', 'https://www.instagram.com/reel/FULL1/', 'FULL1', 'public')
+		RETURNING id::text`).Scan(&contentID); err != nil {
+		t.Fatalf("seeding content: %v", err)
+	}
+	if err := c.pool.QueryRow(ctx, `
+		INSERT INTO reelpin.content_versions
+			(content_id, processor_version, prompt_version, schema_version, model_version,
+			 title, summary, transcript, tags, key_facts, raw_extraction, media)
+		VALUES ($1, 'v1', 'p1', 's1', 'm1', 'Best cafes in Goa', 'Three cafes.', 'spoken words',
+		        '{goa}', '{"Opens at 8am"}',
+		        '{"category": "food_and_drink", "subcategory": "cafes",
+		          "extraction": {
+		            "locations": [{"name": "Artjuna Cafe", "city": "Anjuna", "latitude": 15.58, "longitude": 73.74}],
+		            "people_mentioned": ["Rhea"],
+		            "actionable_items": ["Go early"],
+		            "events": [{"name": "Market", "date": "2026-09-05", "time": ""}]}}'::jsonb,
+		        '{"thumbnail_url": "https://cdn/x.jpg"}'::jsonb)
+		RETURNING id::text`, contentID).Scan(&versionID); err != nil {
+		t.Fatalf("seeding a version: %v", err)
+	}
+	if _, err := c.pool.Exec(ctx,
+		`UPDATE reelpin.contents SET current_version_id = $2 WHERE id = $1`, contentID, versionID); err != nil {
+		t.Fatal(err)
+	}
+	var saveID string
+	if err := c.pool.QueryRow(ctx, `
+		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2)
+		RETURNING id::text`, ownerID, contentID).Scan(&saveID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.AddItems(ctx, collection.ID, ownerID, []string{saveID}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, page, err := c.Detail(ctx, collection.ID, collaborator, firstPage)
+	if err != nil {
+		t.Fatalf("a viewer cannot read: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(page.Items))
+	}
+	reel := page.Items[0].Reel
+	if reel.ID != saveID || reel.UserID != ownerID {
+		t.Errorf("reel %s of %s, want the owner's save %s", reel.ID, reel.UserID, saveID)
+	}
+	if reel.Transcript != "spoken words" || reel.Category != "food_and_drink" || reel.Subcategory != "cafes" {
+		t.Errorf("transcript %q, category %q/%q", reel.Transcript, reel.Category, reel.Subcategory)
+	}
+	if len(reel.KeyFacts) != 1 || len(reel.PeopleMentioned) != 1 || len(reel.ActionableItems) != 1 ||
+		len(reel.Events) != 1 || len(reel.SecondaryCategories) != 1 {
+		t.Errorf("extraction lists = %+v", reel)
+	}
+	if len(reel.Locations) != 1 || reel.Locations[0].Latitude == nil || reel.Locations[0].Name != "Artjuna Cafe" {
+		t.Errorf("locations = %+v", reel.Locations)
+	}
+	if reel.ThumbnailURL == nil || *reel.ThumbnailURL != "https://cdn/x.jpg" || reel.CreatedAt == nil {
+		t.Errorf("thumbnail %v, saved at %v", reel.ThumbnailURL, reel.CreatedAt)
+	}
+	if page.Items[0].AddedBy == nil || *page.Items[0].AddedBy != ownerID || page.Items[0].AddedAt == nil {
+		t.Errorf("added by %v at %v", page.Items[0].AddedBy, page.Items[0].AddedAt)
+	}
+
+	_, concise, err := c.Detail(ctx, collection.ID, collaborator, collections.ItemQuery{Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := concise.Items[0].Reel.Transcript; got != "" {
+		t.Errorf("a concise page read the transcript: %q", got)
 	}
 }

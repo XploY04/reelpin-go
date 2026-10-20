@@ -11,6 +11,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/profiles"
 	"github.com/XploY04/reelpin-go/internal/ratelimit"
 	"github.com/XploY04/reelpin-go/internal/sharetoken"
@@ -331,13 +332,16 @@ type fakeNotifications struct {
 	err          error
 	lastUserID   string
 	lastPlatform string
+	lastDevice   notify.Device
 	registered   int
 	deleted      int
 	opened       int
 }
 
-func (f *fakeNotifications) RegisterToken(_ context.Context, userID, _, platform string) error {
-	f.lastUserID, f.lastPlatform = userID, platform
+func (f *fakeNotifications) RegisterToken(_ context.Context, userID string, device notify.Device) error {
+	f.lastUserID, f.lastPlatform = userID, device.Platform
+	device.Token = ""
+	f.lastDevice = device
 	f.registered++
 	return f.err
 }
@@ -384,17 +388,18 @@ func (f *fakeLifecycle) DeleteAccount(_ context.Context, userID string) (lifecyc
 // fakeMap answers with whatever the test set up and records the bounds it was
 // asked for, so a test can prove the viewport reached the service unchanged.
 type fakeMap struct {
-	pins       []mapview.Pin
-	err        error
-	lastUserID string
-	lastBounds geo.Bounds
-	lastCentre geo.Point
-	hidden     *bool
-	lastItemID string
+	pins         []mapview.Pin
+	err          error
+	lastUserID   string
+	lastBounds   geo.Bounds
+	lastCategory string
+	lastCentre   geo.Point
+	hidden       *bool
+	lastItemID   string
 }
 
-func (f *fakeMap) Pins(_ context.Context, userID string, bounds geo.Bounds) ([]mapview.Pin, error) {
-	f.lastUserID, f.lastBounds = userID, bounds
+func (f *fakeMap) Pins(_ context.Context, userID string, bounds geo.Bounds, category string) ([]mapview.Pin, error) {
+	f.lastUserID, f.lastBounds, f.lastCategory = userID, bounds, category
 	return f.pins, f.err
 }
 

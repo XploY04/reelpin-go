@@ -15,6 +15,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/reels"
 )
 
 // ErrNotFound is a collection that does not exist, and equally one this user
@@ -67,19 +69,45 @@ type Collection struct {
 	OwnerID string `json:"-"`
 }
 
-// Item is one filed save, as a card: enough to render a grid, with the full
-// reel one getReel call away by the same id.
+// Item is one filed save as a full reel. A collaborator or a link viewer
+// cannot call getReel for a save that is not theirs, so the item carries
+// everything the detail view needs: the display shape, the transcript and the
+// raw locations, plus when and by whom it was filed. Transcript is nil under
+// the concise view, which leaves it out.
+//
+// SourcePlatform shadows the display shape's nullable one: an item's platform
+// has always been a non-null string, and the shallower field wins in JSON.
 type Item struct {
-	ReelID         string  `json:"reel_id"`
-	Title          string  `json:"title"`
-	Summary        string  `json:"summary"`
-	URL            string  `json:"url"`
-	WebURL         string  `json:"web_url"`
-	ThumbnailURL   *string `json:"thumbnail_url"`
-	SourcePlatform string  `json:"source_platform"`
-	SavedAt        *string `json:"saved_at"`
-	AddedAt        *string `json:"added_at"`
-	AddedBy        *string `json:"added_by"`
+	reels.DisplayReel
+	ReelID         string           `json:"reel_id"`
+	SourcePlatform string           `json:"source_platform"`
+	Transcript     *string          `json:"transcript,omitempty"`
+	Locations      []reels.Location `json:"locations"`
+	SavedAt        *string          `json:"saved_at"`
+	AddedAt        *string          `json:"added_at"`
+	AddedBy        *string          `json:"added_by"`
+}
+
+// ItemRecord is one filed save as storage reads it. Reel.CreatedAt is when the
+// save was made, the same as every other reel record.
+type ItemRecord struct {
+	Reel    reels.ReelRecord
+	AddedAt *time.Time
+	AddedBy *string
+}
+
+// ItemQuery pages a collection's items. Transcripts is false for the concise
+// view, so a page that leaves the transcript out never reads it.
+type ItemQuery struct {
+	After       *reels.Cursor
+	Limit       int
+	Transcripts bool
+}
+
+// ItemPage is one keyset page of filed saves as storage reads them.
+type ItemPage struct {
+	Items []ItemRecord
+	Page  Page
 }
 
 // Page is one cursor page of items.

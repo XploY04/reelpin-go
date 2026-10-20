@@ -282,30 +282,25 @@ func (c *Collections) RemoveItem(ctx context.Context, collectionID, userID, save
 	return nil
 }
 
-// Detail is the signed-in view: the collection, one cursor page of items, and
-// whether this user may change it.
-func (c *Collections) Detail(ctx context.Context, collectionID, userID string, after *reels.Cursor, limit int) (collections.Detail, error) {
+// Detail is the signed-in view: the collection, with this user's role, and one
+// cursor page of items.
+func (c *Collections) Detail(ctx context.Context, collectionID, userID string, query collections.ItemQuery) (collections.Collection, collections.ItemPage, error) {
 	collection, err := c.Get(ctx, collectionID, userID)
 	if err != nil {
-		return collections.Detail{}, err
+		return collections.Collection{}, collections.ItemPage{}, err
 	}
 
-	items, page, err := c.items(ctx, collectionID, after, limit)
+	page, err := c.items(ctx, collectionID, query)
 	if err != nil {
-		return collections.Detail{}, err
+		return collections.Collection{}, collections.ItemPage{}, err
 	}
-	return collections.Detail{
-		Collection: collection,
-		Items:      items,
-		Page:       page,
-		CanEdit:    collections.CanEdit(collection.Role),
-	}, nil
+	return collection, page, nil
 }
 
 // SharedByToken serves an anonymous reader. The token is the whole capability;
 // an unknown, expired or revoked one answers the same not-found, so a token
 // guesser learns nothing.
-func (c *Collections) SharedByToken(ctx context.Context, token string, after *reels.Cursor, limit int) (collections.Shared, error) {
+func (c *Collections) SharedByToken(ctx context.Context, token string, query collections.ItemQuery) (collections.Collection, collections.ItemPage, error) {
 	var collectionID string
 	err := c.pool.QueryRow(ctx, `
 		SELECT id::text FROM reelpin.collections
@@ -314,93 +309,143 @@ func (c *Collections) SharedByToken(ctx context.Context, token string, after *re
 		collections.HashToken(token),
 	).Scan(&collectionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return collections.Shared{}, collections.ErrNotFound
+		return collections.Collection{}, collections.ItemPage{}, collections.ErrNotFound
 	}
 	if err != nil {
-		return collections.Shared{}, fmt.Errorf("reading the shared collection: %w", err)
+		return collections.Collection{}, collections.ItemPage{}, fmt.Errorf("reading the shared collection: %w", err)
 	}
 
 	collection, err := c.get(ctx, collectionID, collections.RoleViewer)
 	if err != nil {
-		return collections.Shared{}, err
+		return collections.Collection{}, collections.ItemPage{}, err
 	}
-	items, page, err := c.items(ctx, collectionID, after, limit)
+	page, err := c.items(ctx, collectionID, query)
 	if err != nil {
-		return collections.Shared{}, err
+		return collections.Collection{}, collections.ItemPage{}, err
 	}
 
 	// An anonymous reader learns what is in the collection, not who is in it.
 	collection.OwnerID = ""
 	collection.MemberCount = 0
-	return collections.Shared{Collection: collection, Items: items, Page: page}, nil
+	return collection, page, nil
 }
 
-// items loads one keyset page of item cards from the canonical tables in one
-// query. The cursor is (added_at, save_id), the same opaque shape the reel
-// list uses.
-func (c *Collections) items(ctx context.Context, collectionID string, after *reels.Cursor, limit int) ([]collections.Item, collections.Page, error) {
+// items loads one keyset page of filed saves from the canonical tables in one
+// query, each with the reel its save resolves to. The cursor is
+// (added_at, save_id), the same opaque shape the reel list uses. The save is
+// not scoped to the reader: the collection role or the link token already
+// decided who may see it, and that is the point of a shared collection.
+func (c *Collections) items(ctx context.Context, collectionID string, query collections.ItemQuery) (collections.ItemPage, error) {
 	where := "i.collection_id = $1"
 	args := []any{collectionID}
-	if after != nil {
-		args = append(args, after.SavedAt, after.ID)
+	if query.After != nil {
+		args = append(args, query.After.SavedAt, query.After.ID)
 		where += fmt.Sprintf(" AND (i.added_at, i.save_id) < ($%d, $%d)", len(args)-1, len(args))
 	}
-	args = append(args, limit+1)
+	args = append(args, query.Limit+1)
+
+	// The transcript is the one column a concise page never shows, and the
+	// largest, so it is not read for one.
+	transcript := "''"
+	if query.Transcripts {
+		transcript = "coalesce(v.transcript, '')"
+	}
 
 	rows, err := c.pool.Query(ctx, fmt.Sprintf(`
-		SELECT s.id::text, v.title, v.summary, co.normalized_url,
-		       NULLIF(v.media->>'thumbnail_url', ''),
-		       co.source_platform, s.saved_at, i.added_at, i.added_by::text
+		SELECT s.id::text, s.user_id::text, co.normalized_url,
+		       co.source_platform, co.source_content_type,
+		       v.title, v.summary, NULLIF(v.media->>'thumbnail_url', ''),
+		       v.raw_extraction->>'category', v.raw_extraction->>'subcategory',
+		       v.tags, v.key_facts,
+		       v.raw_extraction->'extraction'->'locations',
+		       v.raw_extraction->'extraction'->'people_mentioned',
+		       v.raw_extraction->'extraction'->'actionable_items',
+		       v.raw_extraction->'extraction'->'events',
+		       %s, s.saved_at, i.added_at, i.added_by::text
 		FROM reelpin.collection_items i
 		JOIN reelpin.user_saves s ON s.id = i.save_id
 		JOIN reelpin.contents co ON co.id = s.content_id
 		LEFT JOIN reelpin.content_versions v ON v.id = co.current_version_id
 		WHERE %s
 		ORDER BY i.added_at DESC, i.save_id DESC
-		LIMIT $%d`, where, len(args)), args...)
+		LIMIT $%d`, transcript, where, len(args)), args...)
 	if err != nil {
-		return nil, collections.Page{}, fmt.Errorf("reading collection items: %w", err)
+		return collections.ItemPage{}, fmt.Errorf("reading collection items: %w", err)
 	}
 	defer rows.Close()
 
-	items := []collections.Item{}
+	items := []collections.ItemRecord{}
 	cursors := []reels.Cursor{}
 	for rows.Next() {
-		var (
-			item             collections.Item
-			title, summary   *string
-			savedAt, addedAt *time.Time
-		)
-		if err := rows.Scan(&item.ReelID, &title, &summary, &item.URL, &item.ThumbnailURL,
-			&item.SourcePlatform, &savedAt, &addedAt, &item.AddedBy); err != nil {
-			return nil, collections.Page{}, fmt.Errorf("reading a collection item: %w", err)
+		item, err := scanItem(rows)
+		if err != nil {
+			return collections.ItemPage{}, err
 		}
-		item.Title = text(title)
-		item.Summary = text(summary)
-		item.SavedAt = collections.ISOTime(savedAt)
-		item.AddedAt = collections.ISOTime(addedAt)
 		items = append(items, item)
-		if addedAt != nil {
-			cursors = append(cursors, reels.Cursor{SavedAt: *addedAt, ID: item.ReelID})
+		if item.AddedAt != nil {
+			cursors = append(cursors, reels.Cursor{SavedAt: *item.AddedAt, ID: item.Reel.ID})
 		} else {
 			cursors = append(cursors, reels.Cursor{})
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, collections.Page{}, fmt.Errorf("reading collection items: %w", err)
+		return collections.ItemPage{}, fmt.Errorf("reading collection items: %w", err)
 	}
 
-	page := collections.Page{Limit: limit}
-	if len(items) > limit {
-		items = items[:limit]
-		last := cursors[limit-1]
+	page := collections.Page{Limit: query.Limit}
+	if len(items) > query.Limit {
+		items = items[:query.Limit]
+		last := cursors[query.Limit-1]
 		if last.ID != "" && !last.SavedAt.IsZero() {
 			encoded := last.Encode()
 			page.NextCursor = &encoded
 			page.HasMore = true
 		}
 	}
-	return items, page, nil
+	return collections.ItemPage{Items: items, Page: page}, nil
+}
+
+// scanItem reads one row of the items query into the reel record every reel
+// shape is built from. The extraction lists ride the version's JSONB in the
+// shape the pipeline and the backfill both write.
+func scanItem(rows pgx.Rows) (collections.ItemRecord, error) {
+	var (
+		item                                  collections.ItemRecord
+		record                                reels.ReelRecord
+		title, summary, category, subcategory *string
+		locationsRaw, peopleRaw, actionsRaw   []byte
+		eventsRaw                             []byte
+		savedAt                               *time.Time
+	)
+	if err := rows.Scan(&record.ID, &record.UserID, &record.URL,
+		&record.SourcePlatform, &record.SourceContentType,
+		&title, &summary, &record.ThumbnailURL,
+		&category, &subcategory,
+		&record.SecondaryCategories, &record.KeyFacts,
+		&locationsRaw, &peopleRaw, &actionsRaw, &eventsRaw,
+		&record.Transcript, &savedAt, &item.AddedAt, &item.AddedBy); err != nil {
+		return collections.ItemRecord{}, fmt.Errorf("reading a collection item: %w", err)
+	}
+	record.Title = text(title)
+	record.Summary = text(summary)
+	record.Category = text(category)
+	record.Subcategory = text(subcategory)
+	record.CreatedAt = savedAt
+	for _, decode := range []struct {
+		raw    []byte
+		target any
+	}{
+		{locationsRaw, &record.Locations},
+		{peopleRaw, &record.PeopleMentioned},
+		{actionsRaw, &record.ActionableItems},
+		{eventsRaw, &record.Events},
+	} {
+		if err := decodeJSON(decode.raw, decode.target); err != nil {
+			return collections.ItemRecord{}, fmt.Errorf("decoding a collection item: %w", err)
+		}
+	}
+	item.Reel = record
+	return item, nil
 }
 
 // Members lists collaborators. Any role may see who else can see the

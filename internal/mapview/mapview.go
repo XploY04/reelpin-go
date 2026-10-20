@@ -39,7 +39,11 @@ type Pin struct {
 	Confidence *float64 `json:"confidence"`
 	// Category comes from the save's extraction for a content pin and is
 	// assigned when a manual pin is made from a Google place.
-	Category    *string `json:"category"`
+	Category *string `json:"category"`
+	// SubCategory is the name every reel-bearing response uses. Subcategory
+	// repeats it under the name pins sent first; it is deprecated and goes
+	// after one release.
+	SubCategory *string `json:"sub_category"`
 	Subcategory *string `json:"subcategory"`
 	// The Google fields are set only on a manual pin made from a place.
 	GooglePlaceID *string  `json:"google_place_id"`
@@ -87,6 +91,7 @@ func (p Pin) withLists() Pin {
 	if p.PlaceTypes == nil {
 		p.PlaceTypes = []string{}
 	}
+	p.SubCategory = p.Subcategory
 	return p
 }
 
@@ -105,7 +110,13 @@ func New(pool *pgxpool.Pool, now func() time.Time) *Service {
 // Pins answers one viewport. Hidden pins are the user's own choice and are
 // excluded here rather than by the client, so a hidden pin never reaches the
 // wire at all.
-func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds) ([]Pin, error) {
+//
+// A category keeps only pins whose category is exactly that one, an empty
+// category reading as "Other", the same rule the Python map and the place
+// search apply. It is applied before the cap, so a filtered map is not the
+// first MaxPins of the unfiltered one with most of them thrown away. Empty
+// means every category.
+func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds, category string) ([]Pin, error) {
 	// A box crossing the antimeridian is two boxes. ST_MakeEnvelope with west
 	// greater than east silently describes the rest of the world instead.
 	envelope := "ST_MakeEnvelope($2, $1, $4, $3, 4326)::geography"
@@ -125,16 +136,18 @@ func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds) ([
 		LEFT JOIN reelpin.user_pin_preferences p
 		       ON p.location_id = l.id AND p.user_id = $5
 		WHERE ST_Intersects(l.point, %[1]s) AND NOT coalesce(p.hidden, false)
+		  AND ($7::text = '' OR coalesce(nullif(trim(v.raw_extraction->>'category'), ''), $8::text) = $7)
 
 		UNION ALL
 
 		SELECT %[3]s
 		FROM reelpin.user_manual_pins m
 		WHERE m.user_id = $5 AND ST_Intersects(m.point, %[1]s)
+		  AND ($7::text = '' OR coalesce(nullif(trim(m.category), ''), $8::text) = $7)
 
 		LIMIT $6`, envelope, contentPinColumns, manualPinColumns)
 
-	args = append(args, userID, MaxPins)
+	args = append(args, userID, MaxPins, category, uncategorised)
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading map pins: %w", err)

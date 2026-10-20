@@ -36,26 +36,79 @@ func NewService(pool *pgxpool.Pool, sender Sender, logger *slog.Logger, now func
 	return &Service{pool: pool, sender: sender, logger: logger, now: now}
 }
 
+// Device is one registration: the token, and what the app said about the
+// build that sent it. The build fields are optional, because an older build
+// sends none of them.
+type Device struct {
+	Token      string
+	Platform   string
+	AppVersion *string
+	AppBuild   *int
+	Timezone   *string
+	Locale     *string
+}
+
 // RegisterToken records a device. The same token arriving again moves it to
 // this user: a shared phone is a real thing, and the newest sign-in owns the
-// device.
-func (s *Service) RegisterToken(ctx context.Context, userID, token, platform string) error {
-	if strings.TrimSpace(token) == "" {
+// device. The build fields are overwritten every time, absent ones included,
+// so a row always describes the build that registered it last.
+func (s *Service) RegisterToken(ctx context.Context, userID string, device Device) error {
+	if strings.TrimSpace(device.Token) == "" {
 		return errors.New("no device token")
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO reelpin.device_push_tokens (user_id, fcm_token, platform, last_seen_at)
-		VALUES ($1, $2, $3, now())
+		INSERT INTO reelpin.device_push_tokens
+			(user_id, fcm_token, platform, app_version, app_build, timezone, locale, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 		ON CONFLICT (fcm_token) DO UPDATE
 		SET user_id = EXCLUDED.user_id,
 		    platform = EXCLUDED.platform,
+		    app_version = EXCLUDED.app_version,
+		    app_build = EXCLUDED.app_build,
+		    timezone = EXCLUDED.timezone,
+		    locale = EXCLUDED.locale,
 		    last_seen_at = now()`,
-		userID, token, platform)
+		userID, device.Token, device.Platform,
+		device.AppVersion, device.AppBuild, device.Timezone, device.Locale)
 	if err != nil {
 		// The token is a credential: it never enters an error or a log line.
 		return fmt.Errorf("registering a device token: %w", err)
 	}
 	return nil
+}
+
+// BuildCount is how many live tokens one platform and build have. AppBuild is
+// nil for tokens whose build never said.
+type BuildCount struct {
+	Platform string
+	AppBuild *int
+	Tokens   int
+}
+
+// LiveBuilds counts the tokens registered or refreshed since a moment, by
+// platform and build: what an operator reads before forcing an update, to see
+// how many devices a cut-off build would strand.
+func (s *Service) LiveBuilds(ctx context.Context, since time.Time) ([]BuildCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT platform, app_build, count(*)::int
+		FROM reelpin.device_push_tokens
+		WHERE last_seen_at >= $1
+		GROUP BY platform, app_build
+		ORDER BY platform, app_build DESC NULLS LAST`, since)
+	if err != nil {
+		return nil, fmt.Errorf("counting live device tokens: %w", err)
+	}
+	defer rows.Close()
+
+	counts := []BuildCount{}
+	for rows.Next() {
+		var count BuildCount
+		if err := rows.Scan(&count.Platform, &count.AppBuild, &count.Tokens); err != nil {
+			return nil, fmt.Errorf("reading a build count: %w", err)
+		}
+		counts = append(counts, count)
+	}
+	return counts, rows.Err()
 }
 
 // DeleteToken removes one of this user's devices. Another user's token is not

@@ -1,0 +1,27 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/map/pins?south=15\u0026west=73\u0026north=16\u0026east=74\u0026category=food_and_drink"
+  },
+  "response": {
+    "pins": [
+      {
+        "address": "Anjuna, Goa",
+        "category": "food_and_drink",
+        "confidence": 0.9,
+        "google_maps_url": null,
+        "google_place_id": null,
+        "id": "66666666-6666-4666-8666-666666666666",
+        "kind": "content",
+        "latitude": 15.5834,
+        "longitude": 73.7407,
+        "name": "Artjuna Cafe",
+        "place_types": [],
+        "reel_id": "22222222-2222-4222-8222-222222222222",
+        "sub_category": "cafes",
+        "subcategory": "cafes"
+      }
+    ]
+  },
+  "status": 200
+}
