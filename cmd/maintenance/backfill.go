@@ -23,15 +23,16 @@ import (
 //
 // --since turns it into a delta: only legacy rows that changed after the mark
 // are read, and the copy is idempotent by primary key. A finished real run
-// logs the mark the next --since should use.
+// logs the mark the next --since should use. The tables Python changes without
+// moving a timestamp are copied whole on every run, delta or not.
 func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Config, args []string) error {
 	flags := flag.NewFlagSet("backfill-legacy", flag.ContinueOnError)
 	execute := flags.Bool("execute", false, "write changes instead of reporting them")
 	batchSize := flags.Int("batch-size", 500, "rows per keyset page")
 	maxRows := flags.Int("max-rows", 0, "stop after this many legacy reels (0 means all)")
 	since := flags.String("since", "", "copy only legacy rows changed after this RFC3339 instant")
-	sourceSchema := flags.String("source-schema", backfill.DefaultSourceSchema,
-		"schema the legacy Python tables are read from")
+	legacySchema := flags.String("legacy-schema", backfill.DefaultLegacySchema,
+		"schema the restored Python tables are read from")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -56,7 +57,7 @@ func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Conf
 		Execute:      *execute,
 		BatchSize:    *batchSize,
 		MaxRows:      *maxRows,
-		SourceSchema: *sourceSchema,
+		LegacySchema: *legacySchema,
 		Since:        mark,
 	})
 
@@ -64,7 +65,7 @@ func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Conf
 	logger.Info("legacy backfill report",
 		"execute", *execute,
 		"version", backfill.Version,
-		"source_schema", *sourceSchema,
+		"legacy_schema", *legacySchema,
 		"since", *since,
 		"reels_scanned", report.ReelsScanned,
 		"unique_content", report.UniqueContent,
@@ -76,7 +77,9 @@ func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Conf
 		"unreadable", report.Unreadable,
 		"blocklisted", report.Blocklisted,
 		"conflicts", report.Conflicts,
-		"conflicts_replaced", report.ConflictsReplaced,
+		"conflicts_merged", report.ConflictsMerged,
+		"locations_copied", report.LocationsCopied,
+		"embeddings_copied", report.EmbeddingsCopied,
 		"failures", report.Failures,
 		"jobs_scanned", report.JobsScanned,
 		"jobs_created", report.JobsCreated,
@@ -117,8 +120,8 @@ func runBackfillVerify(ctx context.Context, logger *slog.Logger, cfg config.Conf
 	flags := flag.NewFlagSet("backfill-verify", flag.ContinueOnError)
 	sample := flags.Int("sample", 100, "carried-over rows per legacy table compared field by field")
 	batchSize := flags.Int("batch-size", 500, "sampled rows read per query")
-	sourceSchema := flags.String("source-schema", backfill.DefaultSourceSchema,
-		"schema the legacy Python tables are read from")
+	legacySchema := flags.String("legacy-schema", backfill.DefaultLegacySchema,
+		"schema the restored Python tables are read from")
 	allowDrift := flags.Bool("allow-drift", false,
 		"report mismatches but exit zero, for checks taken while both apps still write")
 	if err := flags.Parse(args); err != nil {
@@ -135,7 +138,7 @@ func runBackfillVerify(ctx context.Context, logger *slog.Logger, cfg config.Conf
 	report, err := backfill.NewVerifier(pool).Verify(ctx, backfill.VerifyOptions{
 		Sample:       *sample,
 		BatchSize:    *batchSize,
-		SourceSchema: *sourceSchema,
+		LegacySchema: *legacySchema,
 	})
 	if err != nil {
 		return err

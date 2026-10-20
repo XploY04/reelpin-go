@@ -21,8 +21,9 @@ type VerifyOptions struct {
 	Sample int
 	// BatchSize bounds how many sampled rows are read per query.
 	BatchSize int
-	// SourceSchema is where the legacy tables are read from. Empty means public.
-	SourceSchema string
+	// LegacySchema is where the legacy tables are read from. Empty means
+	// DefaultLegacySchema.
+	LegacySchema string
 }
 
 // TableVerification is one legacy table's account of itself. Every row in scope
@@ -213,7 +214,7 @@ func (v *Verifier) Verify(ctx context.Context, options VerifyOptions) (VerifyRep
 	}
 
 	var err error
-	if v.source, err = newSource(options.SourceSchema); err != nil {
+	if v.source, err = newSource(options.LegacySchema); err != nil {
 		return VerifyReport{}, err
 	}
 	if err := v.source.describe(ctx, v.pool); err != nil {
@@ -474,8 +475,8 @@ func (v *Verifier) countSearchAndMap(ctx context.Context, report *VerifyReport) 
 		SELECT
 			(SELECT coalesce(sum((
 				SELECT count(*) FROM jsonb_array_elements(
-					CASE WHEN jsonb_typeof(l.locations) = 'array' THEN l.locations ELSE '[]'::jsonb END) p
-				WHERE jsonb_typeof(p->'latitude') = 'number' AND jsonb_typeof(p->'longitude') = 'number'
+					CASE WHEN jsonb_typeof(l.locations) = 'array' THEN l.locations ELSE '[]'::jsonb END) AS p(entry)
+				WHERE `+locatedEntry+`
 			)), 0) FROM `+sql.legacy+` l`+where+`),
 			(SELECT count(*) FROM `+carried+`
 			 JOIN reelpin.content_locations cl ON cl.content_version_id = c.current_version_id
@@ -542,6 +543,10 @@ type canonicalSave struct {
 	Category        *string
 	// Saves is how many users hold this content.
 	Saves int
+	// MergedAt is the newest created_at of this user's legacy reels of the
+	// same content that went into this save as a conflict instead of becoming
+	// a save of their own. A newer one moved saved_at forward.
+	MergedAt *time.Time
 }
 
 func (v *Verifier) compareReels(ctx context.Context, ids []string, report *SampleReport) error {
@@ -551,11 +556,16 @@ func (v *Verifier) compareReels(ctx context.Context, ids []string, report *Sampl
 		       c.access_scope_hash, v.id::text,
 		       coalesce(v.title, ''), coalesce(v.summary, ''), coalesce(v.transcript, ''),
 		       coalesce(v.extraction_status, ''), v.raw_extraction->>'category',
-		       (SELECT count(*) FROM reelpin.user_saves o WHERE o.content_id = s.content_id)
+		       (SELECT count(*) FROM reelpin.user_saves o WHERE o.content_id = s.content_id),
+		       (SELECT max(m.created_at) FROM `+v.source.table(sourceReels)+` m
+		        JOIN reelpin.backfill_audit a
+		          ON a.backfill_version = $2 AND a.source_table = '`+sourceReels+`'
+		         AND a.source_id = m.id AND a.action = 'skipped_conflict' AND a.content_id = s.content_id
+		        WHERE lower(m.user_id::text) = s.user_id::text)
 		FROM reelpin.user_saves s
 		JOIN reelpin.contents c ON c.id = s.content_id
 		LEFT JOIN reelpin.content_versions v ON v.id = c.current_version_id
-		WHERE s.id = ANY($1::uuid[])`, ids)
+		WHERE s.id = ANY($1::uuid[])`, ids, Version)
 	if err != nil {
 		return fmt.Errorf("reading the canonical saves: %w", err)
 	}
@@ -565,7 +575,7 @@ func (v *Verifier) compareReels(ctx context.Context, ids []string, report *Sampl
 		var save canonicalSave
 		if err := rows.Scan(&id, &save.UserID, &save.SavedAt, &save.Platform, &save.SourceContentID,
 			&save.ScopeHash, &save.VersionID, &save.Title, &save.Summary, &save.Transcript,
-			&save.Status, &save.Category, &save.Saves); err != nil {
+			&save.Status, &save.Category, &save.Saves, &save.MergedAt); err != nil {
 			return fmt.Errorf("reading the canonical saves: %w", err)
 		}
 		found[id] = save
@@ -605,8 +615,14 @@ func (v *Verifier) compareReel(ctx context.Context, legacy reelRow, save canonic
 	}
 	// A legacy row with no created_at was saved at the backfill's clock, which
 	// is not something to compare against.
-	if legacy.CreatedAt != nil && !save.SavedAt.Equal(*legacy.CreatedAt) {
-		report.differ(sourceReels, legacy.ID, "user_saves.saved_at")
+	if legacy.CreatedAt != nil {
+		want := *legacy.CreatedAt
+		if save.MergedAt != nil && save.MergedAt.After(want) {
+			want = *save.MergedAt
+		}
+		if !save.SavedAt.Equal(want) {
+			report.differ(sourceReels, legacy.ID, "user_saves.saved_at")
+		}
 	}
 
 	identity, scopeHash, err := identify(ctx, v.resolver, legacy.URL, legacy.NormalizedURL, legacy.UserID)

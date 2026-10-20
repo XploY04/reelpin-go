@@ -42,6 +42,11 @@ const jobWindow = 60 * 24 * time.Hour
 // to today's standard, and it is not.
 const legacyVersion = "python-legacy"
 
+// legacyEmbeddingModel is what Python embedded reels with when a row does not
+// record its own embedding_model. A vector is only comparable with others from
+// the same model, so the tag travels with it.
+const legacyEmbeddingModel = "gemini-embedding-001"
+
 const (
 	sourceReels = "reels"
 	sourceJobs  = "processing_jobs"
@@ -65,9 +70,9 @@ type Options struct {
 	BatchSize int
 	// MaxRows stops the reel pass early, for a rehearsal on a big table.
 	MaxRows int
-	// SourceSchema is where the legacy tables are read from. Empty means
-	// public, which is where Supabase keeps them.
-	SourceSchema string
+	// LegacySchema is where the legacy tables are read from. Empty means
+	// DefaultLegacySchema.
+	LegacySchema string
 	// Since switches to a delta pass: only legacy rows that changed after it
 	// are read, no resume cursor is read or moved, and every table is
 	// scanned from the start of its keyspace.
@@ -86,12 +91,17 @@ type Report struct {
 	Unreadable        int `json:"unreadable"`
 	Blocklisted       int `json:"blocklisted"`
 	// Conflicts counts legacy reels whose user already had a save of the same
-	// content under another id. The newer of the two is kept; see
-	// resolveConflict. ConflictsReplaced is how many of those the legacy row
-	// won.
-	Conflicts         int `json:"conflicts"`
-	ConflictsReplaced int `json:"conflicts_replaced"`
-	Failures          int `json:"failures"`
+	// content under another id; see resolveConflict. ConflictsMerged is how
+	// many of those were newer and moved the existing save's saved_at.
+	Conflicts       int `json:"conflicts"`
+	ConflictsMerged int `json:"conflicts_merged"`
+	Failures        int `json:"failures"`
+
+	// LocationsCopied and EmbeddingsCopied count content_locations and
+	// content_embeddings rows this run wrote or refreshed from the legacy
+	// reels; see copyReelPlacesAndEmbeddings.
+	LocationsCopied  int `json:"locations_copied"`
+	EmbeddingsCopied int `json:"embeddings_copied"`
 
 	JobsScanned      int `json:"jobs_scanned"`
 	JobsCreated      int `json:"jobs_created"`
@@ -123,9 +133,10 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Backfiller {
 	return &Backfiller{pool: pool, logger: logger, resolver: &sourceidentity.Resolver{}}
 }
 
-// Run copies reels, then jobs, then the wave 1 tables, resuming from the
-// recorded cursor. Jobs run after reels because a job is only copied once its
-// content exists, and reminders, price tracks and hidden pins point at saves.
+// Run copies reels, their places and embeddings, then jobs, then the wave 1
+// tables, resuming from the recorded cursor. Jobs run after reels because a
+// job is only copied once its content exists, and reminders, price tracks and
+// hidden pins point at saves and at the places on them.
 func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if options.BatchSize <= 0 {
 		options.BatchSize = 500
@@ -133,7 +144,7 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	b.seen = map[string]bool{}
 
 	var err error
-	if b.source, err = newSource(options.SourceSchema); err != nil {
+	if b.source, err = newSource(options.LegacySchema); err != nil {
 		return Report{}, err
 	}
 	if err := b.source.describe(ctx, b.pool); err != nil {
@@ -169,6 +180,9 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	// content, which is a decision about the rehearsal, not about the job.
 	if options.MaxRows > 0 && report.ReelsScanned >= options.MaxRows {
 		return report, nil
+	}
+	if err := b.copyReelPlacesAndEmbeddings(ctx, options, &report); err != nil {
+		return report, err
 	}
 	if err := b.copyJobs(ctx, options, &report); err != nil {
 		return report, err
@@ -337,13 +351,17 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		report.ContentVersions++
 	}
 
-	kept, err := b.resolveConflict(ctx, transaction, row, contentID, report)
+	kept, merged, err := b.resolveConflict(ctx, transaction, row, contentID, report)
 	if err != nil {
 		return err
 	}
 	if kept != "" {
+		note := "kept the newer save " + kept
+		if merged {
+			note = "merged into the existing save " + kept
+		}
 		if err := auditTx(ctx, transaction, batch, sourceReels, row.ID, "skipped_conflict",
-			&contentID, &versionID, nil, "kept the newer save "+kept); err != nil {
+			&contentID, &versionID, nil, note); err != nil {
 			return err
 		}
 		return transaction.Commit(ctx)
@@ -379,20 +397,22 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 
 // resolveConflict applies the one conflict rule: when this user already has a
 // save of the same content under another id, from an earlier legacy row or
-// from the new app during the dual run, the newer save is kept and the other
-// is logged. It returns the id of the save that was kept when that is the
-// existing one; an empty id means the legacy row goes in.
+// from the new app during the dual run, the existing save always stays and
+// the legacy row never becomes a second one. It returns the existing save's
+// id, or "" when there is none and the legacy row goes in.
 //
-// Replacing a save deletes it, and what hangs off it goes with it: collection
-// items and reminders cascade, and a job's link to it is cleared. A legacy row
-// with no created_at never wins, because nothing says it is newer.
+// The existing save is never deleted: collection items, reminders and price
+// tracks cascade from it. When the legacy row is newer, its saved_at is
+// written onto the existing save instead, which keeps its id and everything
+// hanging off it, and merged is true. A legacy row with no created_at is never
+// newer, because nothing says it is.
 func (b *Backfiller) resolveConflict(
 	ctx context.Context,
 	tx pgx.Tx,
 	row reelRow,
 	contentID string,
 	report *Report,
-) (string, error) {
+) (string, bool, error) {
 	var existingID string
 	var existingSavedAt time.Time
 	err := tx.QueryRow(ctx, `
@@ -402,34 +422,137 @@ func (b *Backfiller) resolveConflict(
 		row.UserID, contentID,
 	).Scan(&existingID, &existingSavedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("checking for a conflicting save: %w", err)
+		return "", false, fmt.Errorf("checking for a conflicting save: %w", err)
 	}
 
 	report.Conflicts++
 	if row.CreatedAt == nil || !row.CreatedAt.After(existingSavedAt) {
 		b.logger.Info("save conflict: kept the newer save", "kept", existingID, "dropped", row.ID)
-		return existingID, nil
+		return existingID, false, nil
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM reelpin.user_saves WHERE id = $1`, existingID); err != nil {
-		return "", fmt.Errorf("replacing an older save: %w", err)
+	if _, err := tx.Exec(ctx, `UPDATE reelpin.user_saves SET saved_at = $2 WHERE id = $1`,
+		existingID, *row.CreatedAt); err != nil {
+		return "", false, fmt.Errorf("merging a newer legacy save: %w", err)
 	}
-	// The older save may itself have come from a legacy row. Its audit entry
-	// would otherwise claim a save that no longer exists.
-	if _, err := tx.Exec(ctx, `
-		UPDATE reelpin.backfill_audit
-		SET action = 'skipped_conflict', note = $3
-		WHERE backfill_version = $1 AND source_table = '`+sourceReels+`' AND source_id = $2`,
-		Version, existingID, "replaced by the newer save "+row.ID); err != nil {
-		return "", fmt.Errorf("recording the replaced save: %w", err)
-	}
-	report.ConflictsReplaced++
-	b.logger.Info("save conflict: kept the newer save", "kept", row.ID, "dropped", existingID)
-	return "", nil
+	report.ConflictsMerged++
+	b.logger.Info("save conflict: merged the newer legacy save into the existing one",
+		"kept", existingID, "merged", row.ID,
+		"saved_at_was", existingSavedAt, "saved_at", *row.CreatedAt)
+	return existingID, true, nil
 }
+
+// copyReelPlacesAndEmbeddings carries what Python keeps on the reel row beside
+// the extraction: the geocoded places and the embedding. Python writes both
+// after the reel row exists, the embedding at the index step and places again
+// from the geocode backfill, and the row has no updated_at to show it. So this
+// reads every carried reel on every run, --since or not, and writes only what
+// is new or changed.
+//
+// Only versions this backfill built are touched; a version the Go pipeline
+// built has places and an embedding of its own. A dry run executes the same
+// statements and rolls them back.
+func (b *Backfiller) copyReelPlacesAndEmbeddings(ctx context.Context, options Options, report *Report) error {
+	shape := b.source.shape(sourceReels)
+	reels := b.source.table(sourceReels)
+
+	transaction, err := b.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("starting the places and embeddings transaction: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	if shape.has("locations") {
+		tag, err := transaction.Exec(ctx, `
+			WITH chosen AS (`+chosenReels(reels, shape, `l.locations AS value`,
+			`jsonb_typeof(l.locations) = 'array'`)+`)
+			INSERT INTO reelpin.content_locations AS cl
+				(content_version_id, ordinal, name, address, locality, country, point, source)
+			SELECT chosen.version_id, p.ordinal - 1,
+			       coalesce(nullif(btrim(p.entry->>'name'), ''), nullif(btrim(p.entry->>'address'), ''), ''),
+			       nullif(btrim(p.entry->>'address'), ''),
+			       nullif(btrim(p.entry->>'city'), ''),
+			       nullif(btrim(p.entry->>'country'), ''),
+			       ST_MakePoint((p.entry->>'longitude')::float8, (p.entry->>'latitude')::float8)::geography,
+			       'provider'
+			FROM chosen
+			CROSS JOIN LATERAL jsonb_array_elements(chosen.value) WITH ORDINALITY AS p(entry, ordinal)
+			WHERE `+locatedEntry+`
+			ON CONFLICT (content_version_id, ordinal) DO UPDATE SET
+				name = EXCLUDED.name,
+				address = EXCLUDED.address,
+				locality = EXCLUDED.locality,
+				country = EXCLUDED.country,
+				point = EXCLUDED.point
+			WHERE (cl.name, cl.address, cl.locality, cl.country, cl.point::text) IS DISTINCT FROM
+			      (EXCLUDED.name, EXCLUDED.address, EXCLUDED.locality, EXCLUDED.country, EXCLUDED.point::text)`,
+			legacyVersion)
+		if err != nil {
+			return fmt.Errorf("copying legacy reel places: %w", err)
+		}
+		report.LocationsCopied = int(tag.RowsAffected())
+	}
+
+	if shape.has("embedding") {
+		tag, err := transaction.Exec(ctx, `
+			WITH chosen AS (`+chosenReels(reels, shape,
+			`l.embedding::text AS embedding,
+			 coalesce(nullif(btrim((`+shape.col("embedding_model")+`)::text), ''), $2) AS model`,
+			`l.embedding IS NOT NULL`)+`)
+			INSERT INTO reelpin.content_embeddings AS e
+				(content_version_id, embedding, model, dimension, document_version, document_hash)
+			SELECT chosen.version_id, chosen.embedding::public.vector, chosen.model, 768, $1,
+			       md5(chosen.model || '|' || chosen.embedding)
+			FROM chosen
+			ON CONFLICT (content_version_id) DO UPDATE SET
+				embedding = EXCLUDED.embedding,
+				model = EXCLUDED.model,
+				dimension = EXCLUDED.dimension,
+				document_hash = EXCLUDED.document_hash,
+				embedded_at = now()
+			WHERE e.document_version = EXCLUDED.document_version
+			  AND e.document_hash IS DISTINCT FROM EXCLUDED.document_hash`,
+			legacyVersion, legacyEmbeddingModel)
+		if err != nil {
+			return fmt.Errorf("copying legacy reel embeddings: %w", err)
+		}
+		report.EmbeddingsCopied = int(tag.RowsAffected())
+	}
+
+	if !options.Execute {
+		return nil
+	}
+	return transaction.Commit(ctx)
+}
+
+// chosenReels picks, for every content version this backfill built, the one
+// carried legacy reel its places and embedding come from: the reel the version
+// was built from, which shares its created_at, and otherwise the lowest id.
+// Taking every field from one reel keeps a location's ordinal its index in
+// that reel's locations array, which is what a hidden pin's location_index
+// and a reel:{id}:{ordinal} pin id name.
+func chosenReels(reels string, shape tableShape, columns, filter string) string {
+	return `
+		SELECT DISTINCT ON (v.id) v.id AS version_id, ` + columns + `
+		FROM ` + reels + ` l
+		JOIN reelpin.user_saves s ON s.id = l.id
+		JOIN reelpin.contents c ON c.id = s.content_id
+		JOIN reelpin.content_versions v ON v.id = c.current_version_id AND v.processor_version = $1
+		WHERE ` + filter + shape.environmentFilter() + `
+		ORDER BY v.id, (l.created_at IS NOT DISTINCT FROM v.created_at) DESC, l.id`
+}
+
+// locatedEntry is a legacy location the Python map drew a pin for: numeric
+// latitude and longitude, in range. The entry is aliased p.entry. The CASE
+// keeps the casts away from an entry whose coordinates are not numbers.
+const locatedEntry = `CASE
+	WHEN jsonb_typeof(p.entry->'latitude') = 'number' AND jsonb_typeof(p.entry->'longitude') = 'number'
+	THEN (p.entry->>'latitude')::float8 BETWEEN -90 AND 90
+	 AND (p.entry->>'longitude')::float8 BETWEEN -180 AND 180
+	ELSE false END`
 
 // reportOneReel is the dry run: it reads what a real run would read and counts
 // what it would write, without a transaction and without a cursor.

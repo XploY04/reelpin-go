@@ -10,14 +10,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DefaultSourceSchema is where the Python tables live in Supabase itself.
-const DefaultSourceSchema = "public"
+// DefaultLegacySchema is where the rehearsal and the cutover restore the
+// Python tables: a dump of Supabase's public schema, restored into the Go
+// database under this name. See docs/rehearsal.md.
+const DefaultLegacySchema = "legacy"
 
 var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
-// source names the schema the legacy tables are read from. In Supabase that is
-// public; on Neon it is a schema of foreign tables over Supabase, or a restored
-// snapshot, so the same SQL reads either.
+// source names the schema the legacy tables are read from: legacy in the Go
+// database, where a dump of Supabase is restored, or public when reading a
+// restored copy of Supabase itself.
 type source struct {
 	schema string
 	shapes map[string]tableShape
@@ -25,10 +27,10 @@ type source struct {
 
 func newSource(schema string) (source, error) {
 	if schema == "" {
-		schema = DefaultSourceSchema
+		schema = DefaultLegacySchema
 	}
 	if !schemaName.MatchString(schema) {
-		return source{}, fmt.Errorf("source schema %q is not a plain lower-case identifier", schema)
+		return source{}, fmt.Errorf("legacy schema %q is not a plain lower-case identifier", schema)
 	}
 	return source{schema: schema}, nil
 }
@@ -118,7 +120,7 @@ func (s source) shape(table string) tableShape {
 }
 
 // require fails loudly for a table the backfill cannot do without. A wrong
-// --source-schema should stop the run, not report an empty migration.
+// --legacy-schema should stop the run, not report an empty migration.
 func (s source) require(tables ...string) error {
 	for _, table := range tables {
 		if !s.shapes[table].exists {

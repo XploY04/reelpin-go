@@ -30,6 +30,10 @@ const (
 	completedJob = "cccccccc-0000-4000-8000-000000000001"
 	queuedJob    = "cccccccc-0000-4000-8000-000000000002"
 	brokenJob    = "cccccccc-0000-4000-8000-000000000003"
+
+	// publicSchema is where these fixtures keep the Python tables, the way a
+	// restored copy of Supabase holds them, rather than the default legacy.
+	publicSchema = "public"
 )
 
 // legacySchema is the shape the Python service left behind, trimmed to what the
@@ -216,11 +220,11 @@ func TestDryRunIsRepeatableAndWritesNothing(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	first, err := New(pool, quiet()).Run(ctx, Options{})
+	first, err := New(pool, quiet()).Run(ctx, Options{LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("first dry run: %v", err)
 	}
-	second, err := New(pool, quiet()).Run(ctx, Options{})
+	second, err := New(pool, quiet()).Run(ctx, Options{LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("second dry run: %v", err)
 	}
@@ -261,7 +265,7 @@ func TestExecuteIsIdempotentAndDeduplicates(t *testing.T) {
 
 	legacyBefore := legacySnapshot(t, pool)
 
-	first, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	first, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -360,7 +364,7 @@ func TestExecuteIsIdempotentAndDeduplicates(t *testing.T) {
 		t.Fatalf("clearing the cursor: %v", err)
 	}
 
-	second, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	second, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("second execute: %v", err)
 	}
@@ -386,7 +390,7 @@ func TestJobsCopyOnlyWhenUnambiguous(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -457,7 +461,7 @@ func TestResumeContinuesFromTheCursor(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	partial, err := New(pool, quiet()).Run(ctx, Options{Execute: true, BatchSize: 2, MaxRows: 2})
+	partial, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema, BatchSize: 2, MaxRows: 2})
 	if err != nil {
 		t.Fatalf("partial run: %v", err)
 	}
@@ -478,7 +482,7 @@ func TestResumeContinuesFromTheCursor(t *testing.T) {
 		t.Fatalf("cursor = %q, want the second reel", cursor)
 	}
 
-	rest, err := New(pool, quiet()).Run(ctx, Options{Execute: true, BatchSize: 2})
+	rest, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema, BatchSize: 2})
 	if err != nil {
 		t.Fatalf("resumed run: %v", err)
 	}
@@ -516,7 +520,7 @@ func TestABlocklistedSourceIsSkippedNotFatal(t *testing.T) {
 		t.Fatalf("blocklisting the source: %v", err)
 	}
 
-	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true})
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -557,7 +561,7 @@ func TestOnlyOneBackfillRunsAtATime(t *testing.T) {
 	}
 	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, advisoryLockKey)
 
-	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true}); err == nil {
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema}); err == nil {
 		t.Fatal("a second backfill ran while one held the lock")
 	}
 }

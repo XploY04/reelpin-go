@@ -19,6 +19,7 @@ const (
 	olderLegacyReel = "bbbbbbbb-0000-4000-8000-000000000001"
 	placeReel       = "bbbbbbbb-0000-4000-8000-000000000002"
 	newerLegacyReel = "bbbbbbbb-0000-4000-8000-000000000003"
+	lateReel        = "bbbbbbbb-0000-4000-8000-000000000004"
 
 	liveJob = "dddddddd-0000-4000-8000-000000000001"
 	devJob  = "dddddddd-0000-4000-8000-000000000002"
@@ -31,6 +32,7 @@ const (
 	devReminder    = "ffffffff-0000-4000-8000-000000000003"
 	lateReminder   = "ffffffff-0000-4000-8000-000000000004"
 	backdated      = "ffffffff-0000-4000-8000-000000000005"
+	mergedReminder = "ffffffff-0000-4000-8000-000000000006"
 
 	goodTrack = "99999999-0000-4000-8000-000000000001"
 	zeroTrack = "99999999-0000-4000-8000-000000000002"
@@ -39,6 +41,7 @@ const (
 	badTopic       = "88888888-0000-4000-8000-000000000002"
 	sharedConflict = "https://www.instagram.com/reel/SHARED9/"
 	laterConflict  = "https://www.instagram.com/reel/LATER9/"
+	lateEmbedded   = "https://www.instagram.com/reel/EMBED9/"
 )
 
 // scratchLegacySchema is the Python shape of every table the backfill reads,
@@ -66,6 +69,7 @@ CREATE TABLE legacy.reels (
     events JSONB NOT NULL DEFAULT '[]'::jsonb,
     parse_status TEXT NOT NULL DEFAULT 'parsed',
     embedding public.vector(768),
+    embedding_model TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE TABLE legacy.processing_jobs (
@@ -246,11 +250,15 @@ func seedScratch(t *testing.T, pool *pgxpool.Pool) {
 		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
 		VALUES ($1, $2, $3, 'Saved on the old app first', '2026-01-01T00:00:00Z')`,
 		olderLegacyReel, userA, sharedConflict)
+	// Two geocoded places either side of one Python could not locate, so the
+	// second place's ordinal is its array index, 2, not its rank among pins.
 	exec(t, pool, `
-		INSERT INTO legacy.reels (id, user_id, url, title, locations, embedding, created_at)
+		INSERT INTO legacy.reels (id, user_id, url, title, locations, embedding, embedding_model, created_at)
 		VALUES ($1, $2, 'https://www.instagram.com/reel/PLACE9/', 'A place',
-		        '[{"name":"Cafe","city":"Pune","latitude":18.52,"longitude":73.85}]'::jsonb,
-		        array_fill(0.1, ARRAY[768])::public.vector, '2026-02-01T00:00:00Z')`,
+		        '[{"name":"Cafe","city":"Pune","country":"India","latitude":18.52,"longitude":73.85},
+		          {"name":"Somewhere vague"},
+		          {"name":"Fort","address":"Fort Rd","city":"Pune","latitude":18.53,"longitude":73.86}]'::jsonb,
+		        array_fill(0.1, ARRAY[768])::public.vector, 'gemini-embedding-001', '2026-02-01T00:00:00Z')`,
 		placeReel, userA)
 
 	exec(t, pool, `
@@ -276,7 +284,7 @@ func seedScratch(t *testing.T, pool *pgxpool.Pool) {
 		manualPin, userA)
 	exec(t, pool, `
 		INSERT INTO legacy.hidden_reel_map_pins (id, user_id, reel_id, location_index, hidden_at)
-		VALUES ($1, $2, $3, 0, '2026-02-02T00:00:00Z')`, hiddenPin, userA, placeReel)
+		VALUES ($1, $2, $3, 2, '2026-02-02T00:00:00Z')`, hiddenPin, userA, placeReel)
 	exec(t, pool, `
 		INSERT INTO legacy.reminders (id, user_id, reel_id, title, fire_at, environment, created_at)
 		VALUES ($1, $2, $3, 'Visit the cafe', '2027-01-01T09:00:00Z', 'production', '2026-02-03T00:00:00Z'),
@@ -305,7 +313,7 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 	// user, so the legacy row has to lose to it.
 	native := nativeSave(t, pool, userA, sharedConflict, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
 
-	dry, err := New(pool, quiet()).Run(ctx, Options{SourceSchema: scratchSchema})
+	dry, err := New(pool, quiet()).Run(ctx, Options{LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
@@ -325,7 +333,7 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		}
 	}
 
-	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, SourceSchema: scratchSchema})
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -333,9 +341,9 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		t.Fatal("a finished run printed no high-water mark")
 	}
 
-	if report.Conflicts != 1 || report.ConflictsReplaced != 0 {
-		t.Errorf("conflicts=%d replaced=%d, want 1 kept as the newer native save",
-			report.Conflicts, report.ConflictsReplaced)
+	if report.Conflicts != 1 || report.ConflictsMerged != 0 {
+		t.Errorf("conflicts=%d merged=%d, want 1 kept as the newer native save",
+			report.Conflicts, report.ConflictsMerged)
 	}
 	if exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, olderLegacyReel) {
 		t.Error("the older legacy save went in beside the newer native one")
@@ -384,10 +392,44 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		t.Errorf("manual pin latitude=%v tags=%v", latitude, tags)
 	}
 
-	// Nothing has located the reel's places yet, so the hidden pin has
-	// nothing to hide and says so rather than vanishing.
-	if action := auditAction(t, pool, "hidden_reel_map_pins", hiddenPin); action != "skipped_no_location" {
-		t.Errorf("the hidden pin is audited %q, want skipped_no_location", action)
+	// Both geocoded places land at their array index, the vague one does not,
+	// and the embedding keeps the model that made it.
+	version := versionOf(t, pool, placeReel)
+	if report.LocationsCopied != 2 || report.EmbeddingsCopied != 1 {
+		t.Errorf("locations_copied=%d embeddings_copied=%d, want 2 and 1",
+			report.LocationsCopied, report.EmbeddingsCopied)
+	}
+	var ordinals []int32
+	if err := pool.QueryRow(ctx, `
+		SELECT array_agg(ordinal ORDER BY ordinal) FROM reelpin.content_locations
+		WHERE content_version_id = $1`, version).Scan(&ordinals); err != nil {
+		t.Fatalf("reading the places: %v", err)
+	}
+	if len(ordinals) != 2 || ordinals[0] != 0 || ordinals[1] != 2 {
+		t.Errorf("place ordinals = %v, want [0 2]", ordinals)
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.content_locations
+		WHERE content_version_id = $1 AND ordinal = 2 AND name = 'Fort' AND address = 'Fort Rd'
+		  AND locality = 'Pune' AND source = 'provider'
+		  AND abs(ST_Y(point::geometry) - 18.53) < 1e-9 AND abs(ST_X(point::geometry) - 73.86) < 1e-9`,
+		version) {
+		t.Error("the second place did not carry its fields and point")
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.content_embeddings e, legacy.reels l
+		WHERE e.content_version_id = $1 AND l.id = $2
+		  AND e.model = 'gemini-embedding-001' AND e.dimension = 768
+		  AND e.embedding::text = l.embedding::text`, version, placeReel) {
+		t.Error("the embedding did not carry under its model")
+	}
+
+	// The hidden pin names index 2, which now exists.
+	if action := auditAction(t, pool, "hidden_reel_map_pins", hiddenPin); action != "copied" {
+		t.Errorf("the hidden pin is audited %q, want copied", action)
+	}
+	if !hiddenAt(t, pool, version, 2) {
+		t.Error("the hidden pin does not hide the place at ordinal 2")
 	}
 
 	var saveID *string
@@ -396,8 +438,9 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		t.Errorf("the reminder's save = %v (%v), want the reel's save %s", saveID, err, placeReel)
 	}
 	if err := pool.QueryRow(ctx, `SELECT save_id::text FROM reelpin.reminders WHERE id = $1`,
-		orphanReminder).Scan(&saveID); err != nil || saveID != nil {
-		t.Errorf("a reminder on a reel that lost its conflict points at %v (%v), want nothing", saveID, err)
+		orphanReminder).Scan(&saveID); err != nil || saveID == nil || *saveID != native {
+		t.Errorf("a reminder on a reel that lost its conflict points at %v (%v), want the kept save %s",
+			saveID, err, native)
 	}
 	if exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1`, devReminder) {
 		t.Error("a development reminder was copied")
@@ -424,62 +467,80 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		t.Errorf("the click id = %s, want the stable %s", clickID, derived)
 	}
 
-	report1, err := NewVerifier(pool).Verify(ctx, VerifyOptions{SourceSchema: scratchSchema})
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
-	}
-	if report1.OK() {
-		t.Error("the backfill verified while the map and search were missing data")
-	}
-	if report1.Embeddings.Legacy != 1 || report1.Embeddings.Canonical != 0 {
-		t.Errorf("embeddings = %+v, want 1 legacy and 0 canonical", report1.Embeddings)
-	}
-	if report1.MapPoints.LegacyReelPoints != 1 || report1.MapPoints.CanonicalReelPoints != 0 {
-		t.Errorf("map points = %+v, want 1 legacy reel point and none canonical", report1.MapPoints)
-	}
-	if report1.MapPoints.LegacyManualPins != 1 || report1.MapPoints.CanonicalManualPins != 1 {
-		t.Errorf("manual pins = %+v, want 1 and 1", report1.MapPoints)
-	}
-	for _, table := range report1.Tables {
-		if table.Unexplained != 0 || table.CarriedButMissing != 0 || table.UsersDiffering != 0 ||
-			table.Expected != table.Present {
-			t.Errorf("%s does not balance: %+v", table.SourceTable, table)
-		}
-	}
-
-	// Locate the place and embed the reel the way the pipeline would, then
-	// rerun the hidden pins from the start of their table.
-	exec(t, pool, `
-		INSERT INTO reelpin.content_locations (content_version_id, ordinal, name, point, source)
-		SELECT c.current_version_id, 0, 'Cafe', ST_MakePoint(73.85, 18.52)::geography, 'extraction'
-		FROM reelpin.user_saves s JOIN reelpin.contents c ON c.id = s.content_id WHERE s.id = $1`, placeReel)
-	exec(t, pool, `
-		INSERT INTO reelpin.content_embeddings
-			(content_version_id, embedding, model, dimension, document_version, document_hash)
-		SELECT c.current_version_id, array_fill(0.1, ARRAY[768])::public.vector,
-		       'gemini-embedding-001', 768, 'v1', 'hash'
-		FROM reelpin.user_saves s JOIN reelpin.contents c ON c.id = s.content_id WHERE s.id = $1`, placeReel)
-	exec(t, pool, `
-		DELETE FROM reelpin.backfill_progress WHERE source_table = 'hidden_reel_map_pins'`)
-
-	rerun, err := New(pool, quiet()).Run(ctx, Options{Execute: true, SourceSchema: scratchSchema})
-	if err != nil {
-		t.Fatalf("rerun: %v", err)
-	}
-	if rerun.Tables["hidden_reel_map_pins"].Copied != 1 {
-		t.Errorf("hidden pins on rerun = %+v, want 1 copied", rerun.Tables["hidden_reel_map_pins"])
-	}
-	if rerun.Tables["reminders"].Scanned != 0 {
-		t.Errorf("the rerun rescanned reminders: %+v; their cursor is finished", rerun.Tables["reminders"])
-	}
-
-	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{SourceSchema: scratchSchema})
-	if err != nil {
-		t.Fatalf("verifying again: %v", err)
 	}
 	if !verified.OK() {
 		t.Errorf("the completed backfill does not verify: %+v", verified)
 	}
+	if verified.Embeddings.Legacy != 1 || verified.Embeddings.Canonical != 1 {
+		t.Errorf("embeddings = %+v, want 1 and 1", verified.Embeddings)
+	}
+	if verified.MapPoints.LegacyReelPoints != 2 || verified.MapPoints.CanonicalReelPoints != 2 ||
+		verified.MapPoints.LegacyManualPins != 1 || verified.MapPoints.CanonicalManualPins != 1 {
+		t.Errorf("map points = %+v, want 2 reel points and 1 manual pin on each side", verified.MapPoints)
+	}
+
+	// Python re-geocodes a place without moving any stamp. The next run moves
+	// the point and keeps the location row, so the hidden pin still hides it.
+	var locationBefore string
+	if err := pool.QueryRow(ctx, `
+		SELECT id::text FROM reelpin.content_locations WHERE content_version_id = $1 AND ordinal = 2`,
+		version).Scan(&locationBefore); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, pool, `
+		UPDATE legacy.reels SET locations = jsonb_set(locations, '{2,latitude}', '18.54') WHERE id = $1`,
+		placeReel)
+
+	rerun, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	if rerun.LocationsCopied != 1 || rerun.EmbeddingsCopied != 0 {
+		t.Errorf("rerun locations_copied=%d embeddings_copied=%d, want only the moved place",
+			rerun.LocationsCopied, rerun.EmbeddingsCopied)
+	}
+	if rerun.Tables["reminders"].Scanned != 0 {
+		t.Errorf("the rerun rescanned reminders: %+v; their cursor is finished", rerun.Tables["reminders"])
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.content_locations
+		WHERE id = $1 AND abs(ST_Y(point::geometry) - 18.54) < 1e-9`, locationBefore) {
+		t.Error("the re-geocoded place was not updated in place")
+	}
+	if !hiddenAt(t, pool, version, 2) {
+		t.Error("the hidden pin stopped resolving after the place moved")
+	}
+
+	again, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying again: %v", err)
+	}
+	if !again.OK() {
+		t.Errorf("the backfill does not verify after the place moved: %+v", again)
+	}
+}
+
+func versionOf(t *testing.T, pool *pgxpool.Pool, saveID string) string {
+	t.Helper()
+	var version string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT c.current_version_id::text FROM reelpin.user_saves s
+		JOIN reelpin.contents c ON c.id = s.content_id WHERE s.id = $1`, saveID).Scan(&version); err != nil {
+		t.Fatalf("reading the version of save %s: %v", saveID, err)
+	}
+	return version
+}
+
+func hiddenAt(t *testing.T, pool *pgxpool.Pool, version string, ordinal int) bool {
+	t.Helper()
+	return exists(t, pool, `
+		SELECT 1 FROM reelpin.user_pin_preferences p
+		JOIN reelpin.content_locations cl ON cl.id = p.location_id
+		WHERE p.user_id = $1 AND p.hidden AND cl.content_version_id = $2 AND cl.ordinal = $3`,
+		userA, version, ordinal)
 }
 
 func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
@@ -487,7 +548,7 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 	seedScratch(t, pool)
 	ctx := context.Background()
 
-	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, SourceSchema: scratchSchema})
+	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -500,37 +561,79 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// During the dual run: the new app saved a reel, and later the same user
-	// saved it again on the old app. The old app's save is the newer one.
+	// During the dual run: the new app saved a reel and hung a collection
+	// item, a reminder and a price track off it. Later the same user saved it
+	// again on the old app, with a reminder of its own. The old app's save is
+	// the newer one.
 	native := nativeSave(t, pool, userB, laterConflict, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	var collection string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO reelpin.collections (owner_id, name) VALUES ($1, 'Trips') RETURNING id::text`,
+		userB).Scan(&collection); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, pool, `INSERT INTO reelpin.collection_items (collection_id, save_id) VALUES ($1, $2)`,
+		collection, native)
+	exec(t, pool, `
+		INSERT INTO reelpin.reminders (user_id, save_id, title, fire_at)
+		VALUES ($1, $2, 'Set on the new app', '2027-03-01T09:00:00Z')`, userB, native)
+	exec(t, pool, `
+		INSERT INTO reelpin.price_tracks (user_id, save_id, url, target_price)
+		VALUES ($1, $2, 'https://shop.example.com/p/3', 100)`, userB, native)
 	exec(t, pool, `
 		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
-		VALUES ($1, $2, $3, 'Saved again on the old app', now())`, newerLegacyReel, userB, laterConflict)
+		VALUES ($1, $2, $3, 'Saved again on the old app', now()),
+		       ($4, $5, $6, 'Embedded later', now())`,
+		newerLegacyReel, userB, laterConflict, lateReel, userA, lateEmbedded)
 	exec(t, pool, `
-		INSERT INTO legacy.reminders (id, user_id, title, fire_at, created_at)
-		VALUES ($1, $2, 'Set after the snapshot', '2027-02-01T09:00:00Z', now()),
-		       ($3, $2, 'Back-dated', '2027-02-01T09:00:00Z', '2020-01-01T00:00:00Z')`,
-		lateReminder, userA, backdated)
+		INSERT INTO legacy.reminders (id, user_id, reel_id, title, fire_at, created_at)
+		VALUES ($1, $2, NULL, 'Set after the snapshot', '2027-02-01T09:00:00Z', now()),
+		       ($3, $2, NULL, 'Back-dated', '2027-02-01T09:00:00Z', '2020-01-01T00:00:00Z'),
+		       ($4, $5, $6, 'On the old app', '2027-02-01T09:00:00Z', now())`,
+		lateReminder, userA, backdated, mergedReminder, userB, newerLegacyReel)
 	exec(t, pool, `UPDATE legacy.profiles SET full_name = 'New Name', updated_at = now() WHERE id = $1`, userA)
 	exec(t, pool, `UPDATE legacy.price_tracks SET last_price = 2500, last_checked_at = now() WHERE id = $1`,
 		goodTrack)
 	exec(t, pool, `INSERT INTO legacy.link_clicks (target) VALUES ('play')`)
 
-	delta, err := New(pool, quiet()).Run(ctx, Options{Execute: true, SourceSchema: scratchSchema, Since: &mark})
+	delta, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema, Since: &mark})
 	if err != nil {
 		t.Fatalf("delta: %v", err)
 	}
-	if delta.ReelsScanned != 1 {
-		t.Errorf("the delta scanned %d reels, want only the new one", delta.ReelsScanned)
+	if delta.ReelsScanned != 2 {
+		t.Errorf("the delta scanned %d reels, want only the two new ones", delta.ReelsScanned)
 	}
-	if delta.ConflictsReplaced != 1 {
-		t.Errorf("conflicts_replaced = %d, want the newer legacy save to win", delta.ConflictsReplaced)
+	if delta.ConflictsMerged != 1 {
+		t.Errorf("conflicts_merged = %d, want the newer legacy save merged", delta.ConflictsMerged)
 	}
-	if !exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1 AND user_id = $2`, newerLegacyReel, userB) {
-		t.Error("the newer legacy save is missing")
+
+	// The native save stays under its own id with the newer saved_at, and
+	// nothing that hangs off it is lost.
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.user_saves s, legacy.reels l
+		WHERE s.id = $1 AND s.user_id = $2 AND l.id = $3 AND s.saved_at = l.created_at`,
+		native, userB, newerLegacyReel) {
+		t.Error("the native save is gone or did not take the newer legacy saved_at")
 	}
-	if exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, native) {
-		t.Error("the older native save survived beside the newer one")
+	if exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, newerLegacyReel) {
+		t.Error("the newer legacy reel became a second save of the same content")
+	}
+	if action := auditAction(t, pool, sourceReels, newerLegacyReel); action != "skipped_conflict" {
+		t.Errorf("the merged legacy reel is audited %q, want skipped_conflict", action)
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.collection_items WHERE collection_id = $1 AND save_id = $2`,
+		collection, native) {
+		t.Error("the collection item on the native save was lost")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE save_id = $1 AND title = 'Set on the new app'`,
+		native) {
+		t.Error("the reminder on the native save was lost")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.price_tracks WHERE save_id = $1 AND target_price = 100`, native) {
+		t.Error("the price track on the native save was lost")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1 AND save_id = $2`, mergedReminder, native) {
+		t.Error("the merged legacy reel's reminder does not point at the save it merged into")
 	}
 
 	if !exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1`, lateReminder) {
@@ -563,19 +666,20 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 	}
 
 	// The same delta again changes nothing.
-	again, err := New(pool, quiet()).Run(ctx, Options{Execute: true, SourceSchema: scratchSchema, Since: &mark})
+	again, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema, Since: &mark})
 	if err != nil {
 		t.Fatalf("repeated delta: %v", err)
 	}
-	if again.SavesCreated != 0 || again.SavesAlreadyThere != 1 || again.Conflicts != 0 {
+	if again.SavesCreated != 0 || again.SavesAlreadyThere != 1 || again.ConflictsMerged != 0 ||
+		again.LocationsCopied != 0 || again.EmbeddingsCopied != 0 {
 		t.Errorf("the repeated delta did work: %+v", again)
 	}
-	if total := count(t, pool, "reelpin.reminders"); total != 3 {
-		t.Errorf("%d reminders after a repeated delta, want 3", total)
+	if total := count(t, pool, "reelpin.reminders"); total != 5 {
+		t.Errorf("%d reminders after a repeated delta, want 5", total)
 	}
 
 	// The back-dated reminder is what a verify between deltas reports.
-	report, err := NewVerifier(pool).Verify(ctx, VerifyOptions{SourceSchema: scratchSchema})
+	report, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
@@ -587,16 +691,46 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 	if reminders.UsersDiffering != 1 || reminders.UserDiffs[0].UserID != userA {
 		t.Errorf("reminders per user = %+v, want user a one short", reminders.UserDiffs)
 	}
+
+	// Python embeds a reel after its row exists, and a Pro grant is extended
+	// by hand; neither moves a stamp. A delta whose mark is past every row
+	// still carries both.
+	exec(t, pool, `
+		UPDATE legacy.reels SET embedding = array_fill(0.2, ARRAY[768])::public.vector WHERE id = $1`, lateReel)
+	exec(t, pool, `
+		UPDATE legacy.user_entitlements SET pro_expires_at = '2028-01-01T00:00:00Z' WHERE user_id = $1`, userA)
+	future := time.Now().Add(time.Hour)
+	late, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema, Since: &future})
+	if err != nil {
+		t.Fatalf("late delta: %v", err)
+	}
+	if late.ReelsScanned != 0 || late.EmbeddingsCopied != 1 {
+		t.Errorf("late delta reels_scanned=%d embeddings_copied=%d, want 0 and 1",
+			late.ReelsScanned, late.EmbeddingsCopied)
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.content_embeddings WHERE content_version_id = $1 AND model = 'gemini-embedding-001'`,
+		versionOf(t, pool, lateReel)) {
+		t.Error("an embedding Python wrote after the reel was carried did not arrive")
+	}
+	if late.Tables["user_entitlements"].Scanned != 3 {
+		t.Errorf("user_entitlements = %+v, want the whole table read", late.Tables["user_entitlements"])
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.user_entitlements WHERE user_id = $1 AND pro_expires_at = '2028-01-01T00:00:00Z'`,
+		userA) {
+		t.Error("a hand-extended Pro grant did not arrive")
+	}
 }
 
-func TestAMissingSourceSchemaStopsTheRun(t *testing.T) {
+func TestAMissingLegacySchemaStopsTheRun(t *testing.T) {
 	pool := testPool(t)
 	if _, err := New(pool, quiet()).Run(context.Background(),
-		Options{Execute: true, SourceSchema: "nowhere"}); err == nil {
+		Options{Execute: true, LegacySchema: "nowhere"}); err == nil {
 		t.Fatal("a backfill ran against a schema with no legacy tables")
 	}
 	if _, err := New(pool, quiet()).Run(context.Background(),
-		Options{SourceSchema: "public; DROP TABLE x"}); err == nil {
+		Options{LegacySchema: "public; DROP TABLE x"}); err == nil {
 		t.Fatal("a schema name that is not an identifier was accepted")
 	}
 }

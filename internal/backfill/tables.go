@@ -38,7 +38,9 @@ type tableMapping struct {
 	// the canonical row has no single id (a pin preference is keyed by user
 	// and location).
 	canonicalKey string
-	// changed is when a legacy row last moved, for --since.
+	// changed is when a legacy row last moved, for --since. nil means the
+	// table has no stamp Python keeps current, so it is copied whole on every
+	// run, with no cursor and no --since filter.
 	changed func(tableShape) string
 	// insert is the statement, given the source table aliased l and the
 	// predicate that picks one row.
@@ -56,12 +58,15 @@ type tableMapping struct {
 // tracks and hidden pins point at saves the reel pass creates.
 var wave1Mappings = []tableMapping{
 	{
+		// synced_at is set on insert and nothing moves it: Pro is granted and
+		// extended by hand in the SQL editor, so a changed pro_expires_at
+		// carries no stamp. The table is a row per paying user, so it is
+		// copied whole every run.
 		name:         "user_entitlements",
 		key:          "user_id",
 		owner:        "user_id",
 		canonical:    "reelpin.user_entitlements",
 		canonicalKey: "user_id",
-		changed:      func(s tableShape) string { return latest(s, "synced_at") },
 		insert: func(s tableShape, from, where string) string {
 			return `
 				INSERT INTO reelpin.user_entitlements
@@ -262,9 +267,15 @@ var wave1Mappings = []tableMapping{
 }
 
 // The legacy reel id is the save id, so a reminder or price track points at
-// the save its reel became, or at nothing when that reel was never carried.
+// the save its reel became. A reel that lost a save conflict, or merged into
+// the existing save, points at the save its user kept for the same content.
+// One never carried points at nothing.
 const saveJoin = ` LEFT JOIN reelpin.user_saves s
-	ON s.id = l.reel_id AND s.user_id::text = lower(l.user_id::text)`
+	ON s.user_id::text = lower(l.user_id::text)
+	AND (s.id = l.reel_id OR s.content_id = (
+		SELECT a.content_id FROM reelpin.backfill_audit a
+		WHERE a.backfill_version = '` + Version + `' AND a.source_table = '` + sourceReels + `'
+		  AND a.source_id = l.reel_id AND a.action = 'skipped_conflict'))`
 
 const hiddenPinJoin = `
 	JOIN reelpin.user_saves s ON s.id = l.reel_id AND s.user_id::text = lower(l.user_id::text)
@@ -343,8 +354,10 @@ func (b *Backfiller) copyTable(ctx context.Context, options Options, mapping tab
 	statement := mapping.insert(shape, b.source.table(mapping.name)+" l",
 		"l."+mapping.key+" = $1::"+cast+shape.environmentFilter())
 
+	// A table copied whole has no resume point: every run reads all of it.
+	resumable := options.Since == nil && mapping.changed != nil
 	cursor := ""
-	if options.Since == nil {
+	if resumable {
 		if cursor, err = b.cursor(ctx, mapping.name); err != nil {
 			return err
 		}
@@ -358,6 +371,9 @@ func (b *Backfiller) copyTable(ctx context.Context, options Options, mapping tab
 			return err
 		}
 		if len(keys) == 0 {
+			if !resumable {
+				return nil
+			}
 			return b.finishCursor(ctx, options, mapping.name)
 		}
 		batch++
@@ -368,6 +384,9 @@ func (b *Backfiller) copyTable(ctx context.Context, options Options, mapping tab
 			if err := b.copyOneRow(ctx, options, batch, mapping, statement, key, &counts); err != nil {
 				return err
 			}
+		}
+		if !resumable {
+			continue
 		}
 		if err := b.saveCursor(ctx, options, mapping.name, cursor, counts.Scanned); err != nil {
 			return err
@@ -383,13 +402,19 @@ func (b *Backfiller) readKeys(
 	options Options,
 ) ([]legacyKey, error) {
 	key := keyExpression(mapping.name, mapping.key, shape)
+	since, changed := options.Since, "NULL::timestamptz"
+	if mapping.changed == nil {
+		since = nil
+	} else {
+		changed = mapping.changed(shape)
+	}
 	rows, err := b.pool.Query(ctx, `
 		SELECT (`+key+`)::text, l.`+mapping.key+`::text
 		FROM `+b.source.table(mapping.name)+` l
 		WHERE ($1::uuid IS NULL OR `+key+` > $1::uuid)
-		  AND ($3::timestamptz IS NULL OR `+mapping.changed(shape)+` > $3)`+shape.environmentFilter()+`
+		  AND ($3::timestamptz IS NULL OR `+changed+` > $3)`+shape.environmentFilter()+`
 		ORDER BY `+key+`
-		LIMIT $2`, nullableUUID(cursor), options.BatchSize, options.Since)
+		LIMIT $2`, nullableUUID(cursor), options.BatchSize, since)
 	if err != nil {
 		return nil, fmt.Errorf("reading legacy %s: %w", mapping.name, err)
 	}

@@ -11,7 +11,7 @@ import (
 
 func verified(t *testing.T, pool *pgxpool.Pool) VerifyReport {
 	t.Helper()
-	report, err := NewVerifier(pool).Verify(context.Background(), VerifyOptions{})
+	report, err := NewVerifier(pool).Verify(context.Background(), VerifyOptions{LegacySchema: publicSchema})
 	if err != nil {
 		t.Fatalf("verifying: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestVerifyPassesAfterACleanBackfill(t *testing.T) {
 	pool := testPool(t)
 	seed(t, pool)
 
-	if _, err := New(pool, quiet()).Run(context.Background(), Options{Execute: true}); err != nil {
+	if _, err := New(pool, quiet()).Run(context.Background(), Options{Execute: true, LegacySchema: publicSchema}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
@@ -93,7 +93,7 @@ func TestVerifyReportsALegacyRowWithNoAuditEntry(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true}); err != nil {
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestVerifyCatchesAnAlteredCanonicalField(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true}); err != nil {
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if !verified(t, pool).OK() {
@@ -183,7 +183,7 @@ func TestVerifyWritesNothing(t *testing.T) {
 	pool := testPool(t)
 	seed(t, pool)
 
-	if _, err := New(pool, quiet()).Run(context.Background(), Options{Execute: true}); err != nil {
+	if _, err := New(pool, quiet()).Run(context.Background(), Options{Execute: true, LegacySchema: publicSchema}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestVerifyCatchesASaveThatChangedHands(t *testing.T) {
 	seed(t, pool)
 	ctx := context.Background()
 
-	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true}); err != nil {
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: publicSchema}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if !verified(t, pool).OK() {
