@@ -2228,7 +2228,12 @@ components:
       required: [total_reels]
       properties:
         total_reels: { type: integer }
-        total_pinned_locations: { type: integer }
+        total_pinned_locations:
+          type: integer
+          description: >-
+            Pins on the map: the user's saved locations they have not hidden,
+            plus their manual pins. Equals the count GET /map/pins returns for
+            a viewport covering them all.
         total_tags: { type: integer }
         total_categories: { type: integer }
         total_subcategories: { type: integer }

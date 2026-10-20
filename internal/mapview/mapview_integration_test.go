@@ -683,3 +683,35 @@ func TestPinsPastTheCapAreTruncatedAndKeepTheNewest(t *testing.T) {
 		}
 	}
 }
+
+func TestCountPinsMatchesTheMap(t *testing.T) {
+	service, pool := testService(t)
+	ctx := context.Background()
+
+	seedLocation(t, pool, "COUNT1", "Shown cafe", 15.58, 73.74, userA)
+	hidden := seedLocation(t, pool, "COUNT2", "Hidden cafe", 15.59, 73.75, userA)
+	if err := service.HidePin(ctx, userA, hidden, true); err != nil {
+		t.Fatalf("hide: %v", err)
+	}
+	if _, err := service.CreateManualPin(ctx, userA, "My spot", nil, geo.Point{Latitude: 15.6, Longitude: 73.76}); err != nil {
+		t.Fatalf("manual pin: %v", err)
+	}
+
+	got, err := service.CountPins(ctx, userA)
+	if err != nil {
+		t.Fatalf("CountPins: %v", err)
+	}
+	bounds, _ := geo.NewBounds(15.0, 73.0, 16.0, 74.0)
+	pins, _, err := service.Pins(ctx, userA, bounds, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 2 || got != len(pins) {
+		t.Fatalf("CountPins = %d, map shows %d, want 2", got, len(pins))
+	}
+
+	other, err := service.CountPins(ctx, userB)
+	if err != nil || other != 0 {
+		t.Fatalf("another user's count = %d, %v; want 0", other, err)
+	}
+}

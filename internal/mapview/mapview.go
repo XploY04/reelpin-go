@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/geo"
+	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -171,6 +172,51 @@ func (s *Service) Pins(ctx context.Context, userID string, bounds geo.Bounds, ca
 		return pins[:MaxPins], true, nil
 	}
 	return pins, false, nil
+}
+
+// CountPins is how many pins Pins would return for this user with no viewport:
+// visible content locations plus manual pins. The library stats report it, so
+// the number on the profile is the number on the map.
+func (s *Service) CountPins(ctx context.Context, userID string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*)
+		   FROM reelpin.content_locations l
+		   JOIN reelpin.contents c ON c.current_version_id = l.content_version_id
+		   JOIN reelpin.user_saves s ON s.content_id = c.id AND s.user_id = $1
+		   LEFT JOIN reelpin.user_pin_preferences p
+		          ON p.location_id = l.id AND p.user_id = $1
+		   WHERE NOT coalesce(p.hidden, false))
+		  + (SELECT count(*) FROM reelpin.user_manual_pins m WHERE m.user_id = $1)`,
+		userID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting map pins: %w", err)
+	}
+	return count, nil
+}
+
+// PinCounted answers library stats from a reader, replacing its pinned
+// location count with the map's own.
+type PinCounted struct {
+	reels.ReelReader
+	pins *Service
+}
+
+func WithPinCount(reader reels.ReelReader, pins *Service) PinCounted {
+	return PinCounted{ReelReader: reader, pins: pins}
+}
+
+func (p PinCounted) Stats(ctx context.Context, userID string) (reels.LibraryStats, error) {
+	stats, err := p.ReelReader.Stats(ctx, userID)
+	if err != nil {
+		return reels.LibraryStats{}, err
+	}
+	stats.TotalPinnedLocations, err = p.pins.CountPins(ctx, userID)
+	if err != nil {
+		return reels.LibraryStats{}, err
+	}
+	return stats, nil
 }
 
 // Nearby orders this user's pins by distance from a point. The ordering is done

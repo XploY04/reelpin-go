@@ -215,7 +215,7 @@ func run(logger *slog.Logger) error {
 	api, err := httpapi.New(httpapi.Deps{
 		DB:             pool,
 		Auth:           verifier,
-		Reels:          readcache.CachedReels(postgres.NewReels(pool), cache),
+		Reels:          readcache.CachedReels(mapview.WithPinCount(postgres.NewReels(pool), mapService), cache),
 		Jobs:           readcache.CachedJobs(postgres.NewCombinedJobs(pool), cache),
 		Entitlements:   entitlements.NewCache(postgres.NewEntitlements(pool), time.Minute, time.Now, logger),
 		Enqueue:        enqueue.New(submissions, resolver, optionalGate(gate)),
