@@ -81,8 +81,9 @@ Nested `AGENTS.md` files exist where the rules differ: `cmd/`, `internal/`,
   Supabase projects, Redis instances and RabbitMQ virtual hosts. Do not add an
   `environment` column to compensate for shared infrastructure.
 - **The real domain is `reelpin.in`.** Some code and docs still say `reelpin.app`.
-- **Reel list queries never select `transcript`.** Only `GET /reels/{id}` does.
-  Adding it to the list query is a silent payload and cost regression.
+- **Reel list queries never select `transcript`.** Only `GET /reels/{id}` and a
+  detailed collection page do; see `docs/api-contract.md`. Adding it to the
+  list or search query is a silent payload and cost regression.
 - **A test that calls `t.Fatal` while holding an open transaction hangs the whole
   package** until the timeout: the per-test database cannot be dropped while a
   connection holds it. Roll back first, then fail.
