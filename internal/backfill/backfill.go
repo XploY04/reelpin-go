@@ -53,10 +53,10 @@ const (
 	sourceCache = "processing_cache"
 )
 
-// deltaOverlap is subtracted from the high-water mark a run prints. A legacy
-// row stamped just before the mark can commit just after the pass read past
-// it, and Supabase and Neon keep different clocks. Copies are idempotent, so
-// reading a few minutes twice costs nothing.
+// deltaOverlap is subtracted from the dump time to make the high-water mark a
+// run prints. A legacy row stamped just before the dump can commit just after
+// the dump's snapshot was taken, and so be missing from it. Copies are
+// idempotent, so reading a few minutes twice costs nothing.
 const deltaOverlap = 5 * time.Minute
 
 // blocklistViolation is the SQLSTATE the blocklist trigger raises. A purged
@@ -75,8 +75,21 @@ type Options struct {
 	LegacySchema string
 	// Since switches to a delta pass: only legacy rows that changed after it
 	// are read, no resume cursor is read or moved, and every table is
-	// scanned from the start of its keyspace.
+	// scanned from the start of its keyspace. A delta also leaves alone every
+	// row owned by a user in reelpin.user_migrations: Go has served them, so
+	// their Go rows are theirs to change and their Python rows are frozen.
 	Since *time.Time
+	// DumpedAt is when the dump the legacy schema was restored from was taken,
+	// read off Supabase's clock just before pg_dump. The next delta's mark is
+	// derived from it and from nothing else: a row Python wrote after the dump
+	// is not in this restore however long the restore took. A real run and
+	// every delta need it.
+	DumpedAt *time.Time
+	// PropagateDeletes makes a delta delete the canonical rows it carried for
+	// users not in reelpin.user_migrations whose legacy row is gone. It is for
+	// the final delta only, with Python stopped: while Python still runs, a
+	// user can move between the dump and the delete.
+	PropagateDeletes bool
 }
 
 // Report counts what happened. It carries no content and no user data.
@@ -111,8 +124,15 @@ type Report struct {
 
 	Tables map[string]TableReport `json:"tables"`
 
-	// HighWaterMark is what the next --since should be. Only a real run that
-	// finished sets it.
+	// MigratedUsers is how many users Go has served. A delta leaves their rows
+	// alone.
+	MigratedUsers int `json:"migrated_users"`
+	// Deleted counts, per legacy table, the canonical rows --propagate-deletes
+	// removed because their legacy row is gone.
+	Deleted map[string]int `json:"deleted"`
+
+	// HighWaterMark is what the next --since should be: the dump time less
+	// deltaOverlap. Only a real run that finished sets it.
 	HighWaterMark *time.Time `json:"high_water_mark,omitempty"`
 }
 
@@ -141,6 +161,9 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if options.BatchSize <= 0 {
 		options.BatchSize = 500
 	}
+	if err := options.validate(); err != nil {
+		return Report{}, err
+	}
 	b.seen = map[string]bool{}
 
 	var err error
@@ -160,18 +183,11 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	}
 	defer release()
 
-	// Taken before anything is read, so every row this run could have missed
-	// is after it. A snapshot resumed from a cursor started when its first
-	// attempt did: rows written behind the cursor since then were never read.
-	var started time.Time
-	if err := b.pool.QueryRow(ctx, `
-		SELECT CASE WHEN $2 THEN now() ELSE least(now(), (
-			SELECT min(created_at) FROM reelpin.backfill_progress WHERE backfill_version = $1))
-		END`, Version, options.Since != nil).Scan(&started); err != nil {
-		return Report{}, fmt.Errorf("reading the database clock: %w", err)
-	}
-
 	report := Report{Tables: map[string]TableReport{}}
+	if err := b.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.user_migrations`).
+		Scan(&report.MigratedUsers); err != nil {
+		return report, fmt.Errorf("counting the users Go has served: %w", err)
+	}
 	if err := b.backfillReels(ctx, options, &report); err != nil {
 		return report, err
 	}
@@ -192,12 +208,47 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 			return report, err
 		}
 	}
+	if options.PropagateDeletes {
+		if err := b.propagateDeletes(ctx, options, &report); err != nil {
+			return report, err
+		}
+	}
 
 	if options.Execute {
-		mark := started.Add(-deltaOverlap)
+		mark := options.DumpedAt.Add(-deltaOverlap)
 		report.HighWaterMark = &mark
 	}
 	return report, nil
+}
+
+func (o Options) validate() error {
+	if (o.Execute || o.Since != nil) && o.DumpedAt == nil {
+		return errors.New("a real run or a delta needs the time the legacy dump was taken")
+	}
+	// A mark at or after the dump reads nothing from it, and the mark this
+	// run prints would then skip every row written in between.
+	if o.Since != nil && !o.Since.Before(*o.DumpedAt) {
+		return fmt.Errorf("the delta mark %s is not before the dump time %s",
+			o.Since.UTC().Format(time.RFC3339), o.DumpedAt.UTC().Format(time.RFC3339))
+	}
+	if o.PropagateDeletes && o.Since == nil {
+		return errors.New("deletes are propagated by the final delta only, which needs a mark")
+	}
+	return nil
+}
+
+// skipMigrated is the predicate a delta adds to a per-user legacy table, over
+// the legacy row l and its owner column. A snapshot copies everyone.
+func (o Options) skipMigrated(owner string) string {
+	if o.Since == nil || owner == "" {
+		return ""
+	}
+	return ` AND NOT ` + migrated(owner)
+}
+
+// migrated is whether the owner of the legacy row l has been served by Go.
+func migrated(owner string) string {
+	return `EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id::text = lower(l.` + owner + `::text))`
 }
 
 func (b *Backfiller) lock(ctx context.Context) (func(), error) {
@@ -630,7 +681,8 @@ func (b *Backfiller) readReels(ctx context.Context, cursor string, options Optio
 		SELECT `+reelColumns+`
 		FROM `+b.source.table(sourceReels)+` l
 		WHERE ($1::uuid IS NULL OR l.id > $1::uuid)
-		  AND ($3::timestamptz IS NULL OR `+shape.changed()+` > $3)`+shape.environmentFilter()+`
+		  AND ($3::timestamptz IS NULL OR `+shape.changed()+` > $3)`+shape.environmentFilter()+
+		options.skipMigrated("user_id")+`
 		ORDER BY l.id
 		LIMIT $2`, nullableUUID(cursor), options.BatchSize, options.Since)
 	if err != nil {

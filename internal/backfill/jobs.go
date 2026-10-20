@@ -264,7 +264,8 @@ func (b *Backfiller) readJobs(ctx context.Context, cursor string, cutoff time.Ti
 		       l.attempt_count, l.max_attempts, l.created_at, l.completed_at
 		FROM `+b.source.table(sourceJobs)+` l
 		WHERE ($1::uuid IS NULL OR l.id > $1::uuid) AND l.created_at >= $2
-		  AND ($4::timestamptz IS NULL OR `+shape.changed()+` > $4)`+shape.environmentFilter()+`
+		  AND ($4::timestamptz IS NULL OR `+shape.changed()+` > $4)`+shape.environmentFilter()+
+		options.skipMigrated("user_id")+`
 		ORDER BY l.id
 		LIMIT $3`,
 		nullableUUID(cursor), cutoff, options.BatchSize, options.Since)

@@ -37,6 +37,10 @@ const (
 	goodTrack = "99999999-0000-4000-8000-000000000001"
 	zeroTrack = "99999999-0000-4000-8000-000000000002"
 
+	dualReel     = "bbbbbbbb-0000-4000-8000-000000000005"
+	frozenReel   = "bbbbbbbb-0000-4000-8000-000000000006"
+	dualReminder = "ffffffff-0000-4000-8000-000000000007"
+
 	goodFeedback   = "88888888-0000-4000-8000-000000000001"
 	badTopic       = "88888888-0000-4000-8000-000000000002"
 	sharedConflict = "https://www.instagram.com/reel/SHARED9/"
@@ -333,7 +337,7 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		}
 	}
 
-	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema})
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -477,6 +481,10 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 	if verified.Embeddings.Legacy != 1 || verified.Embeddings.Canonical != 1 {
 		t.Errorf("embeddings = %+v, want 1 and 1", verified.Embeddings)
 	}
+	if len(verified.Embeddings.Models) != 1 || verified.Embeddings.Models["gemini-embedding-001"] != 1 {
+		t.Errorf("embedding models = %v, want the one carried vector under gemini-embedding-001",
+			verified.Embeddings.Models)
+	}
 	if verified.MapPoints.LegacyReelPoints != 2 || verified.MapPoints.CanonicalReelPoints != 2 ||
 		verified.MapPoints.LegacyManualPins != 1 || verified.MapPoints.CanonicalManualPins != 1 {
 		t.Errorf("map points = %+v, want 2 reel points and 1 manual pin on each side", verified.MapPoints)
@@ -494,7 +502,7 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 		UPDATE legacy.reels SET locations = jsonb_set(locations, '{2,latitude}', '18.54') WHERE id = $1`,
 		placeReel)
 
-	rerun, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema})
+	rerun, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("rerun: %v", err)
 	}
@@ -548,7 +556,7 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 	seedScratch(t, pool)
 	ctx := context.Background()
 
-	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema})
+	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
@@ -596,7 +604,7 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 		goodTrack)
 	exec(t, pool, `INSERT INTO legacy.link_clicks (target) VALUES ('play')`)
 
-	delta, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema, Since: &mark})
+	delta, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: &mark})
 	if err != nil {
 		t.Fatalf("delta: %v", err)
 	}
@@ -666,7 +674,7 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 	}
 
 	// The same delta again changes nothing.
-	again, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema, Since: &mark})
+	again, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: &mark})
 	if err != nil {
 		t.Fatalf("repeated delta: %v", err)
 	}
@@ -700,7 +708,8 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 	exec(t, pool, `
 		UPDATE legacy.user_entitlements SET pro_expires_at = '2028-01-01T00:00:00Z' WHERE user_id = $1`, userA)
 	future := time.Now().Add(time.Hour)
-	late, err := New(pool, quiet()).Run(ctx, Options{Execute: true, LegacySchema: scratchSchema, Since: &future})
+	dumpedLater := future.Add(time.Hour)
+	late, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: &dumpedLater, LegacySchema: scratchSchema, Since: &future})
 	if err != nil {
 		t.Fatalf("late delta: %v", err)
 	}
@@ -726,11 +735,163 @@ func TestSinceCopiesOnlyNewerRowsAndKeepsTheNewerSave(t *testing.T) {
 func TestAMissingLegacySchemaStopsTheRun(t *testing.T) {
 	pool := testPool(t)
 	if _, err := New(pool, quiet()).Run(context.Background(),
-		Options{Execute: true, LegacySchema: "nowhere"}); err == nil {
+		Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: "nowhere"}); err == nil {
 		t.Fatal("a backfill ran against a schema with no legacy tables")
 	}
 	if _, err := New(pool, quiet()).Run(context.Background(),
 		Options{LegacySchema: "public; DROP TABLE x"}); err == nil {
 		t.Fatal("a schema name that is not an identifier was accepted")
+	}
+}
+
+// During the dual run user a has moved to the new app and user b has not. A
+// delta has to leave everything of user a's alone, even what the Python worker
+// still touches, while carrying user b's changes in full. The final delta
+// then carries user b's deletions and none for user a.
+func TestDeltasLeaveUsersGoHasServedAlone(t *testing.T) {
+	pool := testPool(t)
+	seedScratch(t, pool)
+	ctx := context.Background()
+
+	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	mark := *snapshot.HighWaterMark
+
+	// User a opens the new app and changes the reminder there. The Python
+	// worker still fires its frozen copy, and the daily price check still
+	// writes the frozen track.
+	exec(t, pool, `INSERT INTO reelpin.user_migrations (user_id) VALUES ($1)`, userA)
+	exec(t, pool, `UPDATE reelpin.reminders SET title = 'Moved on the new app' WHERE id = $1`, placeReminder)
+	exec(t, pool, `UPDATE legacy.reminders SET status = 'sent', sent_at = now() WHERE id = $1`, placeReminder)
+	exec(t, pool, `UPDATE legacy.price_tracks SET last_price = 1, last_checked_at = now() WHERE id = $1`, goodTrack)
+	exec(t, pool, `
+		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
+		VALUES ($1, $2, 'https://www.instagram.com/reel/FROZEN9/', 'Saved on a stale install', now()),
+		       ($3, $4, 'https://www.instagram.com/reel/DUAL9/', 'Still on the old app', now())`,
+		frozenReel, userA, dualReel, userB)
+	exec(t, pool, `
+		INSERT INTO legacy.reminders (id, user_id, reel_id, title, fire_at, created_at)
+		VALUES ($1, $2, NULL, 'Set on the old app', '2027-02-01T09:00:00Z', now())`, dualReminder, userB)
+
+	delta, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: &mark,
+	})
+	if err != nil {
+		t.Fatalf("delta: %v", err)
+	}
+	if delta.MigratedUsers != 1 {
+		t.Errorf("migrated_users = %d, want 1", delta.MigratedUsers)
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.reminders
+		WHERE id = $1 AND title = 'Moved on the new app' AND status = 'pending' AND sent_at IS NULL`,
+		placeReminder) {
+		t.Error("the Python worker's sent_at bump overwrote the reminder user a changed in Go")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.price_tracks WHERE id = $1 AND last_price IS NULL`, goodTrack) {
+		t.Error("the frozen legacy price check overwrote user a's track")
+	}
+	if exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, frozenReel) {
+		t.Error("a legacy save of a user Go has served was carried")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1 AND user_id = $2`, dualReel, userB) {
+		t.Error("user b's new legacy save was not carried")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1 AND user_id = $2`, dualReminder, userB) {
+		t.Error("user b's new legacy reminder was not carried")
+	}
+
+	// The final delta, with Python stopped. User b deleted a save and a
+	// reminder; user a's legacy rows are gone too, which must change nothing
+	// in Go.
+	exec(t, pool, `DELETE FROM legacy.reels WHERE id IN ($1, $2)`, dualReel, placeReel)
+	exec(t, pool, `DELETE FROM legacy.reminders WHERE id = $1`, dualReminder)
+	exec(t, pool, `DELETE FROM legacy.price_tracks WHERE id = $1`, goodTrack)
+	exec(t, pool, `DELETE FROM legacy.hidden_reel_map_pins WHERE id = $1`, hiddenPin)
+
+	final, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: delta.HighWaterMark,
+		PropagateDeletes: true,
+	})
+	if err != nil {
+		t.Fatalf("final delta: %v", err)
+	}
+	if final.Deleted["reels"] != 1 || final.Deleted["reminders"] != 1 || final.Deleted["price_tracks"] != 0 ||
+		final.Deleted["hidden_reel_map_pins"] != 0 {
+		t.Errorf("deleted = %v, want user b's save and reminder only", final.Deleted)
+	}
+	if exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, dualReel) {
+		t.Error("user b's save deleted in Python survived the final delta")
+	}
+	if exists(t, pool, `SELECT 1 FROM reelpin.reminders WHERE id = $1`, dualReminder) {
+		t.Error("user b's reminder deleted in Python survived the final delta")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1`, placeReel) {
+		t.Error("the final delta deleted a save of a user Go has served")
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.price_tracks WHERE id = $1`, goodTrack) {
+		t.Error("the final delta deleted a price track of a user Go has served")
+	}
+	if !hiddenAt(t, pool, versionOf(t, pool, placeReel), 2) {
+		t.Error("the final delta unhid a pin of a user Go has served")
+	}
+
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !verified.OK() {
+		t.Errorf("the final delta does not verify: %+v", verified)
+	}
+	if reminders := tableOf(t, verified, "reminders"); reminders.Migrated != 2 {
+		t.Errorf("reminders migrated = %d, want user a's two legacy reminders", reminders.Migrated)
+	}
+}
+
+// A user still on Python who unhid a pin there gets it back on the final
+// delta. The preference has no id of its own to look the legacy row up by.
+func TestTheFinalDeltaUnhidesAPinUnhiddenInPython(t *testing.T) {
+	pool := testPool(t)
+	seedScratch(t, pool)
+	ctx := context.Background()
+
+	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	exec(t, pool, `DELETE FROM legacy.hidden_reel_map_pins WHERE id = $1`, hiddenPin)
+
+	dry, err := New(pool, quiet()).Run(ctx, Options{
+		DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: snapshot.HighWaterMark, PropagateDeletes: true,
+	})
+	if err != nil {
+		t.Fatalf("dry final delta: %v", err)
+	}
+	if dry.Deleted["hidden_reel_map_pins"] != 1 || !hiddenAt(t, pool, versionOf(t, pool, placeReel), 2) {
+		t.Errorf("a dry run deleted = %v and must change nothing", dry.Deleted)
+	}
+
+	final, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: snapshot.HighWaterMark,
+		PropagateDeletes: true,
+	})
+	if err != nil {
+		t.Fatalf("final delta: %v", err)
+	}
+	if final.Deleted["hidden_reel_map_pins"] != 1 || hiddenAt(t, pool, versionOf(t, pool, placeReel), 2) {
+		t.Errorf("deleted = %v, want the pin unhidden", final.Deleted)
+	}
+	if action := auditAction(t, pool, "hidden_reel_map_pins", hiddenPin); action != deletedInLegacy {
+		t.Errorf("the unhidden pin is audited %q, want %s", action, deletedInLegacy)
+	}
+
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !verified.OK() {
+		t.Errorf("the final delta does not verify: %+v", verified)
 	}
 }

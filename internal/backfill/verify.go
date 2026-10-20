@@ -59,6 +59,10 @@ type TableVerification struct {
 	// CanonicalTotal is every row in the canonical table, including the ones
 	// the new app wrote itself. It is context, not a check.
 	CanonicalTotal int `json:"canonical_total"`
+	// Migrated is the legacy rows owned by users Go has served. They are left
+	// out of every other count: those users change their rows in Go now, and
+	// the deltas no longer carry their legacy rows.
+	Migrated int `json:"migrated"`
 	// UsersDiffering counts users whose Expected and Present differ, and
 	// UserDiffs names the first of them.
 	UsersDiffering int        `json:"users_differing"`
@@ -104,6 +108,10 @@ type EmbeddingCoverage struct {
 	Measured  bool `json:"measured"`
 	Legacy    int  `json:"legacy"`
 	Canonical int  `json:"canonical"`
+	// Models splits Canonical by the model each vector was made with. Search
+	// only compares a query with vectors from the configured EMBEDDING_MODEL,
+	// so a carried vector under any other model is invisible to it.
+	Models map[string]int `json:"models"`
 }
 
 // MapPoints counts what the map draws on each side: the located places on
@@ -281,13 +289,17 @@ func (v *Verifier) scope(source legacySource) any {
 // predicates builds the SQL fragments one table is counted with. Each is a
 // predicate over the legacy row l or the audit row a.
 type predicates struct {
-	legacy    string
-	scope     string
-	key       string
-	unaudited string
-	skipped   string
-	missing   string
-	owned     string
+	legacy string
+	scope  string
+	// migrated is whether a user Go has served owns the legacy row, and
+	// migratedScope is the rows scope leaves out for that reason.
+	migrated      string
+	migratedScope string
+	key           string
+	unaudited     string
+	skipped       string
+	missing       string
+	owned         string
 }
 
 func (v *Verifier) predicates(source legacySource) predicates {
@@ -303,6 +315,12 @@ func (v *Verifier) predicates(source legacySource) predicates {
 		built.scope = scopeClause
 	}
 	built.scope += shape.environmentFilter()
+	built.migratedScope = ` false`
+	if source.owner != "" {
+		built.migrated = migrated(source.owner)
+		built.migratedScope = built.scope + ` AND ` + built.migrated
+		built.scope += ` AND NOT ` + built.migrated
+	}
 	audited := `SELECT 1 FROM reelpin.backfill_audit a
 			WHERE a.backfill_version = $1 AND a.source_table = '` + source.name + `'
 			  AND a.source_id = ` + built.key
@@ -312,13 +330,17 @@ func (v *Verifier) predicates(source legacySource) predicates {
 	if source.canonicalKey != "" {
 		built.missing = `NOT EXISTS (SELECT 1 FROM ` + source.canonical + ` c
 			WHERE c.` + source.canonicalKey + ` = a.source_id)`
+		if built.migrated != "" {
+			built.missing += ` AND NOT EXISTS (SELECT 1 FROM ` + built.legacy + ` l
+				WHERE ` + built.key + ` = a.source_id AND ` + built.migrated + `)`
+		}
 	}
 
 	switch {
 	case source.owned != "":
 		built.owned = source.owned
 		built.missing = `NOT EXISTS (SELECT 1 FROM ` + built.legacy + ` l
-			WHERE ` + built.key + ` = a.source_id AND ` + source.owned + `)`
+			WHERE ` + built.key + ` = a.source_id AND (` + source.owned + ` OR ` + built.migrated + `))`
 	case source.owner != "":
 		built.owned = `EXISTS (SELECT 1 FROM ` + source.canonical + ` c
 			WHERE c.` + source.canonicalKey + ` = ` + built.key + `
@@ -345,10 +367,11 @@ func (v *Verifier) countTable(ctx context.Context, source legacySource, options 
 			(SELECT count(*) FROM reelpin.backfill_audit a WHERE `+missing+`),
 			(SELECT count(*) FROM `+sql.legacy+` l WHERE`+sql.scope+` AND NOT `+sql.skipped+`),
 			(SELECT count(*) FROM `+sql.legacy+` l WHERE`+sql.scope+` AND NOT `+sql.skipped+` AND `+sql.owned+`),
-			(SELECT count(*) FROM `+source.canonical+`)`,
+			(SELECT count(*) FROM `+source.canonical+`),
+			(SELECT count(*) FROM `+sql.legacy+` l WHERE`+sql.migratedScope+`)`,
 		Version, cutoff,
 	).Scan(&counted.InScope, &counted.Unexplained, &counted.CarriedButMissing,
-		&counted.Expected, &counted.Present, &counted.CanonicalTotal); err != nil {
+		&counted.Expected, &counted.Present, &counted.CanonicalTotal, &counted.Migrated); err != nil {
 		return TableVerification{}, fmt.Errorf("counting %s: %w", source.name, err)
 	}
 
@@ -466,6 +489,9 @@ func (v *Verifier) countSearchAndMap(ctx context.Context, report *VerifyReport) 
 		).Scan(&report.Embeddings.Legacy, &report.Embeddings.Canonical); err != nil {
 			return fmt.Errorf("counting embedding coverage: %w", err)
 		}
+		if err := v.embeddingModels(ctx, carried, where, report); err != nil {
+			return err
+		}
 	}
 
 	if !shape.has("locations") {
@@ -486,6 +512,33 @@ func (v *Verifier) countSearchAndMap(ctx context.Context, report *VerifyReport) 
 		return fmt.Errorf("counting map points: %w", err)
 	}
 	return nil
+}
+
+// embeddingModels names the model behind every vector Canonical counted, so a
+// carried model the hosts are not configured to search with shows up here
+// rather than as search quietly returning nothing.
+func (v *Verifier) embeddingModels(ctx context.Context, carried, where string, report *VerifyReport) error {
+	rows, err := v.pool.Query(ctx, `
+		SELECT e.model, count(*) FROM `+carried+`
+		JOIN reelpin.content_embeddings e
+		  ON e.content_version_id = c.current_version_id AND e.embedding IS NOT NULL
+		`+where+` AND l.embedding IS NOT NULL
+		GROUP BY e.model`, Version, nil)
+	if err != nil {
+		return fmt.Errorf("counting embedding models: %w", err)
+	}
+	defer rows.Close()
+
+	report.Embeddings.Models = map[string]int{}
+	for rows.Next() {
+		var model string
+		var total int
+		if err := rows.Scan(&model, &total); err != nil {
+			return fmt.Errorf("counting embedding models: %w", err)
+		}
+		report.Embeddings.Models[model] = total
+	}
+	return rows.Err()
 }
 
 func (v *Verifier) ids(ctx context.Context, statement string, args ...any) ([]string, error) {
@@ -511,13 +564,15 @@ func (v *Verifier) ids(ctx context.Context, statement string, args ...any) ([]st
 // to compare the same rows, or a report cannot be read against the one before
 // it that found the problem. Ordering by the id itself would be deterministic
 // too, but it takes one contiguous stretch of the keyspace, and the sample is
-// worth more spread across the table.
+// worth more spread across the table. A user Go has served may have changed
+// their row since it was carried, so theirs are not sampled.
 func (v *Verifier) sampleIDs(ctx context.Context, source legacySource, limit int) ([]string, error) {
 	return v.ids(ctx, `
 		SELECT a.source_id::text FROM reelpin.backfill_audit a
 		JOIN `+source.canonical+` c ON c.id = a.source_id
 		WHERE a.backfill_version = $1 AND a.source_table = '`+source.name+`'
 		  AND a.action = '`+source.carried+`'
+		  AND NOT EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id = c.user_id)
 		ORDER BY md5(a.source_id::text) LIMIT $2`, Version, limit)
 }
 

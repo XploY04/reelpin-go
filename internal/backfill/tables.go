@@ -412,7 +412,8 @@ func (b *Backfiller) readKeys(
 		SELECT (`+key+`)::text, l.`+mapping.key+`::text
 		FROM `+b.source.table(mapping.name)+` l
 		WHERE ($1::uuid IS NULL OR `+key+` > $1::uuid)
-		  AND ($3::timestamptz IS NULL OR `+changed+` > $3)`+shape.environmentFilter()+`
+		  AND ($3::timestamptz IS NULL OR `+changed+` > $3)`+shape.environmentFilter()+
+		options.skipMigrated(mapping.owner)+`
 		ORDER BY `+key+`
 		LIMIT $2`, nullableUUID(cursor), options.BatchSize, since)
 	if err != nil {
