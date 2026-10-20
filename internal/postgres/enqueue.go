@@ -333,8 +333,9 @@ func (e *Enqueue) finish(ctx context.Context, tx pgx.Tx, submission enqueue.Subm
 	return e.replay(ctx, tx, submission.UserID, stored)
 }
 
+// statusFor keeps every job body on 202, so a 200 is always a reel.
 func statusFor(kind enqueue.OutcomeKind) int {
-	if kind == enqueue.Accepted {
+	if kind == enqueue.Accepted || kind == enqueue.InFlight {
 		return 202
 	}
 	return 200

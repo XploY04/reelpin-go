@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/api"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/search"
@@ -298,6 +299,8 @@ func TestFixturesMatchTheContract(t *testing.T) {
 		searchResponse *search.Response
 		// jobRecords installs a job reader answering with these.
 		jobRecords []jobs.JobRecord
+		// submission installs a submitter answering with this.
+		submission *enqueue.Result
 	}{
 		{name: "health_live", method: "GET", target: "/api/v2/health/live", status: 200},
 		{name: "reel_page", method: "GET", target: "/api/v2/reels?limit=25", token: "Bearer good.token", status: 200},
@@ -322,6 +325,13 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			token: "Bearer good.token", status: 202,
 			headers: map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
 			body:    `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+		},
+		{
+			name: "submission_in_flight", method: "POST", target: "/api/v2/processing-jobs/reels",
+			token: "Bearer good.token", status: 202,
+			headers:    map[string]string{"Idempotency-Key": "9e0d4f3a-1111-4222-8333-444455556666"},
+			body:       `{"url":"https://www.instagram.com/reel/C8abc123/"}`,
+			submission: fixtureInFlight(),
 		},
 		{
 			name: "error_idempotency_conflict", method: "POST", target: "/api/v2/processing-jobs/reels",
@@ -370,6 +380,9 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			}
 			if tt.jobRecords != nil {
 				deps.Jobs = &fakeJobs{records: tt.jobRecords}
+			}
+			if tt.submission != nil {
+				deps.Enqueue = &fakeSubmitter{result: *tt.submission}
 			}
 			// Fixture cases that exercise submissions need the metered path
 			// open and deterministic outcomes.
@@ -426,6 +439,24 @@ func TestFixturesMatchTheContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fixtureInFlight is a second submission of a link the user already has
+// processing: the same job, answered 202 with already_saved true.
+func fixtureInFlight() *enqueue.Result {
+	step := "download"
+	created := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	updated := created.Add(time.Minute)
+	return &enqueue.Result{Kind: enqueue.InFlight, Job: &enqueue.Job{
+		ID:              "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Status:          "processing",
+		URL:             "https://www.instagram.com/reel/C8abc123/",
+		CurrentStep:     &step,
+		ProgressPercent: 40,
+		CollectionIDs:   []string{},
+		CreatedAt:       &created,
+		UpdatedAt:       &updated,
+	}}
 }
 
 // fixtureJobs are one job mid-pipeline and one finished, so the fixture shows

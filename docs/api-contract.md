@@ -84,9 +84,9 @@ Retrying with the same key returns the same outcome; the same key with a
 different body is a `409`. That is the attempt. The content is checked too:
 before anything is created, the user's existing save or job still in flight
 for the same normalized URL is looked up, so a second attempt at the same link
-never makes a second job. `200` carries either the reel or that job in flight;
-`202` carries a new job to poll. Every success body has `already_saved`, true
-when the user had the link before this submission.
+never makes a second job. `200` is always the reel; `202` is always a job to
+poll, either new work or that job in flight. Every success body has
+`already_saved`, true when the user had the link before this submission.
 
 The native-share endpoint resolves and enqueues in one request, because a share
 extension can be killed between two calls.

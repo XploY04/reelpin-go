@@ -73,13 +73,11 @@ v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
   `409`.
 - Every success body carries `already_saved`: `true` when this user had the
   link before this submission, saved or still processing.
-- `200` with a reel (it has `title`, no `status`) = the reel is ready, no job to
-  poll. `already_saved` is `false` only when it was saved just now from content
+- `200` = the reel is ready, no job to poll. `already_saved` is `false` only when it was saved just now from content
   someone else had already processed.
-- `200` with a job (it has `status`) = **the same link is already processing
-  for this user**; `already_saved` is `true` and the body is that job. Poll it.
-  No second job was made. Before this, the same case answered `202`.
-- `202` = new work, body is the processing job to poll.
+- `202` = a processing job to poll. With `already_saved: false` it is new
+  work. With `already_saved: true` it is **the job this user already has
+  processing for the same link**; no second job was made.
 - The lookup is by the normalized URL and runs before the active-job cap, so a
   user at the cap who shares a link already in flight gets that job, not `429`.
 - v1's single-status behaviour is gone; handle both.
@@ -425,9 +423,8 @@ than `shared_preferences`.
 
 Each of these is a real, expected answer that reads like a bug:
 
-1. **`200` on submission** means the link was not new work. If the body has
-   `status` it is the job already in flight for this link: poll it. Otherwise
-   it is the reel: show it.
+1. **`202` with `already_saved: true` on submission** is not a duplicate. It
+   is the job already in flight for this link: poll it as you would a new one.
 2. **`data_deleted: true` with `identity_deleted: false` and `pending: true`**
    is a successful account deletion in progress. Sign out.
 3. **`{"supported": false}` from share resolve is a `200`.** It is a preview

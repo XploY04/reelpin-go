@@ -64,7 +64,7 @@ const (
 	AlreadySaved OutcomeKind = iota
 	// Accepted answers 202 with the job to poll.
 	Accepted
-	// InFlight answers 200 with the job the user already has running for this
+	// InFlight answers 202 with the job the user already has running for this
 	// content. No second job is made.
 	InFlight
 	// Reused answers 200 with a reel this submission just saved from content

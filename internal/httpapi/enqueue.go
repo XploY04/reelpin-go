@@ -251,10 +251,8 @@ func (s *Server) respondToSubmission(w http.ResponseWriter, result enqueue.Resul
 			Reel:         s.reels.Present(*result.Reel),
 			AlreadySaved: result.WasAlreadySaved(),
 		})
-	case enqueue.InFlight:
-		writeJSON(w, http.StatusOK, presentJob(*result.Job, true))
 	default:
-		writeJSON(w, http.StatusAccepted, presentJob(*result.Job, false))
+		writeJSON(w, http.StatusAccepted, presentJob(*result.Job, result.WasAlreadySaved()))
 	}
 }
 

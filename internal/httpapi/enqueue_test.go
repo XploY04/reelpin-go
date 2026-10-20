@@ -107,7 +107,7 @@ func TestSubmissionSaysWhetherTheContentWasAlreadySaved(t *testing.T) {
 		{name: "a reel the user has", result: enqueue.Result{Kind: enqueue.AlreadySaved, Reel: &record},
 			wantStatus: http.StatusOK, wantSaved: true, wantID: testReelID},
 		{name: "a job the user has in flight", result: enqueue.Result{Kind: enqueue.InFlight, Job: running},
-			wantStatus: http.StatusOK, wantSaved: true, wantID: testJobID},
+			wantStatus: http.StatusAccepted, wantSaved: true, wantID: testJobID},
 		{name: "someone else's finished content, new to this user", result: enqueue.Result{Kind: enqueue.Reused, Reel: &record},
 			wantStatus: http.StatusOK, wantSaved: false, wantID: testReelID},
 	}

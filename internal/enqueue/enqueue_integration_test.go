@@ -351,7 +351,7 @@ func TestANewLinkIsNewWork(t *testing.T) {
 }
 
 // A second attempt at a link still processing is the job the user already
-// has, answered as already saved, with nothing new behind it.
+// has, answered as already saved with a 202, with nothing new behind it.
 func TestTheSameLinkInFlightAnswersItsJob(t *testing.T) {
 	service, pool := testService(t)
 
@@ -368,6 +368,15 @@ func TestTheSameLinkInFlightAnswersItsJob(t *testing.T) {
 	_, _, jobs, _, events := counts(t, pool)
 	if jobs != jobsBefore || events != eventsBefore {
 		t.Fatalf("jobs %d->%d events %d->%d; a repeat must create nothing", jobsBefore, jobs, eventsBefore, events)
+	}
+	var not202 int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM reelpin.idempotency_keys WHERE response_status <> 202`,
+	).Scan(&not202); err != nil {
+		t.Fatal(err)
+	}
+	if not202 != 0 {
+		t.Fatalf("%d stored responses are not 202; a job in flight answers 202", not202)
 	}
 }
 
