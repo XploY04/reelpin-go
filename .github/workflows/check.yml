@@ -82,6 +82,12 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s --health-timeout 10s --health-retries 12
 
     steps:
       - uses: actions/checkout@v4
@@ -109,4 +115,5 @@ jobs:
         run: |
           export TEST_DATABASE_URL="postgres://reelpin@localhost:5432/reelpin"
           export TEST_REDIS_URL="redis://localhost:6379/0"
+          export TEST_RABBITMQ_URL="amqp://guest:guest@localhost:5672/"
           make test-integration
