@@ -350,7 +350,7 @@ const ownerNotePrefix = "owner "
 
 // noteOwnerMigrated is whether the audit row a was carried, by ownerNote, for
 // a user Go has served.
-const noteOwnerMigrated = `EXISTS (SELECT 1 FROM reelpin.user_migrations m
+const noteOwnerMigrated = `EXISTS (SELECT 1 FROM ` + servedUsers + ` m
 	WHERE a.note = '` + ownerNotePrefix + `' || m.user_id::text)`
 
 // upsertStatement is one mapping's per-row statement. It repeats the migrated

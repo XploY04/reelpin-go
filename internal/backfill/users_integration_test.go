@@ -185,3 +185,74 @@ func TestAMissingUsersTableStopsTheRunAndTheVerify(t *testing.T) {
 		t.Error("a verify without legacy users succeeded")
 	}
 }
+
+// A user who deleted their account in Go is left alone by every run, as one
+// Go has served is. The deletion cascaded their migration record away, so
+// only the deletion request says so, and without it the backfill would try to
+// carry their legacy rows onto an auth.users row that no longer exists.
+func TestAUserDeletedInGoIsLeftAlone(t *testing.T) {
+	pool := testPool(t)
+	exec(t, pool, scratchLegacySchema)
+	ctx := context.Background()
+
+	exec(t, pool, `
+		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
+		VALUES ($1, $2, 'https://www.instagram.com/reel/KEPT9/', 'Still on the old app', '2026-01-01T00:00:00Z'),
+		       ($3, $4, 'https://www.instagram.com/reel/GONE9/', 'Saved before the delete', '2026-01-01T00:00:00Z')`,
+		olderLegacyReel, userA, placeReel, userB)
+	exec(t, pool, `
+		INSERT INTO legacy.user_entitlements (user_id, pro_expires_at, store)
+		VALUES ($1, '2027-01-01T00:00:00Z', 'manual')`, userB)
+	if _, err := lifecycle.New(pool, nil, nil, quiet()).DeleteAccount(ctx, userB); err != nil {
+		t.Fatalf("deleting user b's account: %v", err)
+	}
+
+	assertNothingOfUserB := func(run string) {
+		t.Helper()
+		if exists(t, pool, `SELECT 1 FROM auth.users WHERE id = $1`, userB) {
+			t.Errorf("the %s brought user b back", run)
+		}
+		for _, table := range []string{"reelpin.user_saves", "reelpin.user_entitlements"} {
+			if exists(t, pool, `SELECT 1 FROM `+table+` WHERE user_id = $1`, userB) {
+				t.Errorf("the %s wrote %s for user b", run, table)
+			}
+		}
+		if exists(t, pool, `SELECT 1 FROM reelpin.backfill_audit WHERE source_id IN ($1, $2)`, placeReel, lateReel) {
+			t.Errorf("the %s audited a reel of user b", run)
+		}
+	}
+
+	snapshot, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if !exists(t, pool, `SELECT 1 FROM reelpin.user_saves WHERE id = $1 AND user_id = $2`, olderLegacyReel, userA) {
+		t.Error("the snapshot did not carry user a's reel")
+	}
+	assertNothingOfUserB("snapshot")
+
+	// The stale install keeps writing to Python after the delete.
+	exec(t, pool, `
+		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
+		VALUES ($1, $2, 'https://www.instagram.com/reel/LATE9/', 'Saved after the delete', now())`, lateReel, userB)
+
+	if _, err := New(pool, quiet()).Run(ctx, Options{
+		Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema, Since: snapshot.HighWaterMark,
+	}); err != nil {
+		t.Fatalf("delta: %v", err)
+	}
+	assertNothingOfUserB("delta")
+
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema}); err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	assertNothingOfUserB("rerun")
+
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !verified.OK() {
+		t.Errorf("a user deleted in Go fails the verify: %+v", verified)
+	}
+}

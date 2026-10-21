@@ -78,7 +78,8 @@ type Options struct {
 	// scanned from the start of its keyspace. Every run, a delta or not,
 	// leaves alone every row owned by a user in reelpin.user_migrations: Go
 	// has served them, so their Go rows are theirs to change and their Python
-	// rows are frozen.
+	// rows are frozen. A user with an account deletion request counts as
+	// served too; see servedUsers.
 	Since *time.Time
 	// DumpedAt is when the dump the legacy schema was restored from was taken,
 	// read off Supabase's clock just before pg_dump. The next delta's mark is
@@ -87,7 +88,7 @@ type Options struct {
 	// every delta need it.
 	DumpedAt *time.Time
 	// PropagateDeletes makes a delta delete the canonical rows it carried for
-	// users not in reelpin.user_migrations whose legacy row is gone. It is for
+	// users Go has not served whose legacy row is gone. It is for
 	// the final delta only, with Python stopped: while Python still runs, a
 	// user can move between the dump and the delete.
 	PropagateDeletes bool
@@ -259,22 +260,29 @@ func skipMigrated(owner string) string {
 	return ` AND NOT ` + migrated(owner)
 }
 
+// servedUsers is every user whose rows Go owns: those it has served, and those
+// who asked it to delete their account. The deletion cascades the first record
+// away, so the request row, which has no foreign key, stands in for it after.
+const servedUsers = `(SELECT user_id FROM reelpin.user_migrations
+	UNION ALL SELECT user_id FROM reelpin.account_deletion_requests)`
+
 // isMigrated re-reads the record inside a row's own transaction. The page the
 // row came from was filtered when it was read, and a user can move between
 // that read and this write.
 func isMigrated(ctx context.Context, db querier, userID string) (bool, error) {
 	var moved bool
 	if err := db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM reelpin.user_migrations WHERE user_id::text = lower($1))`,
+		SELECT EXISTS (SELECT 1 FROM `+servedUsers+` m WHERE m.user_id::text = lower($1))`,
 		userID).Scan(&moved); err != nil {
 		return false, fmt.Errorf("checking whether Go has served the user: %w", err)
 	}
 	return moved, nil
 }
 
-// migrated is whether the owner of the legacy row l has been served by Go.
+// migrated is whether the owner of the legacy row l has been served, or
+// deleted, by Go.
 func migrated(owner string) string {
-	return `EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id::text = lower(l.` + owner + `::text))`
+	return `EXISTS (SELECT 1 FROM ` + servedUsers + ` m WHERE m.user_id::text = lower(l.` + owner + `::text))`
 }
 
 func (b *Backfiller) lock(ctx context.Context) (func(), error) {

@@ -152,7 +152,7 @@ read, and only the first dump's time puts the mark before them.
 | `--execute` | false | Write. Without it the run reports what it would do and writes nothing but the users step's `auth.users` rows. |
 | `--batch-size` | 500 | Rows per keyset page. |
 | `--max-rows` | 0 (all) | Stop the reel pass after this many rows, for a trial on a big table. Later passes are skipped. |
-| `--since` | empty | Delta: an RFC3339 instant. Only rows changed after it are read, except the tables copied whole (below). Rows of users Go has served are never read, by a delta or any other run. |
+| `--since` | empty | Delta: an RFC3339 instant. Only rows changed after it are read, except the tables copied whole (below). Rows of users Go has served, or who deleted their account in Go, are never read, by a delta or any other run. |
 | `--dumped-at` | empty | RFC3339 instant the Supabase dump was taken, from `SELECT now()` on Supabase just before `pg_dump`. Required with `--execute` or `--since`. Must be later than `--since`. |
 | `--propagate-deletes` | false | Final delta only, with Python stopped. Deletes carried rows whose legacy row is gone, and the `auth.users` row (with everything it owns) of every user gone from `legacy.users`, for users Go has not served. Needs `--since`. |
 | `--legacy-schema` | `legacy` | Schema the restored Python tables are read from. |

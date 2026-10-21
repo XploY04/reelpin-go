@@ -85,7 +85,7 @@ func (b *Backfiller) deleteCarried(source legacySource) string {
 	return `
 		WITH gone AS (` + b.gone(source) + `
 		  AND NOT EXISTS (SELECT 1 FROM ` + source.canonical + ` c
-		      JOIN reelpin.user_migrations m ON m.user_id = c.user_id
+		      JOIN ` + servedUsers + ` m ON m.user_id = c.user_id
 		      WHERE c.` + source.canonicalKey + ` = a.source_id)` + kept + `
 		),
 		removed AS (
@@ -129,7 +129,7 @@ func (b *Backfiller) deleteHiddenPins(source legacySource) string {
 		removed AS (
 			DELETE FROM reelpin.user_pin_preferences p
 			WHERE p.hidden
-			  AND NOT EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id = p.user_id)
+			  AND NOT EXISTS (SELECT 1 FROM ` + servedUsers + ` m WHERE m.user_id = p.user_id)
 			  AND NOT EXISTS (SELECT 1 FROM ` + b.source.table(source.name) + ` l` + hiddenPinJoin + `
 			      WHERE cl.id = p.location_id AND s.user_id = p.user_id)
 			RETURNING 1

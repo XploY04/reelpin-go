@@ -608,7 +608,7 @@ func (v *Verifier) sampleIDs(ctx context.Context, source legacySource, limit int
 		JOIN `+source.canonical+` c ON c.id = a.source_id
 		WHERE a.backfill_version = $1 AND a.source_table = '`+source.name+`'
 		  AND a.action = '`+source.carried+`'
-		  AND NOT EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id = c.user_id)
+		  AND NOT EXISTS (SELECT 1 FROM `+servedUsers+` m WHERE m.user_id = c.user_id)
 		ORDER BY md5(a.source_id::text) LIMIT $2`, Version, limit)
 }
 
