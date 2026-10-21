@@ -40,6 +40,7 @@ const (
 // backfill reads. Supabase owns these tables in every real deployment, so no
 // migration in this repo creates them.
 const legacySchema = `
+CREATE TABLE public.users (id UUID PRIMARY KEY, email TEXT, created_at TIMESTAMPTZ);
 CREATE TABLE public.reels (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
@@ -156,6 +157,11 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO auth.users (id) VALUES ($1), ($2)`, userA, userB); err != nil {
 		t.Fatalf("seeding users: %v", err)
+	}
+	// Both users exist in Supabase too, so the legacy users table has them.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO public.users (id, created_at) SELECT id, created_at FROM auth.users`); err != nil {
+		t.Fatalf("seeding legacy users: %v", err)
 	}
 	return pool
 }

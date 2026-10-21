@@ -10,18 +10,21 @@ import (
 // leaves Supabase. See docs/rehearsal.md.
 const sourceUsers = "users"
 
+// notDeleted leaves out a legacy user l who asked Go to delete their account.
+// The request row has no foreign key, so it outlives the auth.users row and
+// the migration record the deletion cascaded away.
+const notDeleted = `NOT EXISTS (SELECT 1 FROM reelpin.account_deletion_requests d WHERE d.user_id = l.id)`
+
 // copyUsers materialises every legacy user in auth.users, which every
 // user-owned canonical table points at, so it runs before anything else. The
 // table is a few hundred rows, so every run, a delta or not, upserts all of it.
 // A user Go has served is not skipped: their row is already there from their
-// first request, and the email is the only thing an upsert changes.
-func (b *Backfiller) copyUsers(ctx context.Context, options Options, report *Report) error {
+// first request, and the email is the only thing an upsert changes. A user Go
+// deleted is skipped, or the next run would bring them back. Copied counts
+// the users inserted or whose email changed.
+func (b *Backfiller) copyUsers(ctx context.Context, report *Report) error {
 	counts := TableReport{SkippedByAction: map[string]int{}}
 	defer func() { report.Tables[sourceUsers] = counts }()
-	if !b.source.shape(sourceUsers).exists {
-		counts.Absent = true
-		return nil
-	}
 
 	transaction, err := b.pool.Begin(ctx)
 	if err != nil {
@@ -30,22 +33,28 @@ func (b *Backfiller) copyUsers(ctx context.Context, options Options, report *Rep
 	defer transaction.Rollback(ctx)
 
 	from := b.source.table(sourceUsers)
-	if err := transaction.QueryRow(ctx, `SELECT count(*) FROM `+from).Scan(&counts.Scanned); err != nil {
+	if err := transaction.QueryRow(ctx, `SELECT count(*) FROM `+from+` l WHERE `+notDeleted).
+		Scan(&counts.Scanned); err != nil {
 		return fmt.Errorf("counting legacy users: %w", err)
 	}
 	tag, err := transaction.Exec(ctx, `
-		INSERT INTO auth.users (id, email, created_at)
+		INSERT INTO auth.users AS u (id, email, created_at)
 		SELECT l.id, l.email, coalesce(l.created_at, now()) FROM `+from+` l
-		ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email`)
+		WHERE `+notDeleted+`
+		ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
+		WHERE u.email IS DISTINCT FROM EXCLUDED.email`)
 	if err != nil {
 		return fmt.Errorf("copying legacy users: %w", err)
 	}
 	counts.Copied = int(tag.RowsAffected())
 
-	if !options.Execute {
-		return nil
+	// Committed on a dry run too: it only mirrors identities Supabase already
+	// has, and every other table's dry-run count needs their parent rows.
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("committing legacy users: %w", err)
 	}
-	return transaction.Commit(ctx)
+	report.UsersWritten = true
+	return nil
 }
 
 // deleteUsers is the final delta's step for users gone from Supabase: their

@@ -228,7 +228,7 @@ func (v *Verifier) Verify(ctx context.Context, options VerifyOptions) (VerifyRep
 	if err := v.source.describe(ctx, v.pool); err != nil {
 		return VerifyReport{}, err
 	}
-	if err := v.source.require(sourceReels, sourceJobs, sourceCache); err != nil {
+	if err := v.source.require(sourceUsers, sourceReels, sourceJobs, sourceCache); err != nil {
 		return VerifyReport{}, err
 	}
 
@@ -432,22 +432,17 @@ func (v *Verifier) countTable(ctx context.Context, source legacySource, options 
 }
 
 // countUsers accounts for the users step, which keeps no audit: it upserts
-// every legacy user on every run and skips none, so a legacy user with no
-// auth.users row is unexplained. Users Go has served stay in scope, because
-// the step does not leave them out either.
+// every legacy user on every run except those Go deleted, so any other legacy
+// user with no auth.users row is unexplained. Users Go has served stay in
+// scope, because the step does not leave them out either.
 func (v *Verifier) countUsers(ctx context.Context, options VerifyOptions) (TableVerification, error) {
 	counted := TableVerification{SourceTable: sourceUsers, SkippedByAction: map[string]int{}}
-	if !v.source.shape(sourceUsers).exists {
-		counted.Absent = true
-		return counted, nil
-	}
-
 	legacy := v.source.table(sourceUsers)
 	missing := `NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = l.id)`
 	if err := v.pool.QueryRow(ctx, `
 		SELECT
-			(SELECT count(*) FROM `+legacy+` l),
-			(SELECT count(*) FROM `+legacy+` l WHERE NOT `+missing+`),
+			(SELECT count(*) FROM `+legacy+` l WHERE `+notDeleted+`),
+			(SELECT count(*) FROM `+legacy+` l WHERE NOT `+missing+` AND `+notDeleted+`),
 			(SELECT count(*) FROM auth.users)`,
 	).Scan(&counted.InScope, &counted.Present, &counted.CanonicalTotal); err != nil {
 		return TableVerification{}, fmt.Errorf("counting %s: %w", sourceUsers, err)
@@ -459,7 +454,7 @@ func (v *Verifier) countUsers(ctx context.Context, options VerifyOptions) (Table
 	var err error
 	counted.UnexplainedIDs, err = v.ids(ctx, `
 		SELECT l.id::text FROM `+legacy+` l
-		WHERE `+missing+`
+		WHERE `+missing+` AND `+notDeleted+`
 		ORDER BY md5(l.id::text) LIMIT $1`, options.Sample)
 	if err != nil {
 		return TableVerification{}, err

@@ -83,6 +83,7 @@ func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Conf
 		"since", *since,
 		"dumped_at", *dumpedAt,
 		"migrated_users", report.MigratedUsers,
+		"users_written", report.UsersWritten,
 		"deleted", report.Deleted,
 		"reels_scanned", report.ReelsScanned,
 		"unique_content", report.UniqueContent,
@@ -121,8 +122,8 @@ func runBackfillLegacy(ctx context.Context, logger *slog.Logger, cfg config.Conf
 			"note", "pass this as --since to the next delta")
 	}
 	if !*execute {
-		logger.Info("nothing was written",
-			"note", "rerun with --execute to carry the legacy rows over")
+		logger.Info("nothing but auth.users was written",
+			"note", "the users step commits on a dry run too, so every other table's counts are real; rerun with --execute to carry the legacy rows over")
 	}
 	return err
 }

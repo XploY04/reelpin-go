@@ -186,4 +186,24 @@ func TestTheRecordIsWrittenOnceAsTheAppRole(t *testing.T) {
 	if total != 0 {
 		t.Errorf("%d records left after the user was deleted, want 0", total)
 	}
+
+	// Account deletion leaves its request row behind, and a token issued
+	// before the deletion reaching a process that never saw the user must not
+	// bring them back.
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO reelpin.account_deletion_requests (user_id, database_cleanup_state)
+		VALUES ($1, 'done')`, userA); err != nil {
+		t.Fatal(err)
+	}
+	err = New(app, logger).record(ctx, userA)
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Errorf("recording a deleted user err = %v, want the record's foreign key violation", err)
+	}
+	if err := owner.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM auth.users WHERE id = $1)`, userA).Scan(&mirrored); err != nil {
+		t.Fatal(err)
+	}
+	if mirrored {
+		t.Error("a user who deleted their account was materialised again")
+	}
 }

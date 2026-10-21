@@ -2,14 +2,20 @@
 
 -- A mirror of the identity provider's users, keyed by the Supabase user id, so
 -- every user-owned table has a foreign key parent on a database that is not
--- Supabase. On Supabase the table already exists and this only grants.
-CREATE SCHEMA IF NOT EXISTS auth;
-
-CREATE TABLE IF NOT EXISTS auth.users (
-    id         UUID PRIMARY KEY,
-    email      TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- Supabase. On Supabase the table already exists and this only grants. The
+-- existence check comes first because CREATE ... IF NOT EXISTS still needs
+-- CREATE on the schema, which a role that does not own auth may lack.
+DO $$
+BEGIN
+    IF to_regclass('auth.users') IS NULL THEN
+        CREATE SCHEMA IF NOT EXISTS auth;
+        CREATE TABLE auth.users (
+            id         UUID PRIMARY KEY,
+            email      TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    END IF;
+END $$;
 
 -- Two NOLOGIN roles carry the privilege boundary. reelpin_app is what the
 -- service runs as; reelpin_maintenance exists only for the audited global
@@ -35,7 +41,7 @@ END $$;
 -- The app materialises a user on their first request; only account deletion,
 -- a maintenance operation, removes one.
 GRANT USAGE ON SCHEMA auth TO reelpin_app, reelpin_maintenance;
-GRANT SELECT, INSERT, UPDATE ON auth.users TO reelpin_app;
+GRANT SELECT, INSERT ON auth.users TO reelpin_app;
 GRANT SELECT, DELETE ON auth.users TO reelpin_maintenance;
 
 -- migrate:down

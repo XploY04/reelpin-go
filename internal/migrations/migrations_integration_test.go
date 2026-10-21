@@ -60,8 +60,9 @@ func testDatabase(t *testing.T) (*pgxpool.Pool, string) {
 		_, _ = cleanup.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
 	})
 
-	// Supabase owns auth.users in every real deployment, so migrations assume
-	// it. The integration shape mirrors production's identity table.
+	// Supabase-shaped: auth.users exists before the first migration, as it
+	// does on Supabase. TestMigrationsApplyWithoutASupabaseAuthSchema drops it
+	// to cover Neon, where 00000 creates it.
 	if _, err := pool.Exec(ctx, `
 		CREATE SCHEMA auth;
 		CREATE TABLE auth.users (
@@ -216,12 +217,56 @@ func TestMigrationsApplyWithoutASupabaseAuthSchema(t *testing.T) {
 	if sqlState(err) != "42501" {
 		t.Errorf("app delete err = %v, want permission denied", err)
 	}
+	err = asRole(t, pool, "reelpin_app", func(conn *pgxpool.Conn) error {
+		_, err := conn.Exec(ctx, `UPDATE auth.users SET email = 'x' WHERE id = $1`, userB)
+		return err
+	})
+	if sqlState(err) != "42501" {
+		t.Errorf("app update err = %v, want permission denied", err)
+	}
 	err = asRole(t, pool, "reelpin_maintenance", func(conn *pgxpool.Conn) error {
 		_, err := conn.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userB)
 		return err
 	})
 	if err != nil {
 		t.Errorf("maintenance cannot delete a user: %v", err)
+	}
+}
+
+// On Supabase the migrating role does not own auth and may have no CREATE on
+// it. auth.users exists there, so 00000 must not ask for CREATE at all.
+func TestTheAuthUsersMigrationNeedsNoCreateOnAuth(t *testing.T) {
+	pool, _ := testDatabase(t)
+	ctx := context.Background()
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded[0].Version != 0 {
+		t.Fatalf("the first migration is %s, want 00000", loaded[0].Name)
+	}
+	const migrator = "reelpin_test_migrator"
+	if _, err := pool.Exec(ctx, `
+		DO $$
+		BEGIN
+		    CREATE ROLE `+migrator+` NOLOGIN CREATEROLE;
+		EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
+		END $$`); err != nil {
+		t.Fatalf("creating the migrating role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		GRANT USAGE ON SCHEMA auth TO `+migrator+` WITH GRANT OPTION;
+		GRANT SELECT, INSERT, DELETE ON auth.users TO `+migrator+` WITH GRANT OPTION`); err != nil {
+		t.Fatalf("granting on auth: %v", err)
+	}
+
+	err = asRole(t, pool, migrator, func(conn *pgxpool.Conn) error {
+		_, err := conn.Exec(ctx, loaded[0].Up)
+		return err
+	})
+	if err != nil {
+		t.Errorf("00000 as a role with no CREATE on auth: %v", err)
 	}
 }
 

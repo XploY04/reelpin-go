@@ -58,8 +58,11 @@ const (
 // trimmed to the columns it reads, in a schema of its own the way a Neon
 // database holds them. reminders carries an environment column the real one
 // does not, so the filter is proven on a wave 1 table as well as on jobs.
+// users starts as every user auth.users has, as Supabase would.
 const scratchLegacySchema = `
 CREATE SCHEMA legacy;
+CREATE TABLE legacy.users (id UUID PRIMARY KEY, email TEXT, created_at TIMESTAMPTZ);
+INSERT INTO legacy.users (id, created_at) SELECT id, created_at FROM auth.users;
 CREATE TABLE legacy.reels (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL,
@@ -255,6 +258,7 @@ func seedScratch(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	exec(t, pool, scratchLegacySchema)
 	exec(t, pool, `INSERT INTO auth.users (id) VALUES ($1)`, strangerUser)
+	exec(t, pool, `INSERT INTO legacy.users (id) VALUES ($1)`, strangerUser)
 
 	exec(t, pool, `
 		INSERT INTO legacy.reels (id, user_id, url, title, created_at)
