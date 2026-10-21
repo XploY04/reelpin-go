@@ -154,8 +154,9 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Backfiller {
 	return &Backfiller{pool: pool, logger: logger, resolver: &sourceidentity.Resolver{}}
 }
 
-// Run copies reels, their places and embeddings, then jobs, then the wave 1
-// tables, resuming from the recorded cursor. Jobs run after reels because a
+// Run copies users, then reels, their places and embeddings, then jobs, then
+// the wave 1 tables, resuming from the recorded cursor. Users come first
+// because every user-owned row points at one. Jobs run after reels because a
 // job is only copied once its content exists, and reminders, price tracks and
 // hidden pins point at saves and at the places on them.
 func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
@@ -188,6 +189,9 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if err := b.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.user_migrations`).
 		Scan(&report.MigratedUsers); err != nil {
 		return report, fmt.Errorf("counting the users Go has served: %w", err)
+	}
+	if err := b.copyUsers(ctx, options, &report); err != nil {
+		return report, err
 	}
 	if err := b.backfillReels(ctx, options, &report); err != nil {
 		return report, err

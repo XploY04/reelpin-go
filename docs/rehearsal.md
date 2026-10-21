@@ -60,6 +60,10 @@ DUMPED_AT=$(psql "$SUPABASE_DB_URL" -Atc "SELECT to_json(now())#>>'{}'")
 pg_dump "$SUPABASE_DB_URL" --schema=public --no-owner --no-privileges \
   --format=custom --file=public.dump
 
+# Export the users straight after the dump: id, email and created_at only.
+psql "$SUPABASE_DB_URL" \
+  -c "\copy (SELECT id, email, created_at FROM auth.users) TO 'users.csv' WITH (FORMAT csv, HEADER)"
+
 # Restore into the stage and rename public to legacy there.
 psql "$STAGE" -c 'DROP SCHEMA IF EXISTS legacy CASCADE' \
   -c 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA public'
@@ -72,7 +76,20 @@ pg_dump "$STAGE" --schema=legacy --no-owner --no-privileges \
   --format=custom --file=legacy.dump
 psql "$DATABASE_URL" -c 'DROP SCHEMA IF EXISTS legacy CASCADE'
 pg_restore --dbname="$DATABASE_URL" --no-owner --no-privileges --exit-on-error legacy.dump
+
+# Load the users next to the Python tables, where the backfill reads them.
+psql "$DATABASE_URL" \
+  -c 'CREATE TABLE legacy.users (id UUID PRIMARY KEY, email TEXT, created_at TIMESTAMPTZ)' \
+  -c "\copy legacy.users FROM 'users.csv' WITH (FORMAT csv, HEADER)"
 ```
+
+Users never travel in the dump. Supabase's `auth.users` also holds password
+hashes and tokens, so only three columns leave it, and only as `users.csv`.
+Every user-owned Go table has a foreign key to `auth.users`, which on Neon is a
+mirror the backfill fills from `legacy.users` before any other table. Export it
+in the same sitting as `DUMPED_AT` and the dump, straight after `pg_dump`, so
+every user the dumped rows name is in the file. Delete `users.csv` once it is
+loaded.
 
 The stage `pg_restore` reports `schema "public" already exists`. That one is
 expected. Read any other error there: one on a function or policy that names
@@ -131,7 +148,7 @@ read, and only the first dump's time puts the mark before them.
 | `--max-rows` | 0 (all) | Stop the reel pass after this many rows, for a trial on a big table. Later passes are skipped. |
 | `--since` | empty | Delta: an RFC3339 instant. Only rows changed after it are read, except the tables copied whole (below). Rows of users Go has served are never read, by a delta or any other run. |
 | `--dumped-at` | empty | RFC3339 instant the Supabase dump was taken, from `SELECT now()` on Supabase just before `pg_dump`. Required with `--execute` or `--since`. Must be later than `--since`. |
-| `--propagate-deletes` | false | Final delta only, with Python stopped. Deletes carried rows whose legacy row is gone, for users Go has not served. Needs `--since`. |
+| `--propagate-deletes` | false | Final delta only, with Python stopped. Deletes carried rows whose legacy row is gone, and the `auth.users` row (with everything it owns) of every user gone from `legacy.users`, for users Go has not served. Needs `--since`. |
 | `--legacy-schema` | `legacy` | Schema the restored Python tables are read from. |
 
 `maintenance backfill-verify`:
@@ -151,6 +168,7 @@ run, delta or not, and the copy is an idempotent upsert.
 
 | Legacy | Go | A delta reads |
 |---|---|---|
+| `users` (from `auth.users`) | `auth.users` | The whole table, every run, before anything else, including users Go has served. Only the email is updated on a user already there. |
 | `reels` | `user_saves`, `contents`, `content_versions` | `created_at`. A carried reel is never re-read into its version. |
 | `reels.locations` | `content_locations` | Every carried reel, every run. The geocode backfill rewrites locations through `update_reel_fields`, which moves nothing. |
 | `reels.embedding` | `content_embeddings` | Every carried reel, every run. `set_reel_embedding` runs at the index step, after the row exists, and the reel has no `updated_at`. |
@@ -252,6 +270,9 @@ report `embeddings` (carried reels with an embedding against those whose version
 has one, and `embedding_models` splitting the second count by model) and
 `map_points` (located places on carried reels against `content_locations`, and
 manual pins on each side). Any of those short fails the run.
+
+`users` keeps no audit, so it reports only `in_scope` and `present`; a legacy
+user with no `auth.users` row is `unexplained` and fails the run.
 
 Each per-user table also reports `migrated`: legacy rows owned by users Go has
 served. Those rows are left out of every other count and out of the field

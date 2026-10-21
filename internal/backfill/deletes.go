@@ -14,7 +14,8 @@ const deletedInLegacy = "deleted_in_legacy"
 // update, so without it a row deleted in Python after the snapshot would live
 // on in Go. Only rows this backfill carried are candidates, found through the
 // audit, and never a row owned by a user Go has served: their Go rows are
-// theirs. Everything runs in one transaction, and a dry run rolls it back.
+// theirs. Users gone from the legacy users table go too, under the same rule.
+// Everything runs in one transaction, and a dry run rolls it back.
 func (b *Backfiller) propagateDeletes(ctx context.Context, options Options, report *Report) error {
 	transaction, err := b.pool.Begin(ctx)
 	if err != nil {
@@ -36,6 +37,15 @@ func (b *Backfiller) propagateDeletes(ctx context.Context, options Options, repo
 			return fmt.Errorf("propagating deletes from legacy %s: %w", source.name, err)
 		}
 		report.Deleted[source.name] = deleted
+	}
+	// Users go last, after every table's own deletes have moved their audit
+	// rows, because a user's cascade reaches all of those tables.
+	if b.source.shape(sourceUsers).exists {
+		var deleted int
+		if err := transaction.QueryRow(ctx, b.deleteUsers()).Scan(&deleted); err != nil {
+			return fmt.Errorf("propagating deletes from legacy %s: %w", sourceUsers, err)
+		}
+		report.Deleted[sourceUsers] = deleted
 	}
 
 	if !options.Execute {

@@ -4,27 +4,6 @@
 -- API surface (public, auth, storage) never sees it.
 CREATE SCHEMA IF NOT EXISTS reelpin;
 
--- Two NOLOGIN roles carry the privilege boundary. reelpin_app is what the
--- service runs as; reelpin_maintenance exists only for the audited global
--- purge, which is the one operation allowed to delete a content version.
--- Roles are cluster-wide, so creation tolerates a concurrent migration in
--- another database on the same server. Both codes matter: a role that already
--- existed raises duplicate_object, while two transactions creating it at the
--- same instant raise unique_violation on the catalogue index instead. Test
--- packages migrate in parallel, so the second case is the common one and cost
--- a CI run before it was caught.
-DO $$
-BEGIN
-    CREATE ROLE reelpin_app NOLOGIN;
-EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
-END $$;
-
-DO $$
-BEGIN
-    CREATE ROLE reelpin_maintenance NOLOGIN;
-EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
-END $$;
-
 REVOKE ALL ON SCHEMA reelpin FROM PUBLIC;
 GRANT USAGE ON SCHEMA reelpin TO reelpin_app, reelpin_maintenance;
 

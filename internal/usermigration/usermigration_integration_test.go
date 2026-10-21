@@ -78,11 +78,8 @@ func appPool(t *testing.T) (*pgxpool.Pool, *pgxpool.Pool) {
 		_, _ = cleanup.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
 	})
 
-	if _, err := owner.Exec(ctx, `
-		CREATE SCHEMA auth;
-		CREATE TABLE auth.users (id UUID PRIMARY KEY, email TEXT, created_at TIMESTAMPTZ DEFAULT now())`); err != nil {
-		t.Fatalf("creating auth.users: %v", err)
-	}
+	// No Supabase auth schema: on Neon the migrations create the mirror, and
+	// nothing but the recorder puts users in it.
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
@@ -134,23 +131,56 @@ func TestTheRecordIsWrittenOnceAsTheAppRole(t *testing.T) {
 		t.Errorf("after a second insert: %d rows, first_seen_at %v, want 1 row at %v", total, stillSeen, firstSeen)
 	}
 
-	// The foreign key holds for the app role too: a user auth does not know
-	// is refused, and Seen forgets it so the next request retries.
-	err := second.record(ctx, unknownUser)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
-		t.Errorf("recording an unknown user err = %v, want a foreign key violation", err)
+	// A user the mirror has never seen is materialised in auth.users by the
+	// same write, so the record has its parent and so does everything the
+	// user saves next.
+	if err := second.record(ctx, unknownUser); err != nil {
+		t.Fatalf("recording a user auth.users does not have yet: %v", err)
 	}
-	second.Seen(ctx, unknownUser)
-	if _, held := second.seen.Load(unknownUser); held {
+	var mirrored, recorded bool
+	if err := owner.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM auth.users WHERE id = $1),
+		       EXISTS (SELECT 1 FROM reelpin.user_migrations WHERE user_id = $1)`, unknownUser,
+	).Scan(&mirrored, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if !mirrored || !recorded {
+		t.Errorf("after the first request: mirrored %v, recorded %v; want both", mirrored, recorded)
+	}
+
+	// The two inserts commit together. With the record refused, the mirror
+	// row is rolled back with it, and Seen forgets the user so the next
+	// request retries.
+	if _, err := owner.Exec(ctx, `REVOKE INSERT ON reelpin.user_migrations FROM reelpin_app`); err != nil {
+		t.Fatal(err)
+	}
+	third := New(app, logger)
+	err := third.record(ctx, userB)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		t.Errorf("recording without the grant err = %v, want permission denied", err)
+	}
+	third.Seen(ctx, userB)
+	if _, held := third.seen.Load(userB); held {
 		t.Error("a failed write was remembered as seen")
+	}
+	if err := owner.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM auth.users WHERE id = $1)`, userB).Scan(&mirrored); err != nil {
+		t.Fatal(err)
+	}
+	if mirrored {
+		t.Error("a failed record left its mirror row behind")
+	}
+	if _, err := owner.Exec(ctx, `GRANT INSERT ON reelpin.user_migrations TO reelpin_app`); err != nil {
+		t.Fatal(err)
 	}
 
 	// The record goes when the user does.
 	if _, err := owner.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userA); err != nil {
 		t.Fatal(err)
 	}
-	if err := owner.QueryRow(ctx, `SELECT count(*) FROM reelpin.user_migrations`).Scan(&total); err != nil {
+	if err := owner.QueryRow(ctx, `
+		SELECT count(*) FROM reelpin.user_migrations WHERE user_id = $1`, userA).Scan(&total); err != nil {
 		t.Fatal(err)
 	}
 	if total != 0 {

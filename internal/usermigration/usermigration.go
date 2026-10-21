@@ -3,6 +3,11 @@
 // time they reach this one. The legacy backfill reads the record and leaves a
 // moved user's rows alone, because from that request on Go is where their data
 // changes and the Python rows are frozen.
+//
+// The same write materialises the user in auth.users, the mirror of the
+// identity provider's users that every user-owned table points at. Off
+// Supabase nothing else creates that row, and nothing the user saves could be
+// written without it.
 package usermigration
 
 import (
@@ -25,10 +30,23 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Recorder {
 	return &Recorder{
 		logger: logger,
 		record: func(ctx context.Context, userID string) error {
-			_, err := pool.Exec(ctx, `
+			transaction, err := pool.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			defer transaction.Rollback(ctx)
+
+			if _, err := transaction.Exec(ctx, `
+				INSERT INTO auth.users (id) VALUES ($1)
+				ON CONFLICT (id) DO NOTHING`, userID); err != nil {
+				return err
+			}
+			if _, err := transaction.Exec(ctx, `
 				INSERT INTO reelpin.user_migrations (user_id) VALUES ($1)
-				ON CONFLICT (user_id) DO NOTHING`, userID)
-			return err
+				ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+				return err
+			}
+			return transaction.Commit(ctx)
 		},
 	}
 }

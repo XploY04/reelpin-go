@@ -187,6 +187,76 @@ func TestMigrationsApplyToAnEmptyDatabaseAndRepeatCleanly(t *testing.T) {
 	}
 }
 
+// Off Supabase nothing creates auth.users, so the first migration has to,
+// and the roles need what the app and account deletion do with it.
+func TestMigrationsApplyWithoutASupabaseAuthSchema(t *testing.T) {
+	pool, databaseURL := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `DROP SCHEMA auth CASCADE`); err != nil {
+		t.Fatalf("dropping the Supabase-shaped auth schema: %v", err)
+	}
+
+	migrate(t, databaseURL)
+	seedUsers(t, pool)
+	seedContent(t, pool, "NEON1")
+
+	err := asRole(t, pool, "reelpin_app", func(conn *pgxpool.Conn) error {
+		_, err := conn.Exec(ctx, `
+			INSERT INTO auth.users (id) VALUES ($1), ($2) ON CONFLICT (id) DO NOTHING`,
+			userA, "33333333-3333-4333-8333-333333333333")
+		return err
+	})
+	if err != nil {
+		t.Errorf("the app role cannot materialise a user: %v", err)
+	}
+	err = asRole(t, pool, "reelpin_app", func(conn *pgxpool.Conn) error {
+		_, err := conn.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userB)
+		return err
+	})
+	if sqlState(err) != "42501" {
+		t.Errorf("app delete err = %v, want permission denied", err)
+	}
+	err = asRole(t, pool, "reelpin_maintenance", func(conn *pgxpool.Conn) error {
+		_, err := conn.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userB)
+		return err
+	})
+	if err != nil {
+		t.Errorf("maintenance cannot delete a user: %v", err)
+	}
+}
+
+// A database that applied every other migration before 00000 existed gets it
+// as a late no-op, not an error.
+func TestTheAuthUsersMigrationAppliesLate(t *testing.T) {
+	pool, databaseURL := testDatabase(t)
+	migrate(t, databaseURL)
+	ctx := context.Background()
+	seedUsers(t, pool)
+
+	if _, err := pool.Exec(ctx, `DELETE FROM public.schema_migrations WHERE version = 0`); err != nil {
+		t.Fatal(err)
+	}
+	ran, err := Up(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(ran) != 1 || ran[0] != "00000_auth_users.sql" {
+		t.Fatalf("applied %v, want only 00000_auth_users.sql", ran)
+	}
+	var users int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM auth.users`).Scan(&users); err != nil {
+		t.Fatal(err)
+	}
+	if users != 2 {
+		t.Errorf("%d users after the late migration, want the 2 already there", users)
+	}
+	for _, line := range mustStatus(t, databaseURL) {
+		if !strings.HasPrefix(line, "applied ") {
+			t.Errorf("status line %q, want applied", line)
+		}
+	}
+}
+
 func mustStatus(t *testing.T, databaseURL string) []string {
 	t.Helper()
 	lines, err := Status(context.Background(), databaseURL)
