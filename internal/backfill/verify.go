@@ -228,11 +228,15 @@ func (v *Verifier) Verify(ctx context.Context, options VerifyOptions) (VerifyRep
 	if err := v.source.describe(ctx, v.pool); err != nil {
 		return VerifyReport{}, err
 	}
-	if err := v.source.require(sourceReels, sourceJobs, sourceCache); err != nil {
+	if err := v.source.require(sourceUsers, sourceReels, sourceJobs, sourceCache); err != nil {
 		return VerifyReport{}, err
 	}
 
-	report := VerifyReport{}
+	users, err := v.countUsers(ctx, options)
+	if err != nil {
+		return VerifyReport{}, err
+	}
+	report := VerifyReport{Tables: []TableVerification{users}}
 	for _, source := range verifySources() {
 		if !v.source.shape(source.name).exists {
 			report.Tables = append(report.Tables, TableVerification{SourceTable: source.name, Absent: true})
@@ -427,6 +431,37 @@ func (v *Verifier) countTable(ctx context.Context, source legacySource, options 
 	return counted, nil
 }
 
+// countUsers accounts for the users step, which keeps no audit: it upserts
+// every legacy user on every run except those Go deleted, so any other legacy
+// user with no auth.users row is unexplained. Users Go has served stay in
+// scope, because the step does not leave them out either.
+func (v *Verifier) countUsers(ctx context.Context, options VerifyOptions) (TableVerification, error) {
+	counted := TableVerification{SourceTable: sourceUsers, SkippedByAction: map[string]int{}}
+	legacy := v.source.table(sourceUsers)
+	missing := `NOT EXISTS (SELECT 1 FROM auth.users u WHERE u.id = l.id)`
+	if err := v.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM `+legacy+` l WHERE `+notDeleted+`),
+			(SELECT count(*) FROM `+legacy+` l WHERE NOT `+missing+` AND `+notDeleted+`),
+			(SELECT count(*) FROM auth.users)`,
+	).Scan(&counted.InScope, &counted.Present, &counted.CanonicalTotal); err != nil {
+		return TableVerification{}, fmt.Errorf("counting %s: %w", sourceUsers, err)
+	}
+	counted.Expected = counted.InScope
+	counted.Carried = counted.Present
+	counted.Unexplained = counted.InScope - counted.Present
+
+	var err error
+	counted.UnexplainedIDs, err = v.ids(ctx, `
+		SELECT l.id::text FROM `+legacy+` l
+		WHERE `+missing+` AND `+notDeleted+`
+		ORDER BY md5(l.id::text) LIMIT $1`, options.Sample)
+	if err != nil {
+		return TableVerification{}, err
+	}
+	return counted, nil
+}
+
 // userDiffs is the per-user half of the count: a table can balance in total
 // while one user lost rows and another gained them.
 func (v *Verifier) userDiffs(
@@ -573,7 +608,7 @@ func (v *Verifier) sampleIDs(ctx context.Context, source legacySource, limit int
 		JOIN `+source.canonical+` c ON c.id = a.source_id
 		WHERE a.backfill_version = $1 AND a.source_table = '`+source.name+`'
 		  AND a.action = '`+source.carried+`'
-		  AND NOT EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id = c.user_id)
+		  AND NOT EXISTS (SELECT 1 FROM `+servedUsers+` m WHERE m.user_id = c.user_id)
 		ORDER BY md5(a.source_id::text) LIMIT $2`, Version, limit)
 }
 

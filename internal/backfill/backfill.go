@@ -78,7 +78,8 @@ type Options struct {
 	// scanned from the start of its keyspace. Every run, a delta or not,
 	// leaves alone every row owned by a user in reelpin.user_migrations: Go
 	// has served them, so their Go rows are theirs to change and their Python
-	// rows are frozen.
+	// rows are frozen. A user with an account deletion request counts as
+	// served too; see servedUsers.
 	Since *time.Time
 	// DumpedAt is when the dump the legacy schema was restored from was taken,
 	// read off Supabase's clock just before pg_dump. The next delta's mark is
@@ -87,7 +88,7 @@ type Options struct {
 	// every delta need it.
 	DumpedAt *time.Time
 	// PropagateDeletes makes a delta delete the canonical rows it carried for
-	// users not in reelpin.user_migrations whose legacy row is gone. It is for
+	// users Go has not served whose legacy row is gone. It is for
 	// the final delta only, with Python stopped: while Python still runs, a
 	// user can move between the dump and the delete.
 	PropagateDeletes bool
@@ -132,6 +133,10 @@ type Report struct {
 	// removed because their legacy row is gone.
 	Deleted map[string]int `json:"deleted"`
 
+	// UsersWritten is true once the users step committed. It commits on a
+	// dry run too, so a dry run is not a run that wrote nothing.
+	UsersWritten bool `json:"users_written"`
+
 	// HighWaterMark is what the next --since should be: the dump time less
 	// deltaOverlap. Only a real run that finished sets it.
 	HighWaterMark *time.Time `json:"high_water_mark,omitempty"`
@@ -154,8 +159,9 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Backfiller {
 	return &Backfiller{pool: pool, logger: logger, resolver: &sourceidentity.Resolver{}}
 }
 
-// Run copies reels, their places and embeddings, then jobs, then the wave 1
-// tables, resuming from the recorded cursor. Jobs run after reels because a
+// Run copies users, then reels, their places and embeddings, then jobs, then
+// the wave 1 tables, resuming from the recorded cursor. Users come first
+// because every user-owned row points at one. Jobs run after reels because a
 // job is only copied once its content exists, and reminders, price tracks and
 // hidden pins point at saves and at the places on them.
 func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
@@ -174,7 +180,9 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if err := b.source.describe(ctx, b.pool); err != nil {
 		return Report{}, err
 	}
-	if err := b.source.require(sourceReels, sourceJobs, sourceCache); err != nil {
+	// Off Supabase the users table is auth.users' only source. Without it
+	// every user-owned row would be skipped as an unknown reference.
+	if err := b.source.require(sourceUsers, sourceReels, sourceJobs, sourceCache); err != nil {
 		return Report{}, err
 	}
 
@@ -188,6 +196,9 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 	if err := b.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.user_migrations`).
 		Scan(&report.MigratedUsers); err != nil {
 		return report, fmt.Errorf("counting the users Go has served: %w", err)
+	}
+	if err := b.copyUsers(ctx, &report); err != nil {
+		return report, err
 	}
 	if err := b.backfillReels(ctx, options, &report); err != nil {
 		return report, err
@@ -249,22 +260,29 @@ func skipMigrated(owner string) string {
 	return ` AND NOT ` + migrated(owner)
 }
 
+// servedUsers is every user whose rows Go owns: those it has served, and those
+// who asked it to delete their account. The deletion cascades the first record
+// away, so the request row, which has no foreign key, stands in for it after.
+const servedUsers = `(SELECT user_id FROM reelpin.user_migrations
+	UNION ALL SELECT user_id FROM reelpin.account_deletion_requests)`
+
 // isMigrated re-reads the record inside a row's own transaction. The page the
 // row came from was filtered when it was read, and a user can move between
 // that read and this write.
 func isMigrated(ctx context.Context, db querier, userID string) (bool, error) {
 	var moved bool
 	if err := db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM reelpin.user_migrations WHERE user_id::text = lower($1))`,
+		SELECT EXISTS (SELECT 1 FROM `+servedUsers+` m WHERE m.user_id::text = lower($1))`,
 		userID).Scan(&moved); err != nil {
 		return false, fmt.Errorf("checking whether Go has served the user: %w", err)
 	}
 	return moved, nil
 }
 
-// migrated is whether the owner of the legacy row l has been served by Go.
+// migrated is whether the owner of the legacy row l has been served, or
+// deleted, by Go.
 func migrated(owner string) string {
-	return `EXISTS (SELECT 1 FROM reelpin.user_migrations m WHERE m.user_id::text = lower(l.` + owner + `::text))`
+	return `EXISTS (SELECT 1 FROM ` + servedUsers + ` m WHERE m.user_id::text = lower(l.` + owner + `::text))`
 }
 
 func (b *Backfiller) lock(ctx context.Context) (func(), error) {

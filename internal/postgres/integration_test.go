@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,8 +91,10 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("parsing TEST_DATABASE_URL: %v", err)
 	}
-	// Everything happens in a throwaway schema, never in public.
-	config.ConnConfig.RuntimeParams["search_path"] = testSchema
+	// Everything happens in a throwaway schema, never in public. Neon's proxy
+	// drops a search_path startup parameter but honours options.
+	options := config.ConnConfig.RuntimeParams["options"]
+	config.ConnConfig.RuntimeParams["options"] = strings.TrimSpace(options + " -c search_path=" + testSchema)
 
 	ctx := context.Background()
 	pool, err := pgxpool.NewWithConfig(ctx, config)

@@ -307,13 +307,17 @@ func TestAccountDeletionRemovesEveryOwnedRow(t *testing.T) {
 		}
 	}
 
-	// The stub identity deleter does not touch auth.users, so remove the identity
-	// here: the entitlement row goes with it by foreign key, as in production.
-	if _, err := pool.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userA); err != nil {
-		t.Fatal(err)
+	// The stub identity deleter does not touch auth.users, as nothing does off
+	// Supabase, so the account delete removes the mirror row itself and the
+	// entitlement row goes with it by foreign key.
+	if n := count(t, pool, `SELECT count(*) FROM auth.users WHERE id = $1`, userA); n != 0 {
+		t.Error("the user's auth.users row survived the account delete")
 	}
 	if n := count(t, pool, `SELECT count(*) FROM reelpin.user_entitlements WHERE user_id = $1`, userA); n != 0 {
-		t.Errorf("entitlements left behind after the identity went: %d", n)
+		t.Errorf("entitlements left behind after the account delete: %d", n)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM auth.users WHERE id = $1`, userB); n != 1 {
+		t.Error("the other user's auth.users row was removed")
 	}
 
 	// User B is untouched, and the content they share is still there.

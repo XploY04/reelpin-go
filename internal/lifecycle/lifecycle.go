@@ -312,9 +312,14 @@ func (s *Service) cleanDatabase(ctx context.Context, userID string) (Report, err
 		*step.target = count
 	}
 
-	// Collections, device tokens, notifications and profiles are deleted by
-	// their own foreign keys to auth.users when the identity goes, and by
-	// their own branches' cleanup where they need more than a cascade.
+	// Collections, device tokens, notifications, profiles and everything else
+	// a user owns go by their foreign keys to auth.users. Off Supabase that
+	// table is only a mirror, and nothing outside this transaction removes the
+	// row. On Supabase the identity deleter then finds the user already gone,
+	// which it treats as done.
+	if _, err := transaction.Exec(ctx, `DELETE FROM auth.users WHERE id = $1`, userID); err != nil {
+		return Report{}, fmt.Errorf("deleting the user's mirror row: %w", err)
+	}
 
 	if report.PrivateContent, err = deleteUnreachablePrivateContent(ctx, transaction, contentIDs); err != nil {
 		return Report{}, err
