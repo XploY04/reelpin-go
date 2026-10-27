@@ -1,120 +1,287 @@
 # Cutover runbook: Python to Go
 
-**Nothing in this file has been executed.** Go does not serve any traffic. This
-is the order the switch happens in, written while the code was fresh, so whoever
-runs it is not reconstructing it from memory.
+This is a production preparation plan awaiting the owner's approval. No
+production deployment, migration, secret write or routing change is authorized
+by this document. Go serves development at `/api/v2`; production still serves
+Python. The production switch keeps `/api/v1` on Python and adds `/api/v2` on Go
+for updated clients.
 
-## Before you start
+## Current production baseline
 
-- The Go stack is merged to `dev` and CI is green.
-- The alert rules are loaded into Prometheus and firing against dev.
-- The two open items are closed or accepted:
-  - Account deletion cannot delete the Supabase identity. `cmd/maintenance`
-    builds `lifecycle.New` with a `nil` auth deleter, so `identity_deleted` is
-    reported `false` and the row in `auth.users` survives.
-  - Hybrid search has now been measured against real `gemini-embedding-2`
-    vectors: recall@10 0.992 and nDCG@10 0.975 over 70 labeled queries, and the
-    dense gate was moved from an inherited 0.42 to a measured 0.40 because at
-    0.42 an unrelated query starts returning results. `api/eval/REPORT.md`
-    carries the numbers and is honest that the corpus is 61 synthetic reels,
-    not production data. Re-run it against real saves during the rehearsal.
-- There is 30 days of route usage data. Do not remove any route before that.
-- The rehearsal in `docs/rehearsal.md` has passed. Its gates are what decide
-  whether compute has to move before launch, and that decision is much cheaper
-  before traffic than after.
+Read-only measurements on 2026-10-28, before adding Go:
 
-## Hosts and services
+| Resource | Observed |
+|---|---|
+| Host | `ssh reelpin-ec2`, 2 vCPU, 911 MiB RAM |
+| Memory | 596 MiB used, 315 MiB available, 74 MiB free |
+| Swap | 240 MiB used of 2047 MiB |
+| Disk | 21 GB free of 29 GB |
+| Python API | 124.4 MiB current, 134.0 MiB peak, port 8000 |
+| Python worker | 179.8 MiB current, 290.3 MiB peak |
+| Redis | 3.6 MiB current, loopback port 6379 |
+| Go prerequisites | Docker absent, RabbitMQ inactive, port 8080 free |
+| Routing | nginx sends all API traffic to Python on 8000 |
+| GitHub | `production` environment exists; its secrets list is empty |
 
-Production uses managed PostgreSQL/Supabase, managed Redis and managed RabbitMQ.
-Compose stays local and dev only.
+These are measurements, not a capacity test. Re-read them before an approved
+trial, including Python's queues, active jobs and response latency.
 
-Dev and production are separate infrastructure: separate Supabase projects,
-separate Redis instances, separate RabbitMQ virtual hosts. Nothing in the schema
-distinguishes them, so the only thing keeping them apart is which env file a
-host has.
+Production Go uses Neon project `misty-scene-89733521`, branch `production`.
+Development stays in separate project `muddy-glade-39541440`. Confirm the
+production branch is still empty before the first migration: the 2026-10-28
+read-only check found no `reelpin`, `legacy` or `auth` schema, no non-system
+base tables and no `public.schema_migrations`. Stop and reconcile any new data
+instead of dropping it. Supabase
+`rdzykswefpgeolbamend` remains the shared Auth and Storage service. Python keeps
+its Supabase database; Go owns Neon `reelpin.*` and the `auth.users` mirror.
+There is no `environment` column in Go tables.
 
-API and worker are separate systemd units and separate env files. Never copy a
-development cookie set or database URL into production: the Instagram cookie
-pool in particular is per-environment, and sharing it gets both banned.
+## Gates before production work
 
-## Deployment mechanics
+1. Obtain owner approval for the concrete trial below, including Docker,
+   RabbitMQ, host files, Neon writes, credentials and subsequent routing. A
+   merged documentation PR is not that approval. Infrastructure spending stays
+   at $0: no host resize, paid plan or extra server. Approved Gemini and Maps
+   calls do not authorize infrastructure charges.
+2. Merge and test a deployment prerequisite change before any production
+   dispatch. `.github/workflows/release.yml` currently selects port 8000 for
+   production smoke, while `deploy/reelpin-smoke.sh` checks `/api/v2/health/*`.
+   On this host 8000 belongs to Python: a response there cannot prove Go
+   deployment. Set production smoke to 8080, require Go's expected identity and
+   build version in addition to readiness, and prove the wrong-service and
+   wrong-port cases fail. The workflow's migration container is also uncapped
+   today. Add `--memory 128m --memory-swap 128m --cpus 0.25` and an execution
+   gate that drains and stops the Go worker before migration; it must not
+   overlap busy worker processing. Test both limits and the execution gate
+   before production dispatch. This plan does not make those code changes.
+3. Complete dev CI, local integration tests and the rehearsal gates in
+   [rehearsal.md](rehearsal.md). Do not run integration suites against either
+   live Neon project. The 2026-10-27 snapshot and `backfill-verify --sample 100`
+   passed on Neon dev; deltas, recovery drills and capacity gates still need
+   evidence.
+4. Calibrate dense search on carried `gemini-embedding-001` vectors and record
+   `SEARCH_DENSE_MAX_DISTANCE`. The 0.40 default was measured on
+   `gemini-embedding-2`; it is not evidence for the carried model.
+5. Finish the website's signed-in flows, share-link destination, production
+   Vercel environment and Supabase redirect URLs. The web server uses the
+   production `API_BASE_URL`; browser credentials stay server-side.
+6. Finish the MCP consent page and Supabase OAuth server/client setup before
+   exposing MCP. Keep its nginx routes closed until then; see
+   [mcp.md](mcp.md). Do not treat a working REST login as OAuth consent proof.
+7. Prepare the Android app promotion and release built with
+   `REMOTE_CONFIG_URL=https://reelpin.in/config.json`. Verify native share,
+   share-token enqueue, job placeholders, collections and FCM on a device.
+   Android compilation alone does not prove these flows. iOS remains a separate
+   gate until its Share Extension compiles and passes device testing. Existing
+   clients continue on Python; this migration requires a client release.
 
-`release.yml` builds once and pushes to GHCR. The deploy job takes the
-**digest**, never a tag: a tag can move between the dev deploy and the
-production deploy, and then the two are not the same image.
+## Trial budget on the existing host
 
-Deployment is `workflow_dispatch` only today. Making the dev deploy automatic on
-push to `dev` is step 1 below.
+Keep the Python API, worker, Redis and nginx units running with their current
+limits. Proposed additional caps, to be tested before any user routing:
 
-**Production is a promotion, not a build.** Deploy to dev first, take the digest
-from that run, and dispatch production with it in the `digest` input. Leaving
-`digest` empty builds a fresh image, which is fine for dev and wrong for
-production: it would deploy bytes nothing tested.
+| Go service | Memory / total memory-plus-swap | CPU cap | Initial runtime settings |
+|---|---|---|---|
+| API | 96 / 96 MiB | 0.25 CPU | `GOMEMLIMIT=72MiB`, 128 pids |
+| Worker | 256 / 256 MiB | 0.75 CPU | `GOMEMLIMIT=160MiB`, 256 pids |
+| RabbitMQ | 192 / 192 MiB | 0.40 CPU | Absolute memory watermark 128 MiB, 256 pids |
 
-Migrations run as one job before anything new starts. `internal/migrations`
-takes a session-scoped PostgreSQL advisory lock, so two deploys racing cannot
-both apply. Migrations are expand-only: **never roll one back**. Roll back the
-application and ship a corrective migration forward. `migrate-down` refuses to
-run when `ENVIRONMENT=production` for exactly this reason.
+The memory-plus-swap limits equal RAM limits, so the new containers cannot
+consume more swap. Do not clear or resize the host's existing swap. Go's heap
+limit is not a process limit: the worker's cap includes `ffmpeg` and `yt-dlp`.
+A permitted 500 MiB media input can still exceed the worker's 256 MiB cap.
 
-The image entrypoint is the API. Running any other binary in it needs
-`--entrypoint`, or the arguments go to the API, which exits 2 rather than
-serving and pretending nothing happened.
+Allow an estimated 64 MiB for added Docker/containerd overhead; measure it after
+installation. Dev idle samples were about 36 MiB API, 31 MiB worker and 143 MiB
+RabbitMQ. Those plus the overhead estimate total 274 MiB, leaving only 41 MiB
+of the measured 315 MiB available. The container caps total 544 MiB; with
+64 MiB overhead that is 608 MiB, exceeding available memory by 293 MiB before
+Python grows toward its recorded peaks. Idle may fit. Busy coexistence is
+unproven and may fail.
 
-## The order
+There is no worker-concurrency flag to turn down. `cmd/worker` starts one
+consumer each for media, light, notifications and scheduled work, each with
+prefetch 1, plus the outbox, sweeper and reminder dispatcher. Scheduled price
+checks fetch four pages concurrently. One worker process can therefore do
+several kinds of work at once; a CPU cap does not serialize it.
 
-1. **Deploy Go on dev, serving nothing.** Python still owns all traffic. Watch
-   readiness, the metrics endpoint and the alert rules for a day.
-2. **Shadow idempotent reads only.** Mirror `GET` traffic to Go and compare
-   normalized status, body and latency. Never shadow a mutation: two enqueues of
-   the same share are two jobs.
-3. **Route reads to Go on dev**, in this order: reels, jobs and account reads
-   first, then collections, map and search.
-4. **Run the backfills and read the reports.** `maintenance backfill-embeddings`
-   and `maintenance rebuild-queue`, both dry-run first. Verify the counts before
-   continuing.
-5. **Test the native paths end to end** on real devices: Android and iOS share
-   extensions, share-token enqueue, cold-start job placeholders, collection
-   filing at share time, FCM routing, and one share per platform.
-6. **Switch dev enqueue to Go and RabbitMQ.** Python keeps draining its Redis
-   queue but takes no new writes.
-7. **Wait for Python's queued and processing jobs to reach zero.** Check for
-   orphans before moving on.
-8. **Rehearse the migration against a disposable production snapshot.** Throw it
-   away afterwards; this is not a permanent staging environment.
-9. **Open the final `dev -> main` promotion PR** and re-run every check.
-10. **Deploy Go beside Python in production.** Switch read routes, then write
-    routes, then enqueue, with a pause between each.
-11. **Keep Go workers draining RabbitMQ through any API rollback.** The Python
-    worker cannot consume RabbitMQ. Stopping the Go workers strands every job
-    already published.
-12. **Observe for 14 days** before decommissioning anything Python.
+Run one worker process, with disk-backed `/var/lib/reelpin/work` owned by uid
+10001, never a media tmpfs. Use the application's disk admission limit, bounded
+Docker logs (10 MiB, three files per container), and a broker disk-free limit
+of 1 GiB. Re-read host disk before retaining old images and dumps; keep the
+previous digest for rollback.
 
-## Rollback
+The $0 fallback is to keep Python in production and Go in development. Stop
+only the added trial services if they fail before Go accepts work. Do not
+raise caps, resize the host or retire Python to make a failed trial fit. Return
+the measured failure to the owner for a capacity decision.
 
-- **Before Go enqueue (steps 1 to 5):** point the reverse proxy back at Python.
-  Both read the same schema, so nothing is stranded.
-- **After Go enqueue (step 6 onward):** either keep the Go workers running, or
-  stop new enqueue and let them drain. Never route a RabbitMQ job to Python.
-- **Never roll back a migration.** Expand-only means the old code still works
-  against the new schema.
+## Approved preparation sequence
 
-## Then: retiring Python
+Execute this section only after the approval gate above. Record the tested
+commit, immutable image digest, initial measurements and recovery points.
 
-A separate `reelpin-api` change, because a GitHub stack cannot span
-repositories. After the 14-day window and with zero Python API traffic, zero
-Redis processing messages, zero active Python jobs and no rollback event:
+1. Test the deployment prerequisite fix locally, run `make check` and the local
+   integration suite, then deploy the chosen digest to dev. Record the running
+   build and acceptance results. Reserve that same
+   `ghcr.io/xploy04/reelpin-go@sha256:...` digest for production promotion at
+   step 11, after host and data preparation. Do not rebuild it or dispatch
+   production with an empty `digest` input.
+2. Verify production backups and a timed restore for PostgreSQL, Auth, Storage
+   and required keys. Keep the Python service definitions, nginx configuration,
+   current images and queue state recoverable. Record recovery limits before
+   any production data copy.
+3. Install Docker only after confirming its network/firewall changes preserve
+   Python's existing access. Pin a locally tested RabbitMQ image by digest,
+   without the management plugin. Create `reelpin-rabbitmq-production`, a durable
+   volume and vhost/user dedicated to Go production. Bind AMQP only to
+   `127.0.0.1:5672`; expose no management UI. Apply the caps and absolute
+   watermark above. Start RabbitMQ alone and measure its idle impact first.
+4. Create `/etc/reelpin/production.env` and the separate RabbitMQ env file with
+   root ownership and mode `0600`. Populate them through a protected input/file
+   transfer, never terminal output, chat, shell tracing, command arguments,
+   source control or CI logs. Do not alter Python's env file. Set:
 
-- Stop and disable the Python API and worker units.
-- Remove the old deploy jobs and secrets, recording their owners first.
-- Delete the Pinecone vectors and index **only** after the PostgreSQL search
-  backup and its verification report are stored.
-- Remove the Redis queue keys only after the retention and replay windows close.
-- Apply the approved cleanup migrations.
-- Keep the Python repository and its final image tag read-only, as history.
-- Update the agent context, the runbooks and the final timeline entry.
+   | Setting | Production value or source |
+   |---|---|
+   | `ENVIRONMENT`, `APP_VERSION`, `WORKER_ID` | `production`, tested commit, unique production worker id |
+   | `PORT`, `METRICS_PORT` | 8080, 9101 |
+   | `DATABASE_URL` | Direct TLS URL for Neon `misty-scene-89733521`, branch `production` |
+   | `SUPABASE_URL`, `SUPABASE_JWT_AUDIENCE` | `https://rdzykswefpgeolbamend.supabase.co`, `authenticated` |
+   | `SUPABASE_SERVICE_ROLE_KEY` | Shared project's existing protected value, needed for Storage and identity deletion |
+   | `REDIS_URL`, `REDIS_KEY_PREFIX` | Existing loopback Redis, a checked-unused logical database, prefix `reelpin-go-production` |
+   | `RATE_LIMIT_SALT`, `ADMIN_KEY` | Newly generated protected values |
+   | `RABBITMQ_URL` | Loopback Go production vhost and dedicated credentials |
+   | `SHARE_BASE_URL`, `PUBLIC_WEB_BASE_URL` | `https://reelpin.in`, with the web share-route gate resolved |
+   | `PUBLIC_API_BASE_URL` | `https://api.reelpin.in`; nginx keeps MCP closed until OAuth acceptance |
+   | `REELPIN_IP_BUCKET_SECRET` | Same protected value as the production Next.js server |
+   | `GEMINI_API_KEY`, `GOOGLE_MAPS_API_KEY` | Approved production provider credentials |
+   | `EMBEDDING_MODEL`, `SEARCH_DENSE_MAX_DISTANCE` | `gemini-embedding-001`, measured dev value |
+   | `INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64`, `INSTAGRAM_BACKUP_COOKIE_DATA_BASE64`, `INSTAGRAM_TERTIARY_COOKIE_DATA_BASE64` | The same Python production cookie slots, privately mapped to these Go names as approved by the owner |
+   | `FIREBASE_PROJECT_ID`, `FIREBASE_CREDENTIALS_JSON` | Protected production FCM configuration |
+   | `REEL_THUMBNAIL_BUCKET` | Existing `reel-thumbnails` bucket |
 
-## Done when
+   Preserve the approved cookie-reuse decision; do not substitute development
+   cookies. Inventory `APIFY_API_TOKEN`, `APIFY_ACTORS`, Reddit credentials and
+   any non-default binary paths privately. Leave paid fallbacks disabled unless
+   their use is separately authorized. Set all four `COST_GATE_*` values from
+   approved prices/thresholds or leave all four unset; the latter records usage
+   without restricting spending. Neither choice increases provider approval.
+   Confirm the chosen Redis database/prefix leaves Python's keys untouched;
+   never flush Redis. Keep maintenance on the direct Neon URL because its
+   migration lock needs a session. If a search path is required, pass it through
+   `options=-c search_path=...` rather than a dropped proxy startup parameter.
+5. Add GitHub environment secrets `DEPLOY_HOST`, `DEPLOY_USER` and
+   `DEPLOY_SSH_KEY` to `production`, using the existing host and a dedicated
+   deployment key. Verify environment branch restrictions and owner approval
+   protection. The workflow needs privilege to run Docker and the deployment
+   script; review that access before installing the key. Keep database/provider
+   values in the root-only host files. Never copy dev deployment secrets.
+6. Confirm the Neon project/branch identity and empty application schema again.
+   Pull the tested digest and run its maintenance entrypoint against production
+   with Go services stopped: `migrate`, then `migrate-status`. Apply every
+   embedded migration, currently `00000` through `00024`; verify the actual
+   list for the promoted digest. Do not skip the auth mirror migration. Use a
+   bounded one-off container (initially 128 MiB, no extra swap), run sequentially
+   with other preparation jobs, and verify each exit status. Stop on a failure;
+   do not rerun with a different database or roll migrations back.
+7. Take a fresh read-only Supabase dump, limited users export and source-clock
+   `DUMPED_AT`, then restore to Neon production `legacy`, following
+   [rehearsal.md](rehearsal.md) exactly. Run staging/restore tooling off the
+   constrained EC2 host. With Go API and worker still stopped, run the dry
+   snapshot, inspect skips and counts, then `backfill-legacy --execute` and
+   `backfill-verify --sample 100` without `--allow-drift`. Require zero unexplained
+   rows, missing carried rows and field mismatches. Read `compared` and
+   `text_not_comparable`; check maps and embedding model counts. Save the
+   reported `next_since` for the first delta. Retain `legacy` through the final
+   delta. This copies data into Neon, not back into Supabase.
+8. Install new units and containers named `reelpin-api-production` and
+   `reelpin-worker-production`; never reuse the Python unit names. Match
+   `deploy/reelpin-deploy.sh`'s image files
+   `/etc/reelpin/reelpin-{api,worker}-production.image`, mode `0600`. Use the
+   tested digest, read-only root filesystems, uid 10001 and the trial limits.
+   Override the API's image health URL to
+   `http://127.0.0.1:8080/api/v2/health/live`; disable that API healthcheck on the
+   worker. Use disk-backed worker scratch, graceful stop timeouts and separate
+   restart policies. Go currently binds all interfaces on its configured
+   ports; firewall/security-group rules must deny external access to 8080 and
+   9101. Only nginx reaches the API and approved internal scrapers reach metrics.
+9. Start the API alone, prove its 8080 identity/build and readiness directly,
+   and verify Python 8000 remains healthy. Measure added RAM, Docker overhead,
+   swap activity and Python p95. Start the worker only with its production queue
+   empty; it immediately seeds reminders and schedules daily price checks, so
+   this start can send notifications and fetch product pages from carried data.
+   If due reminders or price tracks exist, review them and obtain approval for
+   those side effects before starting it. Verify heartbeats and queue consumers.
+10. Exercise one approved processing job while observing Python and Go together,
+    then a bounded mix covering the worker's concurrent consumers. Paid calls
+    must stay inside the approved Gemini/Maps scope. Require no OOM/restart,
+    sustained swap growth or broker memory alarm, and no material Python
+    latency/error regression; record limits and peaks, not just idle RSS.
+    Require read p95 below 800 ms and database network time below 150 ms.
+    A failed trial blocks routing. Apply the $0 fallback above.
+11. Before any client reaches Go, refresh `legacy` and apply a verified delta
+    using the saved mark and the new source-clock dump time. Read back all
+    environment/port/image settings without exposing secrets. Pause new trial
+    submissions, wait for every Go processing run to finish and stop the Go
+    worker. Dispatch the corrected release workflow only with
+    `environment=production` and the reserved tested digest. Its migration
+    must run under the 128 MiB, no-extra-swap, 0.25 CPU limits before the
+    deployment restarts the worker. Confirm the smoke targets 8080 and the
+    actual build.
+12. Back up the nginx site, add `location ^~ /api/v2/` proxying to
+    `http://127.0.0.1:8080` while preserving the URI and forwarding its normal
+    host/client headers. Keep `/api/v1/` and the existing fallback on Python
+    8000. Run `nginx -t` before reloading. Check v1 and v2 readiness and
+    authenticated reads with an approved test account independently through
+    TLS. Its first Go request records that account as migrated. Do not mirror writes.
+    Add exact `/mcp` and metadata routes only after the separate OAuth gate
+    passes. Record the config and verification time.
+13. Release the approved Android build through the app's promotion/store flow.
+    Keep `config.json` migration gates off until the owner approves a staged
+    cohort; increase cohorts only after authenticated library, enqueue,
+    search, share-extension and FCM checks pass on production. Website
+    production switches to the Go origin only after its separate acceptance.
 
-The current release Flutter app and both native share extensions pass every flow
-with no base-URL change and no client release.
+## Dual run and rollback
+
+Python and Go have different databases. A proxy change cannot undo Go writes
+or copy them to Supabase. Keep each user on one backend: their first served Go
+request records `user_migrations`, after which legacy backfills leave that
+user's rows alone. Old-app writes between the last dump and that first request
+can be lost; the gap and manual Pro-grant procedure are documented in
+[rehearsal.md](rehearsal.md). Deltas are not bidirectional synchronization.
+
+Run the documented nightly dump/delta/verify sequence and retain each
+`next_since`. Do not restart a Go worker after every import without considering
+that it re-seeds reminders. Before forcing an Android minimum build through
+`config.json`, obtain owner approval, check adoption and drain Python work.
+Then freeze Python writes, take the final dump, dry-run and execute the final
+`--propagate-deletes` delta, and verify without `--allow-drift`. Keep the
+production `legacy` copy until acceptance; its eventual removal is a separate
+approved destructive step.
+
+Before Go serves real users, revert the new nginx routes and stop only the Go
+trial if needed. Once real users reach Go, their migration markers change what
+later deltas copy, even if they only read. After Go accepts mutations, freeze
+new Go enqueue and leave workers draining RabbitMQ; Python cannot consume those
+jobs. Keep migrated
+users on their Go data, restore a previous compatible Go digest, or use an
+owner-approved recovery/reconciliation plan. Routing those users back to Python
+would show stale data and can lose changes. Never roll back the database or
+silently run a reverse copy. Account deletion uses shared Supabase Auth, so
+identity deletion is not isolated to a backend and cannot be reversed by nginx.
+
+## Retiring Python and completion
+
+Keep the Python deployment recoverable for at least 14 days after the final
+switch. Retirement requires zero Python API traffic, zero Redis processing
+messages and active Python jobs, no rollback event, and 30 days of route-use
+evidence before route removal. Only then propose stopping its units, removing
+owned secrets/deploy jobs and legacy queue keys. Treat cleanup migrations,
+legacy-schema removal and any Pinecone deletion as separate approved changes.
+
+The cutover is complete when released Android clients and native share paths
+pass against Go, the web and OAuth gates are satisfied for the surfaces being
+launched, the final delta verifies, recovery/alert drills pass and the measured
+host load fits its caps. iOS is not declared ready from Android evidence.
