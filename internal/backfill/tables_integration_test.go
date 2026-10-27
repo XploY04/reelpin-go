@@ -378,7 +378,7 @@ func TestWave1TablesCarryOverAndVerify(t *testing.T) {
 	}
 
 	entitlements := report.Tables["user_entitlements"]
-	if entitlements.Copied != 1 || entitlements.SkippedByAction["skipped_invalid"] != 1 ||
+	if entitlements.Copied != 1 || entitlements.SkippedByAction["skipped_invalid_owner"] != 1 ||
 		entitlements.SkippedByAction["skipped_unknown_reference"] != 1 {
 		t.Errorf("user_entitlements = %+v, want one copied, one invalid id, one unknown user", entitlements)
 	}
@@ -1113,5 +1113,65 @@ func TestAUserWhoMovesAfterThePageWasReadIsNotWritten(t *testing.T) {
 	}
 	if counts.Copied != 0 || counts.Skipped != 0 || count(t, pool, "reelpin.backfill_audit") != 0 {
 		t.Errorf("counts = %+v and audit rows were written for a user who moved", counts)
+	}
+}
+
+// Python tagged every vector gemini-embedding-001@768. Go searches by
+// EMBEDDING_MODEL, the bare name Gemini takes, so a tag carried verbatim
+// would hide every carried vector from search.
+func TestEmbeddingModelTagsLoseTheirWidthSuffix(t *testing.T) {
+	pool := testPool(t)
+	seedScratch(t, pool)
+	ctx := context.Background()
+
+	const (
+		taggedReel = "bbbbbbbb-0000-4000-8000-000000000009"
+		widerReel  = "bbbbbbbb-0000-4000-8000-00000000000a"
+	)
+	exec(t, pool, `
+		INSERT INTO legacy.reels (id, user_id, url, title, embedding, embedding_model, created_at)
+		VALUES ($1, $3, 'https://www.instagram.com/reel/TAGGED9/', 'Tagged',
+		        array_fill(0.3, ARRAY[768])::public.vector, 'gemini-embedding-001@768', '2026-02-01T00:00:00Z'),
+		       ($2, $3, 'https://www.instagram.com/reel/WIDER9/', 'Wider',
+		        array_fill(0.4, ARRAY[768])::public.vector, 'gemini-embedding-001@1536', '2026-02-01T00:00:00Z')`,
+		taggedReel, widerReel, userA)
+
+	report, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if report.EmbeddingsCopied != 2 || report.EmbeddingsSkipped != 1 {
+		t.Errorf("embeddings_copied=%d embeddings_skipped=%d, want 2 and 1",
+			report.EmbeddingsCopied, report.EmbeddingsSkipped)
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.content_embeddings
+		WHERE content_version_id = $1 AND model = 'gemini-embedding-001'`, versionOf(t, pool, taggedReel)) {
+		t.Error("the @768 vector was not stored under the bare model name")
+	}
+	if exists(t, pool, `
+		SELECT 1 FROM reelpin.content_embeddings WHERE content_version_id = $1`, versionOf(t, pool, widerReel)) {
+		t.Error("a vector tagged with another width was stored")
+	}
+	if action := auditAction(t, pool, sourceReelEmbeddings, widerReel); action != skippedEmbeddingWidth {
+		t.Errorf("the wider vector is audited %q, want %s", action, skippedEmbeddingWidth)
+	}
+	if action := auditAction(t, pool, sourceReels, widerReel); action != "saved" {
+		t.Errorf("the wider reel is audited %q, want its save kept", action)
+	}
+
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !verified.OK() {
+		t.Errorf("the backfill does not verify: %+v", verified)
+	}
+	if verified.Embeddings.Legacy != 2 || verified.Embeddings.Canonical != 2 || verified.Embeddings.Skipped != 1 {
+		t.Errorf("embeddings = %+v, want 2 legacy, 2 canonical and 1 skipped", verified.Embeddings)
+	}
+	if len(verified.Embeddings.Models) != 1 || verified.Embeddings.Models["gemini-embedding-001"] != 2 {
+		t.Errorf("embedding models = %v, want both carried vectors under gemini-embedding-001",
+			verified.Embeddings.Models)
 	}
 }

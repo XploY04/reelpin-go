@@ -15,10 +15,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/embed"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,6 +48,15 @@ const legacyVersion = "python-legacy"
 // record its own embedding_model. A vector is only comparable with others from
 // the same model, so the tag travels with it.
 const legacyEmbeddingModel = "gemini-embedding-001"
+
+// sourceReelEmbeddings is the audit table name for a legacy vector left
+// behind. It is not sourceReels: the reel itself has its own audit row, which
+// one row per source id would overwrite.
+const sourceReelEmbeddings = "reel_embeddings"
+
+// skippedEmbeddingWidth is the audit action for a vector whose model tag
+// names a width other than the canonical column's.
+const skippedEmbeddingWidth = "skipped_embedding_width"
 
 const (
 	sourceReels = "reels"
@@ -111,18 +122,28 @@ type Report struct {
 	Conflicts       int `json:"conflicts"`
 	ConflictsMerged int `json:"conflicts_merged"`
 	Failures        int `json:"failures"`
+	// InvalidOwners counts legacy reels whose user_id is not a UUID, and
+	// UnknownOwners those whose user is not in auth.users. Both are skipped.
+	InvalidOwners int `json:"invalid_owners"`
+	UnknownOwners int `json:"unknown_owners"`
 
 	// LocationsCopied and EmbeddingsCopied count content_locations and
 	// content_embeddings rows this run wrote or refreshed from the legacy
-	// reels; see copyReelPlacesAndEmbeddings.
-	LocationsCopied  int `json:"locations_copied"`
-	EmbeddingsCopied int `json:"embeddings_copied"`
+	// reels; see copyReelPlacesAndEmbeddings. EmbeddingsSkipped counts vectors
+	// left behind because their model tag names another width.
+	LocationsCopied   int `json:"locations_copied"`
+	EmbeddingsCopied  int `json:"embeddings_copied"`
+	EmbeddingsSkipped int `json:"embeddings_skipped"`
 
 	JobsScanned      int `json:"jobs_scanned"`
 	JobsCreated      int `json:"jobs_created"`
 	JobsAlreadyThere int `json:"jobs_already_there"`
 	JobsUncertain    int `json:"jobs_uncertain"`
 	RunsCreated      int `json:"runs_created"`
+	// JobsInvalidOwners and JobsUnknownOwners are InvalidOwners and
+	// UnknownOwners for jobs.
+	JobsInvalidOwners int `json:"jobs_invalid_owners"`
+	JobsUnknownOwners int `json:"jobs_unknown_owners"`
 
 	Tables map[string]TableReport `json:"tables"`
 
@@ -279,6 +300,35 @@ func isMigrated(ctx context.Context, db querier, userID string) (bool, error) {
 	return moved, nil
 }
 
+// skippedInvalidOwner is the audit action for a legacy row whose owner is not
+// a UUID. Python's user_id is text, and test rows such as 'default-user' sit
+// beside real users; no canonical row can belong to one.
+const skippedInvalidOwner = "skipped_invalid_owner"
+
+// skippedUnknownReference is the audit action for a row whose parent is not
+// there: the constraint a mapped table names it by, and an owner a reel or a
+// job names that auth.users does not have.
+const skippedUnknownReference = "skipped_unknown_reference"
+
+// ownerSkip judges the user a legacy reel or job names before anything binds
+// it to a uuid column, where a test owner would abort the whole run. It
+// returns the skip action and its note, or "" for an owner who can hold rows.
+// The dry run asks the same question, so its counts are the real run's.
+func ownerSkip(ctx context.Context, db querier, userID string) (string, string, error) {
+	if !uuidShape.MatchString(userID) {
+		return skippedInvalidOwner, "the owner is not a uuid", nil
+	}
+	var known bool
+	if err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM auth.users WHERE id = $1::uuid)`, userID).Scan(&known); err != nil {
+		return "", "", fmt.Errorf("checking the owner in auth.users: %w", err)
+	}
+	if !known {
+		return skippedUnknownReference, "the owner is not in auth.users", nil
+	}
+	return "", "", nil
+}
+
 // migrated is whether the owner of the legacy row l has been served, or
 // deleted, by Go.
 func migrated(owner string) string {
@@ -377,6 +427,19 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		return nil
 	}
 
+	action, note, err := ownerSkip(ctx, b.pool, row.UserID)
+	if err != nil {
+		return err
+	}
+	switch action {
+	case skippedInvalidOwner:
+		report.InvalidOwners++
+		return b.audit(ctx, options, batch, sourceReels, row.ID, action, nil, nil, nil, note)
+	case skippedUnknownReference:
+		report.UnknownOwners++
+		return b.audit(ctx, options, batch, sourceReels, row.ID, action, nil, nil, nil, note)
+	}
+
 	identity, scopeHash, err := identify(ctx, b.resolver, row.URL, row.NormalizedURL, row.UserID)
 	if err != nil {
 		report.InvalidURLs++
@@ -392,6 +455,13 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 	}
 
 	if !options.Execute {
+		moved, err := isMigrated(ctx, b.pool, row.UserID)
+		if err != nil {
+			return err
+		}
+		if moved {
+			return nil
+		}
 		return b.reportOneReel(ctx, identity, scopeHash, report)
 	}
 
@@ -590,16 +660,19 @@ func (b *Backfiller) copyReelPlacesAndEmbeddings(ctx context.Context, options Op
 	}
 
 	if shape.has("embedding") {
+		chosen := chosenReels(reels, shape,
+			`l.id AS reel_id, l.embedding::text AS embedding,
+			 `+carriedModel(shape)+` AS model,
+			 `+legacyModel(shape)+` AS legacy_model`,
+			`l.embedding IS NOT NULL`)
 		tag, err := transaction.Exec(ctx, `
-			WITH chosen AS (`+chosenReels(reels, shape,
-			`l.embedding::text AS embedding,
-			 coalesce(nullif(btrim((`+shape.col("embedding_model")+`)::text), ''), $2) AS model`,
-			`l.embedding IS NOT NULL`)+`)
+			WITH chosen AS (`+chosen+`)
 			INSERT INTO reelpin.content_embeddings AS e
 				(content_version_id, embedding, model, dimension, document_version, document_hash)
-			SELECT chosen.version_id, chosen.embedding::public.vector, chosen.model, 768, $1,
+			SELECT chosen.version_id, chosen.embedding::public.vector, chosen.model, $2, $1,
 			       md5(chosen.model || '|' || chosen.embedding)
 			FROM chosen
+			WHERE chosen.model IS NOT NULL
 			ON CONFLICT (content_version_id) DO UPDATE SET
 				embedding = EXCLUDED.embedding,
 				model = EXCLUDED.model,
@@ -608,17 +681,56 @@ func (b *Backfiller) copyReelPlacesAndEmbeddings(ctx context.Context, options Op
 				embedded_at = now()
 			WHERE e.document_version = EXCLUDED.document_version
 			  AND e.document_hash IS DISTINCT FROM EXCLUDED.document_hash`,
-			legacyVersion, legacyEmbeddingModel)
+			legacyVersion, embed.DefaultDimension)
 		if err != nil {
 			return fmt.Errorf("copying legacy reel embeddings: %w", err)
 		}
 		report.EmbeddingsCopied = int(tag.RowsAffected())
+
+		// The audit stores identifiers only, and a model tag is not user text.
+		skipped, err := transaction.Exec(ctx, `
+			WITH chosen AS (`+chosen+`)
+			INSERT INTO reelpin.backfill_audit
+				(backfill_version, batch, source_table, source_id, action, note)
+			SELECT $2, 0, $3, chosen.reel_id, $4,
+			       'embedding_model ' || chosen.legacy_model || ' does not fit vector(' || $5::int || ')'
+			FROM chosen
+			WHERE chosen.model IS NULL
+			ON CONFLICT (backfill_version, source_table, source_id)
+			DO UPDATE SET action = EXCLUDED.action, note = EXCLUDED.note`,
+			legacyVersion, Version, sourceReelEmbeddings, skippedEmbeddingWidth, embed.DefaultDimension)
+		if err != nil {
+			return fmt.Errorf("auditing legacy reel embeddings left behind: %w", err)
+		}
+		report.EmbeddingsSkipped = int(skipped.RowsAffected())
 	}
 
 	if !options.Execute {
 		return nil
 	}
 	return transaction.Commit(ctx)
+}
+
+// legacyModel is the model a legacy reel's vector was made with, as Python
+// recorded it, over the legacy row l.
+func legacyModel(shape tableShape) string {
+	return `coalesce(nullif(btrim((` + shape.col("embedding_model") + `)::text), ''), '` + legacyEmbeddingModel + `')`
+}
+
+// carriedModel is the model a carried vector is stored under. Python tagged
+// its vectors model@dimensions, gemini-embedding-001@768, but Go searches by
+// EMBEDDING_MODEL and sends it to Gemini as the model name, so a tag carried
+// verbatim would hide every vector from search. The suffix is dropped when it
+// names the canonical width; any other width is NULL, a vector that cannot
+// sit in the column under an honest tag.
+func carriedModel(shape tableShape) string {
+	model := legacyModel(shape)
+	width := strconv.Itoa(embed.DefaultDimension)
+	return `(CASE
+		WHEN ` + model + ` !~ '@[0-9]+$' THEN ` + model + `
+		WHEN substring(` + model + ` from '@([0-9]+)$') = '` + width + `'
+		THEN regexp_replace(` + model + `, '@[0-9]+$', '')
+		END)`
 }
 
 // chosenReels picks, for every content version this backfill built, the one
