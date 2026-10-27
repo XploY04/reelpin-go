@@ -8,6 +8,7 @@ folder is the detail behind it. Read the page the task needs, not the folder.
 | [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | You need the shape of the system and why it is that shape. |
 | [`domain-model.md`](domain-model.md) | You are touching reels, jobs, or how one becomes the other. |
 | [`api-contract.md`](api-contract.md) | You are adding, changing, or breaking an endpoint. |
+| [`mcp.md`](mcp.md) | You are connecting an assistant to `/mcp`, changing a tool, or setting up the OAuth flow. |
 | [`operations.md`](operations.md) | You are running it, configuring it, or it is misbehaving. |
 | [`cost-gate.md`](cost-gate.md) | You need to know what a job costs a provider, or you are setting the spending limits. |
 | [`model-migration.md`](model-migration.md) | You are changing which model the pipeline calls, or you want the measurements behind the one it calls now. |

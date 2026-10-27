@@ -40,6 +40,11 @@ type Config struct {
 	// web_url: /r/{reel_id} and /collections/{collection_id} on this origin.
 	PublicWebBaseURL string
 
+	// PublicAPIBaseURL is the origin this API is reached on, such as
+	// https://api.reelpin.in. The MCP endpoint names itself by it in its OAuth
+	// protected-resource metadata, so empty means /mcp is not served.
+	PublicAPIBaseURL string
+
 	// AdminKey guards the Prometheus endpoints. Empty means neither process
 	// exposes one: queue depths and failure rates are operational detail, and
 	// an unauthenticated scrape target is worse than none.
@@ -170,6 +175,7 @@ func Load() (Config, error) {
 		SupabaseServiceRoleKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
 		ShareBaseURL:           envOr("SHARE_BASE_URL", "https://reelpin.in"),
 		PublicWebBaseURL:       envOr("PUBLIC_WEB_BASE_URL", "https://reelpin.in"),
+		PublicAPIBaseURL:       strings.TrimSuffix(strings.TrimSpace(os.Getenv("PUBLIC_API_BASE_URL")), "/"),
 		RabbitMQURL:            strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
 		WorkerID:               envOr("WORKER_ID", defaultWorkerID()),
 

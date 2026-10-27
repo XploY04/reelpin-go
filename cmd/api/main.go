@@ -169,6 +169,9 @@ func run(logger *slog.Logger) error {
 	if cfg.AdminKey == "" {
 		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
 	}
+	if cfg.PublicAPIBaseURL == "" {
+		logger.Warn("no PUBLIC_API_BASE_URL: the MCP endpoint is not served")
+	}
 	activity := metrics.NewActivity(pool)
 	go metrics.Sample(ctx, meters, activity, liveWorkers, nil)
 
@@ -243,6 +246,8 @@ func run(logger *slog.Logger) error {
 		Version:        cfg.Version,
 
 		PublicWebBaseURL: cfg.PublicWebBaseURL,
+		PublicAPIBaseURL: cfg.PublicAPIBaseURL,
+		OAuthIssuer:      verifier.Issuer(),
 		StageBudgets:     pipeline.StageBudgets(),
 	})
 	if err != nil {

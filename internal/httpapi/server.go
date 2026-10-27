@@ -97,6 +97,14 @@ type Deps struct {
 	// PublicWebBaseURL is the site every reel and collection links to as its
 	// web_url.
 	PublicWebBaseURL string
+	// PublicAPIBaseURL is the origin this API is reached on. The MCP endpoint
+	// names itself by it in its OAuth protected-resource metadata, so empty
+	// means /mcp is not served.
+	PublicAPIBaseURL string
+	// OAuthIssuer is the authorization server that metadata sends MCP clients
+	// to: the Supabase project's /auth/v1, the same issuer every token here
+	// is verified against.
+	OAuthIssuer string
 	// StageBudgets are the pipeline's stages in order, which a job's remaining
 	// time is estimated from. Nil means no job carries an estimate.
 	StageBudgets []jobs.StageBudget
@@ -111,6 +119,7 @@ type Server struct {
 	jobs         *jobs.Service
 	entitlements *entitlements.Service
 	collections  *collections.Service
+	mcp          *mcpServer
 }
 
 func New(deps Deps) (*Server, error) {
@@ -127,6 +136,15 @@ func New(deps Deps) (*Server, error) {
 	}
 	if err := checkDependencies(deps, server.routeTable()); err != nil {
 		return nil, err
+	}
+	if deps.PublicAPIBaseURL != "" {
+		if deps.OAuthIssuer == "" {
+			return nil, fmt.Errorf("PublicAPIBaseURL is set but OAuthIssuer is empty: the MCP metadata would name no authorization server")
+		}
+		if err := checkDependencies(deps, server.mcpRequirements()); err != nil {
+			return nil, err
+		}
+		server.mcp = newMCPServer(server)
 	}
 	return server, nil
 }
@@ -229,6 +247,19 @@ func (s *Server) Routes() http.Handler {
 	// generated client should ever call it.
 	if s.deps.Metrics != nil && s.deps.AdminKey != "" {
 		mux.Handle("GET /metrics", s.deps.Metrics.GuardedHandler(s.deps.AdminKey))
+	}
+
+	// The MCP endpoint and its OAuth metadata are outside the route table and the
+	// contract for the same reason /metrics is: they are not REST operations and
+	// no generated client calls them. /mcp carries JSON-RPC over POST; the
+	// method-less patterns answer the same JSON 405 every v2 path does. There is
+	// no root metadata document: RFC 9728 has it name the origin, which is not
+	// a protected resource here.
+	if s.mcp != nil {
+		mux.Handle("POST /mcp", s.mcp.origins.Handler(s.mcpAuthenticated(s.mcp.handler)))
+		mux.HandleFunc("/mcp", s.methodNotAllowed([]string{http.MethodPost}))
+		mux.Handle("GET /.well-known/oauth-protected-resource/mcp", s.mcp.metadata)
+		mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", s.methodNotAllowed([]string{http.MethodGet, http.MethodHead}))
 	}
 
 	mux.HandleFunc("/", notFound)

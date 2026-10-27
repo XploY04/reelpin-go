@@ -26,6 +26,13 @@ correct and tested.
   directly on the mux instead of in `routeTable()` and stays out of
   `api/openapi.yaml`. It is served only when both a registry and an admin key
   are configured.
+- **`/mcp` and its `/.well-known/oauth-protected-resource/mcp` document are
+  the other exception.** They are JSON-RPC and OAuth metadata, not REST
+  operations, so they are mounted beside `/metrics` and stay out of the
+  contract; `/mcp` is served only when `PublicAPIBaseURL` is set. The tools
+  in `mcp_tools.go` decode, call a service and encode, exactly like a
+  handler, and answer a tool error in place of an error envelope. See
+  `docs/mcp.md`.
 - **A log line never carries a user id.** `metrics.Hash` turns it into a stable
   16-character digest, and the path logged is `r.Pattern`, not the raw URL: a
   raw path carries reel and job ids.

@@ -92,9 +92,9 @@ type meteredCheck struct {
 
 // meteredChecks are the buckets one metered request draws on, in order: the
 // OAuth client's under the user if any, the user's total, then the IP's.
-func meteredChecks(r *http.Request, userID string, user, ip ratelimit.Policy, ipSubject string) []meteredCheck {
+func meteredChecks(userID, clientID, ipSubject string, user, ip ratelimit.Policy) []meteredCheck {
 	var checks []meteredCheck
-	for _, subject := range user.UserSubjects(userID, requestClientID(r)) {
+	for _, subject := range user.UserSubjects(userID, clientID) {
 		checks = append(checks, meteredCheck{user, subject})
 	}
 	return append(checks, meteredCheck{ip, ipSubject})
@@ -112,7 +112,7 @@ func (s *Server) allowMetered(w http.ResponseWriter, r *http.Request, userID str
 		return false
 	}
 
-	for _, check := range meteredChecks(r, userID, user, ip, s.limitSubject(r)) {
+	for _, check := range meteredChecks(userID, requestClientID(r), s.limitSubject(r), user, ip) {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {
 			unavailable()

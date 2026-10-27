@@ -46,6 +46,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.PublicWebBaseURL != "https://reelpin.in" {
 		t.Errorf("PublicWebBaseURL = %q, want https://reelpin.in", cfg.PublicWebBaseURL)
 	}
+	if cfg.PublicAPIBaseURL != "" {
+		t.Errorf("PublicAPIBaseURL = %q, want empty so /mcp is not served", cfg.PublicAPIBaseURL)
+	}
 	if cfg.SearchDenseMaxDistance != 0 {
 		t.Errorf("SearchDenseMaxDistance = %v, want 0 so search keeps its own default", cfg.SearchDenseMaxDistance)
 	}
@@ -57,6 +60,7 @@ var configKeys = []string{
 	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
 	"REEL_THUMBNAIL_BUCKET", "YT_DLP_PATH", "FFMPEG_PATH",
 	"GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_TIMEOUT_SECONDS", "PUBLIC_WEB_BASE_URL",
+	"PUBLIC_API_BASE_URL",
 	"SEARCH_DENSE_MAX_DISTANCE",
 	"INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64",
 	"INSTAGRAM_BACKUP_COOKIE_DATA_BASE64",
@@ -246,6 +250,18 @@ func TestLoad(t *testing.T) {
 				"SEARCH_DENSE_MAX_DISTANCE": "0",
 			},
 			wantErr: true,
+		},
+		{
+			name: "a public api url loses its trailing slash",
+			env: map[string]string{
+				"SUPABASE_URL":        "https://project.supabase.co",
+				"PUBLIC_API_BASE_URL": " https://api.reelpin.in/ ",
+			},
+			check: func(t *testing.T, c Config) {
+				if c.PublicAPIBaseURL != "https://api.reelpin.in" {
+					t.Errorf("PublicAPIBaseURL = %q, want https://api.reelpin.in", c.PublicAPIBaseURL)
+				}
+			},
 		},
 		{
 			name: "development generates a salt",
