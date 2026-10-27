@@ -43,36 +43,6 @@ const (
 	userB = "22222222-2222-4222-8222-222222222222"
 )
 
-// legacyReelsTable is the public.reels shape Supabase owns and no migration
-// here creates, copied from internal/postgres: Reels.List and Reels.Get read it.
-const legacyReelsTable = `
-CREATE TABLE public.reels (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL,
-    url TEXT NOT NULL,
-    normalized_url TEXT,
-    source_platform TEXT,
-    source_content_type TEXT,
-    source_content_id TEXT,
-    processing_version TEXT,
-    ingestion_method TEXT,
-    transcript_source TEXT,
-    thumbnail_url TEXT,
-    title TEXT NOT NULL DEFAULT 'Untitled',
-    summary TEXT DEFAULT '',
-    transcript TEXT DEFAULT '',
-    category TEXT DEFAULT 'Other',
-    subcategory TEXT DEFAULT 'Other',
-    secondary_categories JSONB DEFAULT '[]'::jsonb,
-    key_facts JSONB DEFAULT '[]'::jsonb,
-    locations JSONB DEFAULT '[]'::jsonb,
-    people_mentioned JSONB DEFAULT '[]'::jsonb,
-    actionable_items JSONB DEFAULT '[]'::jsonb,
-    events JSONB NOT NULL DEFAULT '[]'::jsonb,
-    parse_status TEXT NOT NULL DEFAULT 'parsed',
-    created_at TIMESTAMPTZ DEFAULT now()
-)`
-
 // tokenAuth stands in for the JWKS verifier: two OAuth-client tokens, one per
 // user, and nothing else.
 type tokenAuth struct{}
@@ -93,9 +63,7 @@ func (allowAll) Allow(context.Context, ratelimit.Policy, string) (ratelimit.Deci
 	return ratelimit.Decision{Allowed: true, Remaining: 1}, nil
 }
 
-// mcpPool builds one throwaway database per test with a production-shaped
-// auth.users and public.reels, then migrates it. Cleanup drops WITH (FORCE), so
-// a connection left open by a failure cannot hang the package.
+// Forced cleanup keeps a failed test's open connection from blocking database removal.
 func mcpPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	adminURL := os.Getenv("TEST_DATABASE_URL")
@@ -155,8 +123,12 @@ func mcpPool(t *testing.T) *pgxpool.Pool {
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
-	if _, err := pool.Exec(ctx, legacyReelsTable); err != nil {
-		t.Fatalf("creating the production-shaped public.reels: %v", err)
+	var noLegacyReels bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.reels') IS NULL`).Scan(&noLegacyReels); err != nil {
+		t.Fatalf("checking the canonical-only schema: %v", err)
+	}
+	if !noLegacyReels {
+		t.Fatal("public.reels exists, want a canonical-only schema")
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id) VALUES ($1), ($2)`, userA, userB); err != nil {
 		t.Fatalf("seeding users: %v", err)
@@ -164,9 +136,6 @@ func mcpPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// seedSave creates one content, its version, one user's save of it and the
-// public.reels row the pipeline writes beside them under the same id, and
-// returns the save id, which is the public reel id.
 func seedSave(t *testing.T, pool *pgxpool.Pool, userID, sourceID string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -182,8 +151,10 @@ func seedSave(t *testing.T, pool *pgxpool.Pool, userID, sourceID string) string 
 	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO reelpin.content_versions
-			(content_id, processor_version, prompt_version, schema_version, model_version, title, summary, media)
+			(content_id, processor_version, prompt_version, schema_version, model_version, title, summary,
+			 raw_extraction, media)
 		VALUES ($1, 'v1', 'p1', 's1', 'm1', 'Best cafes in Goa', 'Three cafes worth the ride.',
+		        '{"category":"food_and_drink","subcategory":"cafes"}'::jsonb,
 		        '{"thumbnail_url":"https://cdn/x.jpg"}'::jsonb)
 		RETURNING id::text`, contentID).Scan(&versionID); err != nil {
 		t.Fatalf("seeding a version: %v", err)
@@ -198,17 +169,6 @@ func seedSave(t *testing.T, pool *pgxpool.Pool, userID, sourceID string) string 
 		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2)
 		RETURNING id::text`, userID, contentID).Scan(&saveID); err != nil {
 		t.Fatalf("seeding a save: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO public.reels
-			(id, user_id, url, normalized_url, source_platform, source_content_type,
-			 source_content_id, thumbnail_url, title, summary, category, subcategory, created_at)
-		SELECT s.id, s.user_id, co.normalized_url, co.normalized_url, co.source_platform,
-		       co.source_content_type, co.source_content_id, 'https://cdn/x.jpg',
-		       'Best cafes in Goa', 'Three cafes worth the ride.', 'food_and_drink', 'cafes', s.saved_at
-		FROM reelpin.user_saves s JOIN reelpin.contents co ON co.id = s.content_id
-		WHERE s.id = $1`, saveID); err != nil {
-		t.Fatalf("seeding the legacy reel: %v", err)
 	}
 	return saveID
 }
@@ -226,7 +186,7 @@ func realStack(pool *pgxpool.Pool) (*httpapi.Server, error) {
 		DB:            pool,
 		Auth:          tokenAuth{},
 		Reels:         postgres.NewReels(pool),
-		Jobs:          postgres.NewCombinedJobs(pool),
+		Jobs:          postgres.NewJobs(pool),
 		Entitlements:  entitlements.NewCache(postgres.NewEntitlements(pool), time.Minute, time.Now, logger),
 		Enqueue:       enqueue.New(postgres.NewEnqueue(pool), &sourceidentity.Resolver{}, nil),
 		ShareTokens:   sharetoken.NewStore(pool),
@@ -334,6 +294,7 @@ func list(t *testing.T, value any) []map[string]any {
 func TestMCPServesTheRealStack(t *testing.T) {
 	pool := mcpPool(t)
 	saveID := seedSave(t, pool, userA, "MCPSEED1")
+	otherSaveID := seedSave(t, pool, userB, "MCPSEED2")
 
 	api, err := realStack(pool)
 	if err != nil {
@@ -342,6 +303,7 @@ func TestMCPServesTheRealStack(t *testing.T) {
 	ts := httptest.NewServer(api.Routes())
 	t.Cleanup(ts.Close)
 	a := session(t, ts.URL, "a.token")
+	b := session(t, ts.URL, "b.token")
 
 	t.Run("lists the seven tools", func(t *testing.T) {
 		res, err := a.ListTools(context.Background(), nil)
@@ -388,6 +350,13 @@ func TestMCPServesTheRealStack(t *testing.T) {
 		if reels[0]["web_url"] != "https://reelpin.in/r/"+saveID {
 			t.Errorf("web_url = %v", reels[0]["web_url"])
 		}
+		if reels[0]["category"] != "food_and_drink" || reels[0]["sub_category"] != "cafes" {
+			t.Errorf("category = %v, sub_category = %v", reels[0]["category"], reels[0]["sub_category"])
+		}
+		otherReels := list(t, result(t, call(t, b, "list_reels", map[string]any{}))["reels"])
+		if len(otherReels) != 1 || otherReels[0]["id"] != otherSaveID {
+			t.Errorf("another user's reels = %v, want only their save", otherReels)
+		}
 	})
 
 	t.Run("get_reel answers the owner only", func(t *testing.T) {
@@ -396,7 +365,7 @@ func TestMCPServesTheRealStack(t *testing.T) {
 			t.Errorf("title = %v", out["title"])
 		}
 
-		res := call(t, session(t, ts.URL, "b.token"), "get_reel", map[string]any{"reel_id": saveID})
+		res := call(t, b, "get_reel", map[string]any{"reel_id": saveID})
 		if !res.IsError || text(t, res) != "reel not found" {
 			t.Errorf("another user's get_reel = %v (%v), want the tool error reel not found", res.StructuredContent, res.Content)
 		}
@@ -410,6 +379,14 @@ func TestMCPServesTheRealStack(t *testing.T) {
 		reel, _ := results[0]["reel"].(map[string]any)
 		if reel["id"] != saveID {
 			t.Errorf("results[0].reel.id = %v, want %s", reel["id"], saveID)
+		}
+		otherResults := list(t, result(t, call(t, b, "search_reels", map[string]any{"query": "cafes"}))["results"])
+		if len(otherResults) != 1 {
+			t.Fatalf("another user's results = %v, want one", otherResults)
+		}
+		otherReel, _ := otherResults[0]["reel"].(map[string]any)
+		if otherReel["id"] != otherSaveID {
+			t.Errorf("another user's results[0].reel.id = %v, want %s", otherReel["id"], otherSaveID)
 		}
 	})
 

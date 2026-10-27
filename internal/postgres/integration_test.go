@@ -4,8 +4,6 @@ package postgres
 
 import (
 	"context"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,103 +14,85 @@ import (
 )
 
 const (
-	testSchema = "reelpin_go_test"
-	userA      = "11111111-1111-4111-8111-111111111111"
-	userB      = "99999999-9999-4999-8999-999999999999"
+	userA = "11111111-1111-4111-8111-111111111111"
+	userB = "99999999-9999-4999-8999-999999999999"
 )
 
-// schemaFixture is the smallest slice of the Supabase tables these readers touch.
-const schemaFixture = `
-CREATE TABLE reels (
-    id UUID PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    url TEXT NOT NULL,
-    normalized_url TEXT,
-    source_platform TEXT,
-    source_content_type TEXT,
-    source_content_id TEXT,
-    processing_version TEXT,
-    ingestion_method TEXT,
-    transcript_source TEXT,
-    thumbnail_url TEXT,
-    title TEXT NOT NULL DEFAULT 'Untitled',
-    summary TEXT DEFAULT '',
-    transcript TEXT DEFAULT '',
-    category TEXT DEFAULT 'Other',
-    subcategory TEXT DEFAULT 'Other',
-    secondary_categories JSONB DEFAULT '[]'::jsonb,
-    key_facts JSONB DEFAULT '[]'::jsonb,
-    locations JSONB DEFAULT '[]'::jsonb,
-    people_mentioned JSONB DEFAULT '[]'::jsonb,
-    actionable_items JSONB DEFAULT '[]'::jsonb,
-    events JSONB NOT NULL DEFAULT '[]'::jsonb,
-    parse_status TEXT NOT NULL DEFAULT 'parsed',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE processing_jobs (
-    id UUID PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    url TEXT NOT NULL,
-    normalized_url TEXT,
-    source_platform TEXT,
-    source_content_type TEXT,
-    source_content_id TEXT,
-    processing_version TEXT,
-    ingestion_method TEXT,
-    transcript_source TEXT,
-    status TEXT NOT NULL DEFAULT 'queued',
-    current_step TEXT DEFAULT 'queued',
-    progress_percent INTEGER NOT NULL DEFAULT 0,
-    failure_code TEXT,
-    error_message TEXT,
-    result_reel_id UUID,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
-    next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    claimed_by TEXT,
-    step_durations JSONB NOT NULL DEFAULT '{}'::jsonb,
-    collection_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ
-);
-`
-
+// testPool is a migrated database shaped like Neon, with users A and B. The
+// migrations are the only schema: no Python table exists for a reader to
+// resolve by accident.
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
-
-	config, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatalf("parsing TEST_DATABASE_URL: %v", err)
-	}
-	// Everything happens in a throwaway schema, never in public. Neon's proxy
-	// drops a search_path startup parameter but honours options.
-	options := config.ConnConfig.RuntimeParams["options"]
-	config.ConnConfig.RuntimeParams["options"] = strings.TrimSpace(options + " -c search_path=" + testSchema)
-
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("connecting: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	for _, statement := range []string{
-		"DROP SCHEMA IF EXISTS " + testSchema + " CASCADE",
-		"CREATE SCHEMA " + testSchema,
-		schemaFixture,
-	} {
-		if _, err := pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("preparing schema: %v", err)
-		}
+	pool := rawPool(t)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO auth.users (id) VALUES ($1), ($2)`, userA, userB); err != nil {
+		t.Fatalf("seeding users: %v", err)
 	}
 	return pool
+}
+
+// canonicalReel is one user's save of its own content, written the way the
+// pipeline persists it: the category and the extraction lists ride the
+// version's raw_extraction, the tags and key facts its typed arrays, the
+// thumbnail its media.
+type canonicalReel struct {
+	id          string
+	userID      string
+	platform    string
+	contentType string
+	sourceID    string
+	category    string
+	subcategory string
+	title       string
+	summary     string
+	transcript  string
+	tags        []string
+	keyFacts    []string
+	extraction  string
+	thumbnail   string
+	savedAt     time.Time
+}
+
+func seedCanonicalReel(t *testing.T, pool *pgxpool.Pool, row canonicalReel) {
+	t.Helper()
+	ctx := context.Background()
+	if row.contentType == "" {
+		row.contentType = "reel"
+	}
+	if row.extraction == "" {
+		row.extraction = `{}`
+	}
+	var contentID, versionID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO reelpin.contents
+			(source_platform, source_content_type, source_content_id,
+			 normalized_url, normalized_url_hash, access_scope_hash)
+		VALUES ($1, $2, $3, 'https://example.com/'||$3, $3, 'public')
+		RETURNING id::text`, row.platform, row.contentType, row.sourceID).Scan(&contentID); err != nil {
+		t.Fatalf("seeding content: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO reelpin.content_versions
+			(content_id, processor_version, prompt_version, schema_version, model_version,
+			 title, summary, transcript, tags, key_facts, raw_extraction, media)
+		VALUES ($1, 'v1', 'p1', 's1', 'm1', $2, $3, $4, $5, $6,
+		        jsonb_build_object('category', $7::text, 'subcategory', $8::text,
+		                           'extraction', $9::jsonb),
+		        jsonb_build_object('thumbnail_url', $10::text))
+		RETURNING id::text`,
+		contentID, row.title, row.summary, row.transcript, row.tags, row.keyFacts,
+		row.category, row.subcategory, row.extraction, row.thumbnail).Scan(&versionID); err != nil {
+		t.Fatalf("seeding a version: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE reelpin.contents SET current_version_id = $2 WHERE id = $1`, contentID, versionID); err != nil {
+		t.Fatalf("pointing at the version: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO reelpin.user_saves (id, user_id, content_id, saved_at) VALUES ($1, $2, $3, $4)`,
+		row.id, row.userID, contentID, row.savedAt); err != nil {
+		t.Fatalf("seeding a save: %v", err)
+	}
 }
 
 func seed(t *testing.T, pool *pgxpool.Pool) {
@@ -122,7 +102,7 @@ func seed(t *testing.T, pool *pgxpool.Pool) {
 	rows := []struct {
 		id          string
 		userID      string
-		platform    any
+		platform    string
 		category    string
 		subcategory string
 		title       string
@@ -142,7 +122,7 @@ func seed(t *testing.T, pool *pgxpool.Pool) {
 			locations: `[]`,
 		},
 		{
-			id: "aaaaaaaa-0000-4000-8000-000000000003", userID: userA, platform: nil,
+			id: "aaaaaaaa-0000-4000-8000-000000000003", userID: userA, platform: "web",
 			category: "misc", subcategory: "links", title: "Zeta link",
 			createdAt: time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC),
 			locations: `[]`,
@@ -156,16 +136,14 @@ func seed(t *testing.T, pool *pgxpool.Pool) {
 	}
 
 	for _, row := range rows {
-		_, err := pool.Exec(ctx,
-			`INSERT INTO reels (id, user_id, url, source_platform, source_content_type, title,
-			 summary, transcript, category, subcategory, secondary_categories, key_facts, locations, created_at)
-			 VALUES ($1,$2,$3,$4,'reels',$5,'summary','transcript text',$6,$7,'["tag"]','["fact"]',$8::jsonb,$9)`,
-			row.id, row.userID, "https://example.com/"+row.id, row.platform, row.title,
-			row.category, row.subcategory, row.locations, row.createdAt,
-		)
-		if err != nil {
-			t.Fatalf("seeding reel: %v", err)
-		}
+		seedCanonicalReel(t, pool, canonicalReel{
+			id: row.id, userID: row.userID, platform: row.platform, sourceID: row.id,
+			category: row.category, subcategory: row.subcategory,
+			title: row.title, summary: "summary", transcript: "transcript text",
+			tags: []string{"tag"}, keyFacts: []string{"fact"},
+			extraction: `{"locations":` + row.locations + `}`,
+			savedAt:    row.createdAt,
+		})
 	}
 
 	jobRows := []struct {
@@ -181,9 +159,9 @@ func seed(t *testing.T, pool *pgxpool.Pool) {
 	}
 	for _, row := range jobRows {
 		_, err := pool.Exec(ctx,
-			`INSERT INTO processing_jobs (id, user_id, url, status, current_step, result_reel_id,
-			 step_durations, collection_ids, created_at)
-			 VALUES ($1,$2,$3,$4,$4,$5,'{"downloading":1.5}'::jsonb,'["fedcba98-0000-4000-8000-000000000001"]'::jsonb,$6)`,
+			`INSERT INTO reelpin.processing_jobs (id, user_id, url, normalized_url, status, current_step,
+			 user_save_id, collection_ids, created_at)
+			 VALUES ($1,$2,$3,$3,$4,$4,$5,'{fedcba98-0000-4000-8000-000000000001}',$6)`,
 			row.id, row.userID, "https://example.com/job", row.status, row.reelID, row.created,
 		)
 		if err != nil {
@@ -280,7 +258,7 @@ func TestReelsListIsolationAndFilters(t *testing.T) {
 		cases := map[string]int{
 			"x":         1, // stored as twitter
 			"instagram": 1,
-			"other":     1, // stored as NULL
+			"other":     1, // stored as web
 		}
 		for platform, want := range cases {
 			records, err := reader.List(ctx, userA, reels.ListOptions{Limit: 50, Platforms: []string{platform}})
@@ -384,7 +362,7 @@ func TestFacetsAndStats(t *testing.T) {
 func TestJobsAreUserScoped(t *testing.T) {
 	pool := testPool(t)
 	seed(t, pool)
-	reader := newJobs(pool, "processing_jobs")
+	reader := NewJobs(pool)
 	ctx := context.Background()
 
 	all, err := reader.List(ctx, userA, false, 20)
@@ -396,9 +374,6 @@ func TestJobsAreUserScoped(t *testing.T) {
 	}
 	if all[0].CreatedAt.Before(*all[1].CreatedAt) {
 		t.Error("jobs are not newest first")
-	}
-	if all[0].StepDurations["downloading"] != 1.5 {
-		t.Errorf("step_durations = %+v", all[0].StepDurations)
 	}
 	if len(all[0].CollectionIDs) != 1 {
 		t.Errorf("collection_ids = %+v, want one id", all[0].CollectionIDs)

@@ -24,7 +24,7 @@ func (e *Entitlements) ActivePro(ctx context.Context) (map[string]time.Time, err
 
 	rows, err := e.db.Query(ctx,
 		`SELECT user_id::text, pro_expires_at
-		 FROM user_entitlements
+		 FROM reelpin.user_entitlements
 		 WHERE pro_expires_at IS NOT NULL AND pro_expires_at > now()`,
 	)
 	if err != nil {

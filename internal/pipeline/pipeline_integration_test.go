@@ -78,16 +78,8 @@ func testPool(t *testing.T) (*pgxpool.Pool, string) {
 		_, _ = cleanup.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
 	})
 
-	if _, err := pool.Exec(ctx, `
-		CREATE SCHEMA auth;
-		CREATE TABLE auth.users (id UUID PRIMARY KEY, email TEXT, created_at TIMESTAMPTZ DEFAULT now())`); err != nil {
-		t.Fatalf("creating auth.users: %v", err)
-	}
-	// Every persist writes the legacy reel row too, so every pipeline test
-	// needs the table production already has.
-	if _, err := pool.Exec(ctx, legacyReelsTable); err != nil {
-		t.Fatalf("creating the legacy reels table: %v", err)
-	}
+	// Neon-shaped: nothing exists before the migrations, which create the
+	// auth.users mirror themselves, and there is no Python table at all.
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
@@ -511,7 +503,7 @@ func TestAJobWaitingToRetryIsPolledAsWaiting(t *testing.T) {
 		t.Fatalf("reading the job and its resume event: %v", err)
 	}
 
-	record, err := postgres.NewCombinedJobs(h.pool).Get(ctx, userA, jobID)
+	record, err := postgres.NewJobs(h.pool).Get(ctx, userA, jobID)
 	if err != nil {
 		t.Fatalf("polling the job: %v", err)
 	}

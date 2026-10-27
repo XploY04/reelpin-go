@@ -72,6 +72,19 @@ func (b *Backfiller) copyOneJob(ctx context.Context, options Options, batch int6
 		return nil
 	}
 
+	action, note, err := ownerSkip(ctx, b.pool, row.UserID)
+	if err != nil {
+		return err
+	}
+	switch action {
+	case skippedInvalidOwner:
+		report.JobsInvalidOwners++
+		return b.audit(ctx, options, batch, sourceJobs, row.ID, action, nil, nil, nil, note)
+	case skippedUnknownReference:
+		report.JobsUnknownOwners++
+		return b.audit(ctx, options, batch, sourceJobs, row.ID, action, nil, nil, nil, note)
+	}
+
 	// A job still queued or processing belongs to the Python worker that is
 	// still running it. Reconstructing a terminal run for it would misreport
 	// live work, and copying it would leave a job nothing will ever finish.
@@ -89,7 +102,13 @@ func (b *Backfiller) copyOneJob(ctx context.Context, options Options, batch int6
 	}
 
 	if !options.Execute {
-		report.JobsCreated++
+		moved, err := isMigrated(ctx, b.pool, row.UserID)
+		if err != nil {
+			return err
+		}
+		if !moved {
+			report.JobsCreated++
+		}
 		return nil
 	}
 

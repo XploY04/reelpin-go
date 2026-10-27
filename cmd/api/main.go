@@ -219,7 +219,7 @@ func run(logger *slog.Logger) error {
 		DB:             pool,
 		Auth:           verifier,
 		Reels:          readcache.CachedReels(mapview.WithPinCount(postgres.NewReels(pool), mapService), cache),
-		Jobs:           readcache.CachedJobs(postgres.NewCombinedJobs(pool), cache),
+		Jobs:           readcache.CachedJobs(postgres.NewJobs(pool), cache),
 		Entitlements:   entitlements.NewCache(postgres.NewEntitlements(pool), time.Minute, time.Now, logger),
 		Enqueue:        enqueue.New(submissions, resolver, optionalGate(gate)),
 		ShareTokens:    shareTokens,

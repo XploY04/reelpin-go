@@ -322,7 +322,7 @@ func skipAction(err error) (string, string, bool) {
 	}
 	switch {
 	case pgErr.Code == "23503":
-		return "skipped_unknown_reference", note, true
+		return skippedUnknownReference, note, true
 	case pgErr.Code == "23505":
 		return "skipped_conflict", note, true
 	case strings.HasPrefix(pgErr.Code, "23"):
@@ -484,6 +484,12 @@ func (b *Backfiller) copyOneRow(
 		counts.Skipped++
 		counts.SkippedByAction[action]++
 		return b.audit(ctx, options, batch, mapping.name, key.id, action, nil, nil, nil, note)
+	}
+
+	// Left to uuidOrNull, a test owner would surface as skipped_invalid, a
+	// different name from the one the reels and jobs give the same row.
+	if mapping.owner != "" && !uuidShape.MatchString(key.owner) {
+		return skip(skippedInvalidOwner, "the owner is not a uuid")
 	}
 
 	tag, err := transaction.Exec(ctx, statement, key.raw)
