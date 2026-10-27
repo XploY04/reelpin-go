@@ -230,6 +230,47 @@ run, delta or not, and the copy is an idempotent upsert.
 | `reminders` | `reminders` | `greatest(created_at, sent_at)`. The only update is the claim, which sets `sent_at`. |
 | `price_tracks` | `price_tracks` | `greatest(created_at, last_checked_at, notified_at)`. The daily check sets `last_checked_at`. |
 | `feedback`, `link_clicks` | same names | `created_at`. The website only inserts. |
+| `collections`, `collection_members`, `collection_items`, `collection_invites` | same names | The whole collection family, every run. Member roles and invite use/revocation updates have no change timestamp. |
+
+Collection and invite IDs and capability hashes are copied unchanged. Existing
+view links keep their visibility and have no expiry, matching Python; invite
+expiry, use limits, use counts and revocation are preserved, including expired
+invites. Members and items retain their legacy row IDs in the audit because
+the canonical tables use composite keys. Each item's reel resolves to its
+original user's save, including a save retained after a deduplication conflict.
+An editor's item is never reassigned to the collection owner. Missing users or
+save references reject and audit the whole collection; no user is invented.
+
+A collection becomes Go-owned as a whole when its owner, a member, an item
+adder or save owner, an inviter, or an invite creator has been served or deleted
+by Go. This includes canonical and previously audited participants. The audit
+also records a fingerprint of the copied canonical collection and its children:
+if Go-only participation leaves no current member row, later canonical changes
+still protect the family from overwrite or resurrection. An existing canonical
+collection ID with no copied baseline is protected too. The copy and final
+delete transaction first take SHARE locks on the served-user and deletion-request
+tables, then lock the collection and existing children before checking or writing.
+New first-auth requests and deletion requests may wait until that transaction
+commits. Run the production copy before admitting Go traffic. Concurrent child
+inserts wait on the parent's foreign key lock; updates and deletes wait on the
+child locks. A lock or deadlock error aborts the run and is not treated as a skip.
+
+The final delta applies tracked collection deletions before save and user
+deletions. Those cascades also leave protected collection families alone. Retained save
+and user dependencies appear in `canonical_total`; expected/present and per-user
+comparisons still count remaining legacy rows, so unrelated drift is checked. It
+refreshes fingerprints after its own deletions so the next pass does not
+mistake maintenance changes for Go changes. The verifier checks all four tables,
+including composite-key presence and sampled sharing, role, ownership and
+invite fields. It reports canonical drift until a backfill has explicitly
+protected that collection. An unexplained row or a field mismatch still fails
+verification.
+
+A fresh dry run records planned references only for collection covers and
+items whose reels pass the dry reel checks. It can therefore validate collection
+references before saves exist without creating fake content or users. Normal
+collection, membership and invite constraints are checked in the rolled-back
+transaction; planned item inserts wait for the real run's save foreign keys.
 
 The snapshot and verifier also restrict `processing_jobs` to rows created in
 the last 60 days, measured from each command's current clock. When the legacy

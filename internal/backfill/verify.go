@@ -272,6 +272,9 @@ func (v *Verifier) Verify(ctx context.Context, options VerifyOptions) (VerifyRep
 		}
 	}
 
+	if err := v.verifyCollections(ctx, options, &report); err != nil {
+		return VerifyReport{}, err
+	}
 	if err := v.countSearchAndMap(ctx, &report); err != nil {
 		return VerifyReport{}, err
 	}
