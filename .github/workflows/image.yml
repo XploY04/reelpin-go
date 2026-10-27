@@ -89,7 +89,7 @@ jobs:
             echo "the api accepted stray arguments instead of refusing them (exit $status)"
             exit 1
           fi
-          if ! grep -q -- "--entrypoint" .github/workflows/release.yml; then
+          if ! grep -q -- "--entrypoint /usr/local/bin/reelpin-maintenance" deploy/reelpin-migrate.sh; then
             echo "the release workflow runs maintenance without an entrypoint override"
             exit 1
           fi

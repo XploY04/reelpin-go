@@ -6,6 +6,21 @@ import (
 	"time"
 )
 
+func TestImageRevisionOverridesAStaleRuntimeVersion(t *testing.T) {
+	previous := buildRevision
+	buildRevision = "1111111111111111111111111111111111111111"
+	t.Cleanup(func() { buildRevision = previous })
+	t.Setenv("ENVIRONMENT", "test")
+	t.Setenv("APP_VERSION", "stale-deploy-label")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != buildRevision {
+		t.Fatalf("version = %q, want the immutable image revision %q", cfg.Version, buildRevision)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	for _, key := range configKeys {
 		t.Setenv(key, "")
