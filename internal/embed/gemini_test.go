@@ -48,6 +48,41 @@ func TestEmbedSendsTheModelTaskAndDimension(t *testing.T) {
 	}
 }
 
+func TestQueryEmbedSendsRetrievalQueryTask(t *testing.T) {
+	var seen embedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
+			t.Errorf("decoding request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"embeddings":[{"values":[1,2,3]},{"values":[4,5,6]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewGeminiQuery(GeminiConfig{
+		APIKey: "test-key", Model: "gemini-embedding-001", Dimension: 3, BaseURL: server.URL,
+	})
+	vectors, err := client.Embed(context.Background(), []string{"ramen in Tokyo", "cafes in Paris"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vectors) != 2 || len(vectors[0]) != 3 || len(vectors[1]) != 3 {
+		t.Fatalf("vectors = %v, want two three-dimensional vectors", vectors)
+	}
+	if len(seen.Requests) != 2 {
+		t.Fatalf("sent %d requests, want 2", len(seen.Requests))
+	}
+	for _, request := range seen.Requests {
+		if request.TaskType != "RETRIEVAL_QUERY" {
+			t.Errorf("task type = %q, want RETRIEVAL_QUERY", request.TaskType)
+		}
+		if request.Model != "models/gemini-embedding-001" || request.OutputDimensionality != 3 {
+			t.Errorf("model = %q, dimension = %d", request.Model, request.OutputDimensionality)
+		}
+	}
+}
+
 func TestNoKeyIsAnExplicitState(t *testing.T) {
 	if _, err := NewGemini(GeminiConfig{}).Embed(context.Background(), []string{"x"}); !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("err = %v, want ErrNotConfigured", err)

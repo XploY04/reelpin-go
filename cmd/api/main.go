@@ -160,7 +160,7 @@ func run(logger *slog.Logger) error {
 
 	// Without a key the embedder answers ErrNotConfigured, which search treats
 	// as one arm being unavailable rather than as a failure.
-	embedder := embed.NewGemini(embed.GeminiConfig{
+	embedder := embed.NewGeminiQuery(embed.GeminiConfig{
 		APIKey:    cfg.GeminiAPIKey,
 		Model:     cfg.EmbeddingModel,
 		Dimension: cfg.EmbeddingDimension,
