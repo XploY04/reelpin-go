@@ -531,10 +531,10 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 	}
 
 	tag, err := transaction.Exec(ctx, `
-		INSERT INTO reelpin.user_saves (id, user_id, content_id, saved_at)
-		VALUES ($1, $2, $3, coalesce($4, now()))
+		INSERT INTO reelpin.user_saves (id, user_id, content_id, saved_at, source_url)
+		VALUES ($1, $2, $3, coalesce($4, now()), $5)
 		ON CONFLICT DO NOTHING`,
-		row.ID, row.UserID, contentID, row.CreatedAt)
+		row.ID, row.UserID, contentID, row.CreatedAt, row.URL)
 	if err != nil {
 		report.Failures++
 		return fmt.Errorf("creating the save: %w", err)
@@ -992,7 +992,8 @@ func findOrCreateContent(
 
 // insertVersion writes the one immutable version of this legacy content, in the
 // same shape the Go pipeline writes: the extraction and the filed category ride
-// raw_extraction, the thumbnail rides media.
+// raw_extraction, the thumbnail rides media. raw_extraction also keeps the
+// legacy parse_status, which extraction_status is too coarse to hold.
 func insertVersion(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1007,9 +1008,10 @@ func insertVersion(
 	}
 
 	raw, err := json.Marshal(map[string]any{
-		"extraction":  content.Extraction,
-		"category":    text(row.Category),
-		"subcategory": text(row.Subcategory),
+		"extraction":   content.Extraction,
+		"category":     text(row.Category),
+		"subcategory":  text(row.Subcategory),
+		"parse_status": row.ParseStatus,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encoding the extraction: %w", err)

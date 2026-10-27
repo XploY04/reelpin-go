@@ -345,8 +345,8 @@ func (c *Collections) SharedByToken(ctx context.Context, token string, query col
 	return collection, page, nil
 }
 
-// items loads one keyset page of filed saves, each read from the same reels
-// table, with the same columns and the same scan, as Reels.Get, so an item and
+// items loads one keyset page of filed saves, each read through the same
+// savedReels projection, columns and scan as Reels.Get, so an item and
 // getReel can never disagree about a save. The cursor is (added_at, save_id),
 // the same opaque shape the reel list uses. The save is not scoped to the
 // reader: the collection role or the link token already decided who may see
@@ -371,12 +371,12 @@ func (c *Collections) items(ctx context.Context, collectionID string, query coll
 	// stays unqualified exactly as reelListColumns spells it.
 	rows, err := c.pool.Query(ctx, fmt.Sprintf(`
 		SELECT %s, i.added_at, i.added_by::text
-		FROM reels
+		FROM %s
 		JOIN (SELECT collection_id, save_id, added_at, added_by
 		      FROM reelpin.collection_items) i ON i.save_id = reels.id
 		WHERE %s
 		ORDER BY i.added_at DESC, i.save_id DESC
-		LIMIT $%d`, columns, where, len(args)), args...)
+		LIMIT $%d`, columns, savedReels, where, len(args)), args...)
 	if err != nil {
 		return collections.ItemPage{}, fmt.Errorf("reading collection items: %w", err)
 	}

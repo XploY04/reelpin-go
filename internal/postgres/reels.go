@@ -20,6 +20,44 @@ const reelListColumns = `id, user_id, url, normalized_url, source_platform, sour
 	title, summary, category, subcategory, secondary_categories, key_facts, locations,
 	people_mentioned, actionable_items, events, parse_status, created_at`
 
+// savedReels presents each canonical save under the column names
+// reelListColumns spells, so every reel reader shares one projection and one
+// scan. It has no aggregate and no LIMIT, so the planner flattens it and a
+// filter on user_id, created_at and id still reaches user_saves_list_idx.
+//
+// The version join is LEFT: a save whose version was removed still lists, as
+// an untitled reel, rather than vanishing from the library. url is the link
+// the owner submitted: the backfill keeps it on the save, the app's first job
+// keeps it otherwise, and a save with neither falls back to the normalized
+// URL. parse_status is the legacy value when the backfill kept one.
+// ingestion_method and transcript_source have no canonical source and are
+// always null.
+const savedReels = `(
+	SELECT s.id, s.user_id,
+	       coalesce(s.source_url, (SELECT j.url FROM reelpin.processing_jobs j
+	                 WHERE j.user_save_id = s.id AND j.user_id = s.user_id
+	                 ORDER BY j.created_at LIMIT 1), c.normalized_url) AS url,
+	       c.normalized_url, c.source_platform, c.source_content_type, c.source_content_id,
+	       v.processor_version AS processing_version,
+	       NULL::text AS ingestion_method, NULL::text AS transcript_source,
+	       nullif(v.media->>'thumbnail_url', '') AS thumbnail_url,
+	       v.title, v.summary, v.transcript,
+	       nullif(v.raw_extraction->>'category', '') AS category,
+	       nullif(v.raw_extraction->>'subcategory', '') AS subcategory,
+	       to_jsonb(v.tags) AS secondary_categories, to_jsonb(v.key_facts) AS key_facts,
+	       v.raw_extraction->'extraction'->'locations' AS locations,
+	       v.raw_extraction->'extraction'->'people_mentioned' AS people_mentioned,
+	       v.raw_extraction->'extraction'->'actionable_items' AS actionable_items,
+	       v.raw_extraction->'extraction'->'events' AS events,
+	       CASE WHEN v.raw_extraction ? 'parse_status' THEN v.raw_extraction->>'parse_status'
+	            WHEN v.extraction_status = 'partial' THEN 'partial'
+	            WHEN v.extraction_status = 'completed' THEN 'parsed' END AS parse_status,
+	       s.saved_at AS created_at
+	FROM reelpin.user_saves s
+	JOIN reelpin.contents c ON c.id = s.content_id
+	LEFT JOIN reelpin.content_versions v ON v.id = c.current_version_id
+) reels`
+
 type Reels struct {
 	db Querier
 }
@@ -65,8 +103,9 @@ func (r *Reels) List(ctx context.Context, userID string, options reels.ListOptio
 
 	args = append(args, options.Limit)
 	query := fmt.Sprintf(
-		"SELECT %s FROM reels WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d",
+		"SELECT %s FROM %s WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d",
 		reelListColumns,
+		savedReels,
 		strings.Join(where, " AND "),
 		len(args),
 	)
@@ -93,8 +132,9 @@ func (r *Reels) Get(ctx context.Context, userID string, id uuid.UUID) (reels.Ree
 	defer cancel()
 
 	query := fmt.Sprintf(
-		"SELECT %s, transcript FROM reels WHERE id = $1 AND user_id = $2",
+		"SELECT %s, transcript FROM %s WHERE id = $1 AND user_id = $2",
 		reelListColumns,
+		savedReels,
 	)
 	rows, err := r.db.Query(ctx, query, id.String(), userID)
 	if err != nil {
@@ -121,7 +161,7 @@ func (r *Reels) Facets(ctx context.Context, userID string) ([]reels.FacetRow, er
 
 	rows, err := r.db.Query(ctx,
 		`SELECT source_platform, category, subcategory, count(*)::int
-		 FROM reels WHERE user_id = $1
+		 FROM `+savedReels+` WHERE user_id = $1
 		 GROUP BY source_platform, category, subcategory`,
 		userID,
 	)
@@ -151,7 +191,7 @@ func (r *Reels) Library(ctx context.Context, userID string, limit int) ([]reels.
 	rows, err := r.db.Query(ctx,
 		`SELECT id, source_platform, category, subcategory, secondary_categories,
 		        locations, people_mentioned, created_at
-		 FROM reels WHERE user_id = $1
+		 FROM `+savedReels+` WHERE user_id = $1
 		 ORDER BY created_at DESC, id DESC LIMIT $2`,
 		userID, limit,
 	)
@@ -199,7 +239,7 @@ func (r *Reels) Stats(ctx context.Context, userID string) (reels.LibraryStats, e
 
 	rows, err := r.db.Query(ctx,
 		`SELECT id, category, subcategory, secondary_categories, locations
-		 FROM reels WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+		 FROM `+savedReels+` WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
 		userID, statsRowLimit,
 	)
 	if err != nil {
