@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,7 +13,9 @@ import (
 	"syscall"
 
 	"github.com/XploY04/reelpin-go/internal/config"
+	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/migrations"
+	"github.com/XploY04/reelpin-go/internal/postgres"
 )
 
 func main() {
@@ -47,6 +50,25 @@ func run(logger *slog.Logger, args []string) error {
 
 	switch command := args[0]; command {
 	case "migrate":
+		flags := flag.NewFlagSet("migrate", flag.ContinueOnError)
+		requireIdle := flags.String("require-idle", "", "deployment state: bootstrap or drained")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *requireIdle != "" {
+			if *requireIdle != "bootstrap" && *requireIdle != "drained" {
+				return errors.New("--require-idle must be bootstrap or drained")
+			}
+			pool, err := db.Connect(ctx, cfg.DatabaseURL)
+			if err != nil {
+				return err
+			}
+			err = postgres.CheckMigrationIdle(ctx, pool, *requireIdle == "bootstrap")
+			pool.Close()
+			if err != nil {
+				return err
+			}
+		}
 		applied, err := migrations.Up(ctx, cfg.DatabaseURL)
 		if err != nil {
 			return err

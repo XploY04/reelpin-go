@@ -2,17 +2,19 @@
 # moved, a digest cannot, so a rebuild months from now produces the same layers.
 FROM golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS build
 
+ARG REVISION=unknown
 WORKDIR /src
 
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-# -trimpath keeps build paths out of the binary. The running version comes from
-# APP_VERSION at runtime, so the same image can be labelled without a rebuild.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/maintenance ./cmd/maintenance
+# The binary and OCI label carry the same immutable revision through promotion.
+RUN export CGO_ENABLED=0 GOOS=linux \
+    && buildflags="-s -w -X github.com/XploY04/reelpin-go/internal/config.buildRevision=${REVISION}" \
+    && go build -trimpath -ldflags="$buildflags" -o /out/api ./cmd/api \
+    && go build -trimpath -ldflags="$buildflags" -o /out/worker ./cmd/worker \
+    && go build -trimpath -ldflags="$buildflags" -o /out/maintenance ./cmd/maintenance
 
 # yt-dlp is fetched in the build stage and verified against a pinned checksum.
 # A download that does not match is a supply-chain event, and the build stops.

@@ -90,16 +90,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: choose the digest to deploy
+        env:
+          INPUT_DIGEST: ${{ inputs.digest }}
+          BUILT_DIGEST: ${{ needs.build.outputs.digest }}
         # Either the one just built, or the one being promoted. Never a tag.
         run: |
-          digest="${{ inputs.digest }}"
+          digest="$INPUT_DIGEST"
           if [ -z "$digest" ]; then
-            digest="${{ needs.build.outputs.digest }}"
+            digest="$BUILT_DIGEST"
           fi
-          case "$digest" in
-            sha256:*) ;;
-            *) echo "refusing to deploy '$digest': pass an image digest, not a tag"; exit 1 ;;
-          esac
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "refusing to deploy: pass an image digest, not a tag"
+            exit 1
+          fi
           echo "DIGEST=$digest" >> "$GITHUB_ENV"
           echo "deploying ${{ env.IMAGE }}@$digest"
 
@@ -117,20 +120,16 @@ jobs:
 
       - name: copy the deploy scripts to the host
         run: |
-          scp -i ~/.ssh/deploy deploy/reelpin-deploy.sh deploy/reelpin-smoke.sh \
+          scp -i ~/.ssh/deploy deploy/reelpin-deploy.sh deploy/reelpin-smoke.sh deploy/reelpin-migrate.sh \
             "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/"
-          $SSH "chmod +x /tmp/reelpin-deploy.sh /tmp/reelpin-smoke.sh"
+          $SSH "chmod +x /tmp/reelpin-deploy.sh /tmp/reelpin-smoke.sh /tmp/reelpin-migrate.sh"
 
       - name: migrate
         # One migration job, before anything new starts. Migrations are embedded
         # in the maintenance binary, so this needs no checkout on the host.
         run: |
-          # --entrypoint is required: the image's entrypoint is the API, so
-          # trailing arguments would be handed to the API and the migration
-          # would never run.
-          $SSH "sudo docker run --rm --env-file /etc/reelpin/${{ inputs.environment }}.env \
-            --entrypoint /usr/local/bin/reelpin-maintenance \
-            ${{ env.IMAGE }}@${DIGEST} migrate"
+          $SSH "sudo /tmp/reelpin-migrate.sh ${{ inputs.environment }} \
+            ${{ env.IMAGE }}@${DIGEST} /etc/reelpin/${{ inputs.environment }}.env"
 
       - name: deploy the api
         run: |
@@ -144,8 +143,4 @@ jobs:
 
       - name: smoke test
         run: |
-          port=8000
-          if [ "${{ inputs.environment }}" = "dev" ]; then
-            port=8080
-          fi
-          $SSH "/tmp/reelpin-smoke.sh http://127.0.0.1:$port"
+          $SSH "sudo /tmp/reelpin-smoke.sh http://127.0.0.1:8080 ${{ env.IMAGE }}@${DIGEST}"

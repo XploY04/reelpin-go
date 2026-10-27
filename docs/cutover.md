@@ -1,8 +1,8 @@
 # Cutover runbook: Python to Go
 
-This is a production preparation plan awaiting the owner's approval. No
-production deployment, migration, secret write or routing change is authorized
-by this document. Go serves development at `/api/v2`; production still serves
+The owner approved gated execution of this production plan on 2026-10-28.
+Every gate below still applies; no production mutation had run at approval.
+Go serves development at `/api/v2`; production still serves
 Python. The production switch keeps `/api/v1` on Python and adds `/api/v2` on Go
 for updated clients.
 
@@ -43,17 +43,16 @@ There is no `environment` column in Go tables.
    merged documentation PR is not that approval. Infrastructure spending stays
    at $0: no host resize, paid plan or extra server. Approved Gemini and Maps
    calls do not authorize infrastructure charges.
-2. Merge and test a deployment prerequisite change before any production
-   dispatch. `.github/workflows/release.yml` currently selects port 8000 for
-   production smoke, while `deploy/reelpin-smoke.sh` checks `/api/v2/health/*`.
-   On this host 8000 belongs to Python: a response there cannot prove Go
-   deployment. Set production smoke to 8080, require Go's expected identity and
-   build version in addition to readiness, and prove the wrong-service and
-   wrong-port cases fail. The workflow's migration container is also uncapped
-   today. Add `--memory 128m --memory-swap 128m --cpus 0.25` and an execution
-   gate that drains and stops the Go worker before migration; it must not
-   overlap busy worker processing. Test both limits and the execution gate
-   before production dispatch. This plan does not make those code changes.
+2. Use the tested release workflow and its deployment scripts. The smoke check
+   calls Go on 8080 and requires its service identity and full image revision,
+   not Python's port 8000. The migration wrapper caps its container at 128 MiB,
+   no extra swap and 0.25 CPU. For production it refuses active Go units or
+   containers, undrained RabbitMQ work and unfinished canonical database work.
+   A fresh broker with no queues is allowed only against an uninitialized
+   database; an empty broker on an initialized database fails closed.
+   Drain and stop the Go API and worker before dispatch; the wrapper never
+   stops active work for you. Python keeps running. Test the limits, identity
+   checks and fail-closed gate locally before production dispatch.
 3. Complete dev CI, local integration tests and the rehearsal gates in
    [rehearsal.md](rehearsal.md). Do not run integration suites against either
    live Neon project. The 2026-10-27 snapshot and `backfill-verify --sample 100`
@@ -144,7 +143,7 @@ commit, immutable image digest, initial measurements and recovery points.
 
    | Setting | Production value or source |
    |---|---|
-   | `ENVIRONMENT`, `APP_VERSION`, `WORKER_ID` | `production`, tested commit, unique production worker id |
+   | `ENVIRONMENT`, `WORKER_ID` | `production`, unique production worker id; image binaries use their baked commit revision, overriding a stale `APP_VERSION` |
    | `PORT`, `METRICS_PORT` | 8080, 9101 |
    | `DATABASE_URL` | Direct TLS URL for Neon `misty-scene-89733521`, branch `production` |
    | `SUPABASE_URL`, `SUPABASE_JWT_AUDIENCE` | `https://rdzykswefpgeolbamend.supabase.co`, `authenticated` |
@@ -223,8 +222,9 @@ commit, immutable image digest, initial measurements and recovery points.
 11. Before any client reaches Go, refresh `legacy` and apply a verified delta
     using the saved mark and the new source-clock dump time. Read back all
     environment/port/image settings without exposing secrets. Pause new trial
-    submissions, wait for every Go processing run to finish and stop the Go
-    worker. Dispatch the corrected release workflow only with
+    submissions, wait for every Go processing run and broker delivery to finish,
+    then stop the Go API and worker. Confirm their units are inactive and their
+    containers are stopped. Dispatch the release workflow only with
     `environment=production` and the reserved tested digest. Its migration
     must run under the 128 MiB, no-extra-swap, 0.25 CPU limits before the
     deployment restarts the worker. Confirm the smoke targets 8080 and the

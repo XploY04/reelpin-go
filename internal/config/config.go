@@ -15,6 +15,8 @@ import (
 
 const localDatabaseURL = "postgres://reelpin:reelpin@localhost:5432/reelpin"
 
+var buildRevision string
+
 type Config struct {
 	Environment string
 	Port        int
@@ -215,6 +217,9 @@ func Load() (Config, error) {
 		CostGateStopUSD:   strings.TrimSpace(os.Getenv("COST_GATE_STOP_USD")),
 		CostGateStopOrder: strings.TrimSpace(os.Getenv("COST_GATE_STOP_ORDER")),
 		CostGatePrices:    strings.TrimSpace(os.Getenv("COST_GATE_PRICES")),
+	}
+	if buildRevision != "" {
+		cfg.Version = buildRevision
 	}
 
 	if err := cfg.checkCostGate(); err != nil {
