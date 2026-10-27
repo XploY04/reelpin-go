@@ -55,7 +55,7 @@ func runSearchEval(ctx context.Context, logger *slog.Logger, cfg config.Config, 
 	}
 	defer pool.Close()
 
-	embedder := embed.NewGemini(embed.GeminiConfig{
+	embedder := embed.NewGeminiQuery(embed.GeminiConfig{
 		APIKey:    cfg.GeminiAPIKey,
 		Model:     cfg.EmbeddingModel,
 		Dimension: cfg.EmbeddingDimension,

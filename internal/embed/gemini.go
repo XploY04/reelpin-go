@@ -23,6 +23,7 @@ type Gemini struct {
 	apiKey    string
 	model     string
 	dimension int
+	taskType  string
 	baseURL   string
 	client    *http.Client
 	usage     spend.Recorder
@@ -56,10 +57,17 @@ func NewGemini(config GeminiConfig) *Gemini {
 		apiKey:    config.APIKey,
 		model:     config.Model,
 		dimension: config.Dimension,
+		taskType:  "RETRIEVAL_DOCUMENT",
 		baseURL:   config.BaseURL,
 		client:    &http.Client{Timeout: config.Timeout},
 		usage:     config.Usage,
 	}
+}
+
+func NewGeminiQuery(config GeminiConfig) *Gemini {
+	client := NewGemini(config)
+	client.taskType = "RETRIEVAL_QUERY"
+	return client
 }
 
 func (g *Gemini) Model() string  { return g.model }
@@ -110,11 +118,9 @@ func (g *Gemini) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	payload := embedRequest{Requests: make([]embedOne, 0, len(texts))}
 	for _, text := range texts {
 		payload.Requests = append(payload.Requests, embedOne{
-			Model:   "models/" + g.model,
-			Content: embedContent{Parts: []embedPart{{Text: text}}},
-			// A stored document, not a query: the two are embedded
-			// differently and mixing them degrades retrieval.
-			TaskType:             "RETRIEVAL_DOCUMENT",
+			Model:                "models/" + g.model,
+			Content:              embedContent{Parts: []embedPart{{Text: text}}},
+			TaskType:             g.taskType,
 			OutputDimensionality: g.dimension,
 		})
 	}

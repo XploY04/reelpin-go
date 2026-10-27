@@ -115,20 +115,22 @@ func (c *cachingEmbedder) Embed(ctx context.Context, texts []string) ([][]float3
 	return out, nil
 }
 
-// evalEmbedder is the real provider when a key is present and the offline
+// evalEmbedders use the real provider when a key is present and the offline
 // stand-in otherwise. The stand-in is lexical, so a run without a key measures
 // the SQL and the fusion; only a run with a key measures relevance.
-func evalEmbedder(t *testing.T) (*cachingEmbedder, string) {
+func evalEmbedders(t *testing.T) (*cachingEmbedder, *cachingEmbedder, string) {
 	t.Helper()
 	if key := os.Getenv("GEMINI_API_KEY"); key != "" {
-		return newCachingEmbedder(embed.NewGemini(embed.GeminiConfig{
+		config := embed.GeminiConfig{
 			APIKey:    key,
 			Model:     embed.DefaultModel,
 			Dimension: embed.DefaultDimension,
 			Timeout:   2 * time.Minute,
-		})), embed.DefaultModel
+		}
+		return newCachingEmbedder(embed.NewGemini(config)),
+			newCachingEmbedder(embed.NewGeminiQuery(config)), embed.DefaultModel
 	}
-	return newCachingEmbedder(&bagOfWords{}), "offline lexical stand-in"
+	return newCachingEmbedder(&bagOfWords{}), newCachingEmbedder(&bagOfWords{}), "offline lexical stand-in"
 }
 
 func TestTheLabeledSetRunsAgainstTheCorpus(t *testing.T) {
@@ -276,8 +278,8 @@ func mustJSON(t *testing.T, value any) string {
 // the winner it prints must not be copied into the constant.
 func TestSweepingTheDenseGate(t *testing.T) {
 	service, pool, _ := testService(t)
-	embedder, model := evalEmbedder(t)
-	service.embedder = embedder
+	documents, queries, model := evalEmbedders(t)
+	service.embedder = queries
 	ctx := context.Background()
 
 	library := loadCorpus(t)
@@ -286,24 +288,27 @@ func TestSweepingTheDenseGate(t *testing.T) {
 		t.Fatalf("LoadLabeledSet: %v", err)
 	}
 
-	// One batched call for every document and every query, before anything is
-	// timed or swept. After this the cache answers and the passes are free.
-	warm := make([]string, 0, len(library.Reels)+len(set.Queries))
+	// Separate caches keep document and query tasks distinct during the sweep.
+	warm := make([]string, 0, len(library.Reels))
 	for _, reel := range library.Reels {
 		warm = append(warm, embed.Document(embed.Fields{
 			Title: reel.Title, Summary: reel.Summary, Category: reel.Category,
 			Tags: reel.Tags, Facts: reel.Facts, Places: reel.Places,
 		}))
 	}
+	if _, err := documents.Embed(ctx, warm); err != nil {
+		t.Fatalf("embedding the corpus: %v", err)
+	}
+	warm = make([]string, 0, len(set.Queries))
 	for _, labeled := range set.Queries {
 		warm = append(warm, NormalizeQuery(labeled.Query))
 	}
-	if _, err := embedder.Embed(ctx, warm); err != nil {
-		t.Fatalf("embedding the corpus and the queries: %v", err)
+	if _, err := queries.Embed(ctx, warm); err != nil {
+		t.Fatalf("embedding the queries: %v", err)
 	}
 
 	for _, reel := range library.Reels {
-		seedCorpusReel(t, pool, embedder, reel)
+		seedCorpusReel(t, pool, documents, reel)
 	}
 
 	present, total, err := service.Coverage(ctx, userA, set)
@@ -350,14 +355,14 @@ func TestSweepingTheDenseGate(t *testing.T) {
 	// pass puts it back, which is the only number the p95 budget can be judged
 	// against.
 	service.MaxDistance = best
-	service.embedder = embedder.inner
+	service.embedder = queries.inner
 	live, _, err := service.Evaluate(ctx, userA, set)
 	if err != nil {
 		t.Fatalf("uncached pass: %v", err)
 	}
 	t.Logf("end to end including one embedding call per query: p50 %s p95 %s",
 		live.P50, live.P95)
-	service.embedder = embedder
+	service.embedder = queries
 
 	// Name what is still wrong at the chosen gate. An average hides which kind
 	// of query is failing, and the kind is the only part worth acting on.
