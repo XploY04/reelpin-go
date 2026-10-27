@@ -1,8 +1,11 @@
 # Rehearsal runbook
 
 **Only section 1 and the start of section 2 have been run for real**: on
-2026-10-27, from a production Supabase dump into the Neon development database.
-Everything from the snapshot's `--execute` on has not. It is Task 28: prove the migration on a copy of production before
+2026-10-27, from a production Supabase dump into the Neon development database,
+the dry run and the snapshot's `--execute` ran. That `--execute` aborted on a
+reel whose owner is not a UUID (SQLSTATE 22P02), which the Owners rule below
+now handles. Nothing after the snapshot, the verify, the deltas or the final
+delta, has been run yet. It is Task 28: prove the migration on a copy of production before
 any of it touches production. Written while the code was fresh so whoever runs
 it is not reconstructing the order from memory.
 
@@ -163,7 +166,10 @@ content already counted. The mapped tables run their real statements and roll
 them back, so a constraint rejects the same rows it will on `--execute`. What
 it cannot see is anything that depends on rows the reel pass writes: save
 conflicts, jobs with no content to point at (`jobs_created` can be higher than
-the real run's), and hidden pins, reminders and price tracks that join a save.
+the real run's), hidden pins, reminders and price tracks that join a save, and
+the places and vectors carried onto saves. On a first snapshot
+`locations_copied`, `embeddings_copied` and `embeddings_skipped` read 0, so the
+dry run gives no preview of vectors left behind for their width.
 
 The dry run does write one thing: the users step commits `legacy.users` into
 `auth.users` on every run, dry or not, and logs `users_written`. It is an
@@ -308,9 +314,12 @@ index names a place on the legacy reel, not on the kept save's version.
 Python's `user_id` is text, and production holds test rows owned by names
 rather than users: `default-user`, `test-user`, `reddit-e2e-test` and
 `reddit-s-test` own nine reels. No canonical row can belong to one. A reel,
-job or mapped row whose owner is not a UUID is audited
+job or row of an owner-mapped table whose owner is not a UUID is audited
 `skipped_invalid_owner`, and one whose owner is a UUID that `auth.users` does
-not have is audited `skipped_unknown_reference`. Both are deliberate skips, so
+not have is audited `skipped_unknown_reference`. Two tables differ. A hidden
+pin with an unknown UUID owner finds no location to hide and is audited
+`skipped_no_location`. `feedback` has no owner mapping: a row whose `user_id`
+is not a UUID is carried with a NULL `user_id`. Both are deliberate skips, so
 `backfill-verify` counts them as explained. The run logs them as
 `invalid_owners` and `unknown_owners` for reels and `jobs_invalid_owners` and
 `jobs_unknown_owners` for jobs; the mapped tables report them in
