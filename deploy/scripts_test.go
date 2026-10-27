@@ -28,7 +28,15 @@ esac`,
 		"systemctl": `printf '%s\n' "$*" >> "$TEST_CALLS"
 case "$1" in
   show) printf '%s\n' "$TEST_UNIT_STATE" ;;
-  list-units|list-unit-files) if [ "$TEST_UNIT_PRESENT" = 1 ]; then echo reelpin.service; fi ;;
+  list-units)
+    if [ "$TEST_UNIT_PRESENT" = 1 ]; then echo reelpin.service; fi
+    exit "${TEST_LIST_UNITS_EXIT:-0}" ;;
+  list-unit-files)
+    if [ "$TEST_UNIT_PRESENT" = 1 ]; then echo reelpin.service; fi
+    printf '%s' "$TEST_UNIT_FILES_OUTPUT"
+    printf '%s' "$TEST_UNIT_FILES_ERROR" >&2
+    if [ "$TEST_UNIT_PRESENT" = 1 ]; then exit "${TEST_UNIT_FILES_EXIT:-0}"; fi
+    exit "${TEST_UNIT_FILES_EXIT:-1}" ;;
   *) exit 98 ;;
 esac`,
 		"curl": `case "$*" in
@@ -50,6 +58,10 @@ esac`,
 	t.Setenv("TEST_READY", "")
 	t.Setenv("TEST_UNIT_STATE", "inactive")
 	t.Setenv("TEST_UNIT_PRESENT", "1")
+	t.Setenv("TEST_LIST_UNITS_EXIT", "")
+	t.Setenv("TEST_UNIT_FILES_EXIT", "")
+	t.Setenv("TEST_UNIT_FILES_OUTPUT", "")
+	t.Setenv("TEST_UNIT_FILES_ERROR", "")
 	t.Setenv("TEST_CONTAINER", "")
 	t.Setenv("TEST_QUEUES", idleQueues)
 	t.Setenv("TEST_MIGRATE_EXIT", "0")
@@ -176,6 +188,41 @@ func TestFirstMigrationChecksTheUninitializedDatabase(t *testing.T) {
 	}
 	if !strings.Contains(string(commands), "migrate --require-idle=bootstrap") {
 		t.Fatalf("first deployment omitted the empty-database check: %s", commands)
+	}
+}
+
+func TestProductionMigrationRefusesUnitInventoryErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, loadedExit, installedExit, output, diagnostic string
+	}{
+		{name: "unit-file inventory error", installedExit: "1", diagnostic: "Failed to connect to bus"},
+		{name: "unexpected unit-file status", installedExit: "2"},
+		{name: "failed inventory with output", installedExit: "1", output: "unexpected inventory output"},
+		{name: "loaded-unit inventory error", loadedExit: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, envFile := scriptHarness(t)
+			t.Setenv("TEST_UNIT_PRESENT", "0")
+			t.Setenv("TEST_QUEUES", "[]")
+			t.Setenv("TEST_LIST_UNITS_EXIT", tc.loadedExit)
+			t.Setenv("TEST_UNIT_FILES_EXIT", tc.installedExit)
+			t.Setenv("TEST_UNIT_FILES_OUTPUT", tc.output)
+			t.Setenv("TEST_UNIT_FILES_ERROR", tc.diagnostic)
+			out, err := exec.Command("bash", "reelpin-migrate.sh", "production", testImage, envFile).CombinedOutput()
+			if err == nil {
+				t.Fatalf("failed unit inventory allowed migration: %s", out)
+			}
+			if tc.diagnostic != "" && !strings.Contains(string(out), tc.diagnostic) {
+				t.Fatalf("inventory diagnostic was lost: %s", out)
+			}
+			commands, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(commands), "run --rm") || strings.Contains(string(commands), "stop ") {
+				t.Fatalf("failed inventory ran migration or stopped work: %s", commands)
+			}
+		})
 	}
 }
 

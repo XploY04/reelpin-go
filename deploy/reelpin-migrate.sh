@@ -19,7 +19,14 @@ if [[ "$environment" = production ]]; then
   for service in api worker; do
     unit="reelpin-${service}-production"
     loaded=$(systemctl list-units --all --no-legend --no-pager "$unit.service")
-    installed=$(systemctl list-unit-files --no-legend --no-pager "$unit.service")
+    installed_status=0
+    installed=$(systemctl list-unit-files --no-legend --no-pager "$unit.service" 2>&1) || installed_status=$?
+    # Ubuntu systemd returns 1 with no output when no unit file matches.
+    if [[ "$installed_status" -ne 0 && ( "$installed_status" -ne 1 || -n "$installed" ) ]]; then
+      printf 'migration blocked: inventorying %s failed (exit %s)\n%s\n' \
+        "$unit" "$installed_status" "$installed" >&2
+      exit "$installed_status"
+    fi
     if [[ -n "$loaded" || -n "$installed" ]]; then
       state=$(systemctl show "$unit" --property=ActiveState --value)
       if [[ "$state" != inactive ]]; then
