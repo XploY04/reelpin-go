@@ -1,13 +1,11 @@
 # Rehearsal runbook
 
-**Only section 1 and the start of section 2 have been run for real**: on
-2026-10-27, from a production Supabase dump into the Neon development database,
-the dry run and the snapshot's `--execute` ran. That `--execute` aborted on a
-reel whose owner is not a UUID (SQLSTATE 22P02), which the Owners rule below
-now handles. Nothing after the snapshot, the verify, the deltas or the final
-delta, has been run yet. It is Task 28: prove the migration on a copy of production before
-any of it touches production. Written while the code was fresh so whoever runs
-it is not reconstructing the order from memory.
+**Sections 1 through 3 have been run for real**: on 2026-10-27, after PR #98,
+the snapshot's `--execute` and `backfill-verify --sample 100` completed clean
+against a production Supabase dump restored into Neon development. The deltas
+and final delta have not run, and the remaining rehearsal gates are still
+unproven. This is Task 28: prove the migration on a copy of production before
+the production cutover.
 
 The rehearsal exists to answer one question that is expensive to get wrong
 later: **does the compute have to move before launch?** The EC2 development host
@@ -18,13 +16,15 @@ harder than before.
 
 ## What you need first
 
-- A **disposable** Supabase project. Not development, which now carries the
-  declared auth config in `reelpin-web/supabase/config.toml`, and obviously not
-  production.
-- An anonymized copy of the production database. Anonymized means the reel and
-  job rows keep their ids and shapes, and the user-identifying columns do not
-  keep their values. The ids have to survive: the whole backfill design turns on
-  `user_saves.id` preserving `public.reels.id`.
+- A Neon development database as the rehearsal destination, with the Go
+  migrations applied. The 2026-10-27 run used `reelpin-dev`; production gets a
+  separate Neon project at cutover.
+- Read access to the production Supabase database as the dump source. The
+  rehearsal reads Supabase and writes the restored `legacy` schema and Go
+  tables in Neon development.
+- A production dump that keeps reel and job ids and shapes. The 2026-10-27
+  rehearsal used the real production dump, including the limited user export
+  below. The ids have to survive: `user_saves.id` preserves `public.reels.id`.
 - The image digest that development tested. Not a rebuild. A rebuilt image is a
   different artifact and proves nothing about the one that will run.
 
@@ -230,6 +230,14 @@ run, delta or not, and the copy is an idempotent upsert.
 | `reminders` | `reminders` | `greatest(created_at, sent_at)`. The only update is the claim, which sets `sent_at`. |
 | `price_tracks` | `price_tracks` | `greatest(created_at, last_checked_at, notified_at)`. The daily check sets `last_checked_at`. |
 | `feedback`, `link_clicks` | same names | `created_at`. The website only inserts. |
+
+The snapshot and verifier also restrict `processing_jobs` to rows created in
+the last 60 days, measured from each command's current clock. When the legacy
+table has an `environment` column, both apply
+`environment IS DISTINCT FROM 'development'`, which keeps NULL values and
+excludes development rows. These scope filters explain why the 2026-10-27
+rehearsal counted 600 of the source's 632 job rows in scope. That is the source
+scope, before deliberate skips, rather than the number of jobs carried.
 
 Places and embeddings go only onto content versions this backfill built, never
 onto one the Go pipeline built. Each version takes both from one carried reel,
