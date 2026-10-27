@@ -22,8 +22,17 @@ func (b *Backfiller) propagateDeletes(ctx context.Context, options Options, repo
 		return fmt.Errorf("starting the delete transaction: %w", err)
 	}
 	defer transaction.Rollback(ctx)
+	if err := lockCollectionOwnership(ctx, transaction); err != nil {
+		return fmt.Errorf("locking collection ownership for deletes: %w", err)
+	}
 
 	report.Deleted = map[string]int{}
+	if err := b.protectCollectionDeletes(ctx, transaction); err != nil {
+		return err
+	}
+	if err := b.deleteCollections(ctx, transaction, report); err != nil {
+		return err
+	}
 	for _, source := range verifySources() {
 		if source.owner == "" || !b.source.shape(source.name).exists {
 			continue
@@ -48,6 +57,9 @@ func (b *Backfiller) propagateDeletes(ctx context.Context, options Options, repo
 		report.Deleted[sourceUsers] = deleted
 	}
 
+	if err := b.refreshCollectionFingerprints(ctx, transaction); err != nil {
+		return err
+	}
 	if !options.Execute {
 		return nil
 	}
@@ -80,7 +92,7 @@ func (b *Backfiller) markGone(source legacySource) string {
 func (b *Backfiller) deleteCarried(source legacySource) string {
 	kept := ""
 	if source.name == sourceReels {
-		kept = b.stillResolved()
+		kept = b.stillResolved() + ` AND NOT EXISTS (SELECT 1 FROM reelpin.user_saves c WHERE c.id = a.source_id AND ` + b.source.protectedCollectionSave("c.id") + `)`
 	}
 	return `
 		WITH gone AS (` + b.gone(source) + `

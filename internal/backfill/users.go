@@ -66,6 +66,7 @@ func (b *Backfiller) deleteUsers() string {
 			DELETE FROM auth.users u
 			WHERE NOT EXISTS (SELECT 1 FROM ` + b.source.table(sourceUsers) + ` l WHERE l.id = u.id)
 			  AND NOT EXISTS (SELECT 1 FROM ` + servedUsers + ` m WHERE m.user_id = u.id)
+			  AND NOT ` + b.source.protectedCollectionUser("u.id") + `
 			RETURNING 1
 		)
 		SELECT count(*)::int FROM removed`
