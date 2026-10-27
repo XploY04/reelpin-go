@@ -67,6 +67,10 @@ func (v *Verifier) Shutdown(ctx context.Context) error {
 	return v.cache.Shutdown(ctx)
 }
 
+// Issuer is the authorization server that minted every token this verifier
+// accepts, which the MCP protected-resource metadata names.
+func (v *Verifier) Issuer() string { return v.issuer }
+
 func (v *Verifier) Authenticate(ctx context.Context, raw string) (Principal, error) {
 	keyID, err := es256KeyID(raw)
 	if err != nil {

@@ -28,7 +28,7 @@ catch is a gap in `make check`, not a reason to run something else by hand.
 | `cmd/worker/` | The queue consumers: processing, indexing, notifications, and the daily price check. |
 | `cmd/maintenance/` | Migrations, backfills, retention, purge, taxonomy curation, search eval, the container healthcheck. |
 | `cmd/load/` | Drives `internal/load`. Never runs in CI. |
-| `internal/httpapi/` | Routes, middleware, handlers, response shapes. The transport layer. |
+| `internal/httpapi/` | Routes, middleware, handlers, response shapes, and the MCP endpoint (`mcp.go`, `mcp_tools.go`). The transport layer. |
 | `internal/config/` | `Load()` and its validation. The only reader of the environment. |
 | `internal/auth/`, `internal/sharetoken/`, `internal/usermigration/` | Who is asking: Supabase JWKS verification, the long-lived tokens the native share extensions use, and the record of which users Go has served, which every legacy backfill run leaves alone. |
 | `internal/reels/`, `internal/jobs/`, `internal/collections/`, `internal/mapview/`, `internal/entitlements/` | Domain types, their reader ports, and the services every client calls (the app's handlers, the website, the MCP server). |
@@ -64,6 +64,10 @@ Nested `AGENTS.md` files exist where the rules differ: `cmd/`, `internal/`,
   `sub`, always. Every query is scoped by it.
 - **A GET never writes.** The readers are read-only on purpose; see
   `docs/decisions/0002-reads-never-write.md`.
+- **`/mcp` is not a REST route.** It is registered beside `/metrics`, outside
+  the route table and the OpenAPI contract, and its tools call the same
+  `Service` types the handlers do. The OAuth flow, the tools and the limits
+  are in `docs/mcp.md`.
 - **Public errors are stable service contracts.** A driver error is logged,
   never returned in a response body. Change an error code only with the API
   contract and its tests.

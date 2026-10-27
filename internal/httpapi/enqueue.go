@@ -57,7 +57,7 @@ func (s *Server) allowSubmission(w http.ResponseWriter, r *http.Request, userID 
 		return false
 	}
 
-	for _, check := range meteredChecks(r, userID, ratelimit.Submission, ratelimit.SubmissionIP, s.limitSubject(r)) {
+	for _, check := range meteredChecks(userID, requestClientID(r), s.limitSubject(r), ratelimit.Submission, ratelimit.SubmissionIP) {
 		decision, err := s.deps.Limiter.Allow(r.Context(), check.policy, check.subject)
 		if errors.Is(err, ratelimit.ErrUnavailable) {
 			writeError(w, http.StatusServiceUnavailable, errorBody{
