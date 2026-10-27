@@ -205,7 +205,7 @@ read, and only the first dump's time puts the mark before them.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--sample` | 100 | Carried rows per table compared field by field (reels and jobs). Also caps every id and user list in the report. |
+| `--sample` | 100 | Carried rows per table compared field by field (reels, jobs and the four collection tables). Also caps every id and user list in the report. |
 | `--batch-size` | 500 | Sampled rows read per query. |
 | `--legacy-schema` | `legacy` | As above. |
 | `--allow-drift` | false | Report mismatches but exit zero, for checks taken while both apps still write. |
