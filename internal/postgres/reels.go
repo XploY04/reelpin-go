@@ -27,12 +27,14 @@ const reelListColumns = `id, user_id, url, normalized_url, source_platform, sour
 //
 // The version join is LEFT: a save whose version was removed still lists, as
 // an untitled reel, rather than vanishing from the library. url is the link
-// the owner submitted, which only their first job kept; a save with no job
-// left falls back to the normalized URL. ingestion_method and
-// transcript_source have no canonical source and are always null.
+// the owner submitted: the backfill keeps it on the save, the app's first job
+// keeps it otherwise, and a save with neither falls back to the normalized
+// URL. parse_status is the legacy value when the backfill kept one.
+// ingestion_method and transcript_source have no canonical source and are
+// always null.
 const savedReels = `(
 	SELECT s.id, s.user_id,
-	       coalesce((SELECT j.url FROM reelpin.processing_jobs j
+	       coalesce(s.source_url, (SELECT j.url FROM reelpin.processing_jobs j
 	                 WHERE j.user_save_id = s.id AND j.user_id = s.user_id
 	                 ORDER BY j.created_at LIMIT 1), c.normalized_url) AS url,
 	       c.normalized_url, c.source_platform, c.source_content_type, c.source_content_id,
@@ -47,8 +49,9 @@ const savedReels = `(
 	       v.raw_extraction->'extraction'->'people_mentioned' AS people_mentioned,
 	       v.raw_extraction->'extraction'->'actionable_items' AS actionable_items,
 	       v.raw_extraction->'extraction'->'events' AS events,
-	       CASE v.extraction_status WHEN 'partial' THEN 'partial' WHEN 'completed' THEN 'parsed' END
-	           AS parse_status,
+	       CASE WHEN v.raw_extraction ? 'parse_status' THEN v.raw_extraction->>'parse_status'
+	            WHEN v.extraction_status = 'partial' THEN 'partial'
+	            WHEN v.extraction_status = 'completed' THEN 'parsed' END AS parse_status,
 	       s.saved_at AS created_at
 	FROM reelpin.user_saves s
 	JOIN reelpin.contents c ON c.id = s.content_id
