@@ -49,7 +49,11 @@ There is no `environment` column in Go tables.
    On this host 8000 belongs to Python: a response there cannot prove Go
    deployment. Set production smoke to 8080, require Go's expected identity and
    build version in addition to readiness, and prove the wrong-service and
-   wrong-port cases fail. This plan does not make that code change.
+   wrong-port cases fail. The workflow's migration container is also uncapped
+   today. Add `--memory 128m --memory-swap 128m --cpus 0.25` and an execution
+   gate that drains and stops the Go worker before migration; it must not
+   overlap busy worker processing. Test both limits and the execution gate
+   before production dispatch. This plan does not make those code changes.
 3. Complete dev CI, local integration tests and the rehearsal gates in
    [rehearsal.md](rehearsal.md). Do not run integration suites against either
    live Neon project. The 2026-10-27 snapshot and `backfill-verify --sample 100`
@@ -119,9 +123,10 @@ commit, immutable image digest, initial measurements and recovery points.
 
 1. Test the deployment prerequisite fix locally, run `make check` and the local
    integration suite, then deploy the chosen digest to dev. Record the running
-   build and acceptance results. Promote that same
-   `ghcr.io/xploy04/reelpin-go@sha256:...` digest to production; do not rebuild
-   it or dispatch production with an empty `digest` input.
+   build and acceptance results. Reserve that same
+   `ghcr.io/xploy04/reelpin-go@sha256:...` digest for production promotion at
+   step 11, after host and data preparation. Do not rebuild it or dispatch
+   production with an empty `digest` input.
 2. Verify production backups and a timed restore for PostgreSQL, Auth, Storage
    and required keys. Keep the Python service definitions, nginx configuration,
    current images and queue state recoverable. Record recovery limits before
@@ -217,9 +222,13 @@ commit, immutable image digest, initial measurements and recovery points.
     A failed trial blocks routing. Apply the $0 fallback above.
 11. Before any client reaches Go, refresh `legacy` and apply a verified delta
     using the saved mark and the new source-clock dump time. Read back all
-    environment/port/image settings without exposing secrets. Dispatch the
-    corrected release workflow only with `environment=production` and the
-    already-tested digest; confirm the smoke targets 8080 and the actual build.
+    environment/port/image settings without exposing secrets. Pause new trial
+    submissions, wait for every Go processing run to finish and stop the Go
+    worker. Dispatch the corrected release workflow only with
+    `environment=production` and the reserved tested digest. Its migration
+    must run under the 128 MiB, no-extra-swap, 0.25 CPU limits before the
+    deployment restarts the worker. Confirm the smoke targets 8080 and the
+    actual build.
 12. Back up the nginx site, add `location ^~ /api/v2/` proxying to
     `http://127.0.0.1:8080` while preserving the URI and forwarding its normal
     host/client headers. Keep `/api/v1/` and the existing fallback on Python
