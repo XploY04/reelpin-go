@@ -9,16 +9,8 @@ import (
 )
 
 func TestEntitlementsActiveProOnlyReturnsGrantsInForce(t *testing.T) {
-	pool := testPool(t)
+	pool := rawPool(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, `
-		CREATE TABLE user_entitlements (
-		    user_id        UUID PRIMARY KEY,
-		    pro_expires_at TIMESTAMPTZ
-		)`); err != nil {
-		t.Fatalf("creating user_entitlements: %v", err)
-	}
 
 	const (
 		future   = "aaaaaaaa-1111-4111-8111-000000000001"
@@ -34,8 +26,11 @@ func TestEntitlementsActiveProOnlyReturnsGrantsInForce(t *testing.T) {
 		{lapsed, time.Now().Add(-time.Hour)},
 		{noExpiry, nil},
 	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id) VALUES ($1)`, grant.userID); err != nil {
+			t.Fatalf("seeding user %s: %v", grant.userID, err)
+		}
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO user_entitlements (user_id, pro_expires_at) VALUES ($1, $2)`,
+			`INSERT INTO reelpin.user_entitlements (user_id, pro_expires_at) VALUES ($1, $2)`,
 			grant.userID, grant.expires,
 		); err != nil {
 			t.Fatalf("seeding %s: %v", grant.userID, err)

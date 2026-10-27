@@ -482,8 +482,7 @@ func isUniqueViolation(err error) bool {
 }
 
 // loadSavedReel reads the canonical save + current version into the wire's
-// reel shape. During production coexistence the legacy adapter serves reads;
-// this is the response for content the canonical pipeline owns.
+// reel shape.
 func loadSavedReel(ctx context.Context, tx pgx.Tx, userID, saveID string) (reels.ReelRecord, error) {
 	var record reels.ReelRecord
 	var tags, facts []string

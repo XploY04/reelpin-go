@@ -149,7 +149,7 @@ func TestAnAcceptedCanonicalJobIsImmediatelyPollable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("job id: %v", err)
 	}
-	reader := postgres.NewCombinedJobs(pool)
+	reader := postgres.NewJobs(pool)
 	record, err := reader.Get(context.Background(), userA, id)
 	if err != nil {
 		t.Fatalf("polling the accepted job: %v", err)

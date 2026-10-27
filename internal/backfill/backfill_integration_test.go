@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/migrations"
+	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -468,6 +470,70 @@ func TestJobsCopyOnlyWhenUnambiguous(t *testing.T) {
 		t.Errorf("the audit records %d skips, want 3 (one reel, two jobs)", skipped)
 	}
 }
+
+// The reel reader shows a backfilled save the way Python returned it: the link
+// as submitted, even with no job left to remember it, and the legacy
+// parse_status rather than the coarser extraction_status.
+func TestABackfilledReelReadsBackAsPythonStoredIt(t *testing.T) {
+	pool := testPool(t)
+	seed(t, pool)
+	ctx := context.Background()
+
+	const (
+		unparsedReel = "aaaaaaaa-0000-4000-8000-000000000006"
+		failedReel   = "aaaaaaaa-0000-4000-8000-000000000007"
+		nullReel     = "aaaaaaaa-0000-4000-8000-000000000008"
+	)
+	if _, err := pool.Exec(ctx, `ALTER TABLE public.reels ALTER COLUMN parse_status DROP NOT NULL`); err != nil {
+		t.Fatalf("allowing a null parse_status: %v", err)
+	}
+	for _, row := range []struct {
+		id, url string
+		status  *string
+	}{
+		{unparsedReel, "https://www.instagram.com/reel/UNPARSED1/?igsh=abc", ptr("unparsed")},
+		{failedReel, "https://www.instagram.com/reel/FAILED1/", ptr("failed")},
+		{nullReel, "https://www.instagram.com/reel/NULL1/", nil},
+	} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO public.reels (id, user_id, url, title, parse_status)
+			VALUES ($1, $2, $3, 'Saved link', $4)`, row.id, userA, row.url, row.status); err != nil {
+			t.Fatalf("seeding %s: %v", row.id, err)
+		}
+	}
+
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	reader := postgres.NewReels(pool)
+	for _, want := range []struct {
+		id, url, status string
+		null            bool
+	}{
+		{unparsedReel, "https://www.instagram.com/reel/UNPARSED1/?igsh=abc", "unparsed", false},
+		{failedReel, "https://www.instagram.com/reel/FAILED1/", "failed", false},
+		{nullReel, "https://www.instagram.com/reel/NULL1/", "", true},
+		// Its copied job holds a different spelling of the link; the reel's own wins.
+		{sharedReelA, "https://www.instagram.com/reel/SHARED1/?igsh=x", "parsed", false},
+	} {
+		record, err := reader.Get(ctx, userA, uuid.MustParse(want.id))
+		if err != nil {
+			t.Fatalf("reading %s: %v", want.id, err)
+		}
+		if record.URL != want.url {
+			t.Errorf("%s url = %q, want %q", want.id, record.URL, want.url)
+		}
+		switch {
+		case want.null && record.ParseStatus != nil:
+			t.Errorf("%s parse_status = %q, want null", want.id, *record.ParseStatus)
+		case !want.null && (record.ParseStatus == nil || *record.ParseStatus != want.status):
+			t.Errorf("%s parse_status = %v, want %q", want.id, record.ParseStatus, want.status)
+		}
+	}
+}
+
+func ptr(value string) *string { return &value }
 
 func TestResumeContinuesFromTheCursor(t *testing.T) {
 	pool := testPool(t)
