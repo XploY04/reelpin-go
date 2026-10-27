@@ -14,8 +14,16 @@ if [[ ! "$image" =~ ^ghcr\.io/xploy04/reelpin-go@sha256:[a-f0-9]{64}$ ]]; then
   exit 1
 fi
 
-idle=()
+runtime_args=(--network host)
+migration=(migrate)
 if [[ "$environment" = production ]]; then
+  slice_state=$(systemctl show reelpin-production.slice --property=ActiveState --value)
+  slice_swap=$(systemctl show reelpin-production.slice --property=MemorySwapMax --value)
+  if [[ "$slice_state" != active || "$slice_swap" != 0 ]]; then
+    echo "migration blocked: reelpin-production.slice must be active with MemorySwapMax=0" >&2
+    exit 1
+  fi
+  runtime_args+=(--cgroup-parent reelpin-production.slice)
   for service in api worker; do
     unit="reelpin-${service}-production"
     loaded=$(systemctl list-units --all --no-legend --no-pager "$unit.service")
@@ -82,9 +90,9 @@ if not required.issubset(seen):
     sys.exit("migration blocked: work queues are missing")
 print("drained")
 ' <<<"$queues")
-  idle=("--require-idle=$broker_state")
+  migration+=("--require-idle=$broker_state")
 fi
 
-docker run --rm --no-healthcheck --network host --memory 128m --memory-swap 128m --cpus 0.25 \
+docker run --rm --no-healthcheck "${runtime_args[@]}" --memory 128m --memory-swap 128m --cpus 0.25 \
   --env-file "$env_file" --entrypoint /usr/local/bin/reelpin-maintenance \
-  "$image" migrate "${idle[@]}"
+  "$image" "${migration[@]}"

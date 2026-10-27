@@ -48,6 +48,8 @@ There is no `environment` column in Go tables.
    not Python's port 8000. The migration wrapper caps its container at 128 MiB,
    no extra swap and 0.25 CPU. For production it refuses active Go units or
    containers, undrained RabbitMQ work and unfinished canonical database work.
+   It also requires `reelpin-production.slice` active with `MemorySwapMax=0`
+   and places the maintenance container under that slice.
    A fresh broker with no queues is allowed only against an uninitialized
    database; an empty broker on an initialized database fails closed.
    Drain and stop the Go API and worker before dispatch; the wrapper never
@@ -85,8 +87,29 @@ limits. Proposed additional caps, to be tested before any user routing:
 | Worker | 256 / 256 MiB | 0.75 CPU | `GOMEMLIMIT=160MiB`, 256 pids |
 | RabbitMQ | 192 / 192 MiB | 0.40 CPU | Absolute memory watermark 128 MiB, 256 pids |
 
-The memory-plus-swap limits equal RAM limits, so the new containers cannot
-consume more swap. Do not clear or resize the host's existing swap. Go's heap
+The memory-plus-swap limits equal RAM limits. On systemd cgroup v2 hosts, the
+[runtime's zero-swap property bug](https://github.com/opencontainers/cgroups/issues/74)
+can let `systemctl daemon-reload` reset the container's swap limit despite those flags.
+Install `/etc/systemd/system/reelpin-production.slice` with:
+
+```ini
+[Unit]
+Description=ReelPin production container limits
+
+[Slice]
+MemorySwapMax=0
+```
+
+Start the slice before its containers. Pass
+`--cgroup-parent reelpin-production.slice` to the Go API, worker, broker and
+every production maintenance container, keeping their individual caps above.
+Make the three service units require and start after this slice. Its persistent
+ancestor limit survives container recreation and daemon reloads; a limit on
+the service running the Docker client does not cover Docker's sibling scope.
+Verify the slice's `MemorySwapMax=0` and actual `memory.swap.max=0`, parentage,
+and unchanged container caps after both operations before admitting traffic.
+Keep Python and other containers outside it. Do not clear or resize the host's
+existing swap. Go's heap
 limit is not a process limit: the worker's cap includes `ffmpeg` and `yt-dlp`.
 A permitted 500 MiB media input can still exceed the worker's 256 MiB cap.
 
@@ -135,7 +158,8 @@ commit, immutable image digest, initial measurements and recovery points.
    without the management plugin. Create `reelpin-rabbitmq-production`, a durable
    volume and vhost/user dedicated to Go production. Bind AMQP only to
    `127.0.0.1:5672`; expose no management UI. Apply the caps and absolute
-   watermark above. Start RabbitMQ alone and measure its idle impact first.
+   watermark above. Install and start the zero-swap slice before RabbitMQ,
+   then start RabbitMQ alone and measure its idle impact first.
 4. Create `/etc/reelpin/production.env` and the separate RabbitMQ env file with
    root ownership and mode `0600`. Populate them through a protected input/file
    transfer, never terminal output, chat, shell tracing, command arguments,

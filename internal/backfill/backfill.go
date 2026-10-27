@@ -171,7 +171,8 @@ type Backfiller struct {
 	// seen dedupes identities during a dry run, which writes nothing and so
 	// cannot ask the database what it already created. It counts what this
 	// pass would build from an empty canonical schema.
-	seen map[string]bool
+	seen                   map[string]bool
+	plannedCollectionSaves map[string]string
 }
 
 func New(pool *pgxpool.Pool, logger *slog.Logger) *Backfiller {
@@ -199,6 +200,12 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 		return Report{}, err
 	}
 	if err := b.source.describe(ctx, b.pool); err != nil {
+		return Report{}, err
+	}
+	if err := b.source.requireCollections(); err != nil {
+		return Report{}, err
+	}
+	if err := b.planCollectionReferences(ctx, options.Execute); err != nil {
 		return Report{}, err
 	}
 	// Off Supabase the users table is auth.users' only source. Without it
@@ -240,6 +247,9 @@ func (b *Backfiller) Run(ctx context.Context, options Options) (Report, error) {
 		if err := b.copyTable(ctx, options, mapping, &report); err != nil {
 			return report, err
 		}
+	}
+	if err := b.copyCollections(ctx, options, &report); err != nil {
+		return report, err
 	}
 	if options.PropagateDeletes {
 		if err := b.propagateDeletes(ctx, options, &report); err != nil {
@@ -461,6 +471,9 @@ func (b *Backfiller) backfillOneReel(ctx context.Context, options Options, batch
 		}
 		if moved {
 			return nil
+		}
+		if err := b.planCollectionSave(ctx, row, identity, scopeHash); err != nil {
+			return err
 		}
 		return b.reportOneReel(ctx, identity, scopeHash, report)
 	}

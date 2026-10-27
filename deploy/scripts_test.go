@@ -27,7 +27,16 @@ case "$1" in
 esac`,
 		"systemctl": `printf '%s\n' "$*" >> "$TEST_CALLS"
 case "$1" in
-  show) printf '%s\n' "$TEST_UNIT_STATE" ;;
+  show)
+    if [ "$2" = reelpin-production.slice ]; then
+      case "$3" in
+        --property=ActiveState) printf '%s\n' "$TEST_SLICE_STATE" ;;
+        --property=MemorySwapMax) printf '%s\n' "$TEST_SLICE_SWAP" ;;
+        *) exit 97 ;;
+      esac
+      exit "$TEST_SLICE_SHOW_EXIT"
+    fi
+    printf '%s\n' "$TEST_UNIT_STATE" ;;
   list-units)
     if [ "$TEST_UNIT_PRESENT" = 1 ]; then echo reelpin.service; fi
     exit "${TEST_LIST_UNITS_EXIT:-0}" ;;
@@ -57,6 +66,9 @@ esac`,
 	t.Setenv("TEST_HEALTH", `{"service":"ReelPin API","version":"`+testRevision+`","status":"ok","ready":true}`)
 	t.Setenv("TEST_READY", "")
 	t.Setenv("TEST_UNIT_STATE", "inactive")
+	t.Setenv("TEST_SLICE_STATE", "active")
+	t.Setenv("TEST_SLICE_SWAP", "0")
+	t.Setenv("TEST_SLICE_SHOW_EXIT", "0")
 	t.Setenv("TEST_UNIT_PRESENT", "1")
 	t.Setenv("TEST_LIST_UNITS_EXIT", "")
 	t.Setenv("TEST_UNIT_FILES_EXIT", "")
@@ -165,12 +177,58 @@ func TestIdleMigrationIsBoundedAndPropagatesFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, required := range []string{"--no-healthcheck", "--memory 128m --memory-swap 128m --cpus 0.25", "migrate --require-idle=drained", "--vhost reelpin-production"} {
+			for _, required := range []string{"--no-healthcheck", "--memory 128m --memory-swap 128m --cpus 0.25", "--cgroup-parent reelpin-production.slice", "migrate --require-idle=drained", "--vhost reelpin-production"} {
 				if !strings.Contains(string(commands), required) {
 					t.Errorf("migration omitted %q: %s", required, commands)
 				}
 			}
 		})
+	}
+}
+
+func TestProductionMigrationRequiresNoSwapSlice(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, swap, exitCode string
+	}{
+		{name: "inactive", state: "inactive", swap: "0", exitCode: "0"},
+		{name: "unlimited swap", state: "active", swap: "infinity", exitCode: "0"},
+		{name: "extra swap", state: "active", swap: "4096", exitCode: "0"},
+		{name: "missing limit", state: "active", swap: "", exitCode: "0"},
+		{name: "inspection error", state: "active", swap: "0", exitCode: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls, envFile := scriptHarness(t)
+			t.Setenv("TEST_SLICE_STATE", tc.state)
+			t.Setenv("TEST_SLICE_SWAP", tc.swap)
+			t.Setenv("TEST_SLICE_SHOW_EXIT", tc.exitCode)
+			out, err := exec.Command("bash", "reelpin-migrate.sh", "production", testImage, envFile).CombinedOutput()
+			if err == nil {
+				t.Fatalf("unsafe slice allowed migration: %s", out)
+			}
+			commands, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(commands), "run --rm") || strings.Contains(string(commands), "stop ") {
+				t.Fatalf("failed slice gate ran migration or stopped work: %s", commands)
+			}
+		})
+	}
+}
+
+func TestDevMigrationDoesNotRequireProductionSlice(t *testing.T) {
+	calls, envFile := scriptHarness(t)
+	t.Setenv("TEST_SLICE_SHOW_EXIT", "1")
+	out, err := exec.Command("bash", "reelpin-migrate.sh", "dev", testImage, envFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("dev migration required production slice: %v: %s", err, out)
+	}
+	commands, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(commands), "show ") || strings.Contains(string(commands), "--cgroup-parent") || strings.Contains(string(commands), "--require-idle") {
+		t.Fatalf("production-only gate changed dev migration: %s", commands)
 	}
 }
 
