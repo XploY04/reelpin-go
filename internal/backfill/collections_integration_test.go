@@ -389,11 +389,19 @@ func TestCollectionBackfillRejectsUnownedCanonicalID(t *testing.T) {
 
 func TestCollectionBackfillSerializesConcurrentChildMutations(t *testing.T) {
 	pool := collectionFixture(t)
+	config := pool.Config()
+	config.MaxConns = 4
+	limited, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer limited.Close()
+	pool = limited
 	exec(t, pool, `DELETE FROM public.collection_members`)
 	copyCollectionsFixture(t, pool, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	watcher, err := pgx.Connect(ctx, pool.Config().ConnString())
+	watcher, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,25 +423,48 @@ func TestCollectionBackfillSerializesConcurrentChildMutations(t *testing.T) {
 		_, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema})
 		copied <- err
 	}()
-	waitForLocks := func(want int, event string) {
+	waitForLock := func(pid uint32, done <-chan error, label string) {
 		t.Helper()
 		for {
-			var count int
-			if err := watcher.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND ($1='' OR wait_event=$1)`, event).Scan(&count); err != nil {
+			select {
+			case err := <-done:
+				t.Fatalf("%s completed inside collection copy: %v", label, err)
+			default:
+			}
+			var waiting bool
+			if err := watcher.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')`, pid).Scan(&waiting); err != nil {
 				t.Fatal(err)
 			}
-			if count >= want {
+			if waiting {
 				return
 			}
 			select {
 			case <-ctx.Done():
-				t.Fatal("concurrent collection operation did not reach its expected lock")
+				t.Fatalf("%s did not reach its expected lock: %v", label, ctx.Err())
 			case <-time.After(10 * time.Millisecond):
 			}
 		}
 	}
-	waitForLocks(1, "advisory")
-	marker, err := pgx.Connect(ctx, pool.Config().ConnString())
+	for {
+		select {
+		case err := <-copied:
+			t.Fatalf("copy completed before reaching its pause: %v", err)
+		default:
+		}
+		var paused bool
+		if err := watcher.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE 'INSERT INTO reelpin.collections%')`).Scan(&paused); err != nil {
+			t.Fatal(err)
+		}
+		if paused {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	marker, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,36 +474,29 @@ func TestCollectionBackfillSerializesConcurrentChildMutations(t *testing.T) {
 		_, err := marker.Exec(ctx, `INSERT INTO reelpin.user_migrations(user_id) VALUES($1)`, userB)
 		marked <- err
 	}()
-	for {
-		select {
-		case err := <-marked:
-			t.Fatalf("first marker committed inside collection copy: %v", err)
-		default:
-		}
-		var waiting bool
-		if err := watcher.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')`, marker.PgConn().PID()).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(10 * time.Millisecond):
-		}
+	waitForLock(marker.PgConn().PID(), marked, "first marker")
+	remover, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer remover.Close(context.Background())
+	joiner, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer joiner.Close(context.Background())
 	removed := make(chan error, 1)
 	joined := make(chan error, 1)
 	go func() {
-		_, err := pool.Exec(ctx, `DELETE FROM reelpin.collection_items WHERE collection_id=$1`, legacyCollection)
+		_, err := remover.Exec(ctx, `DELETE FROM reelpin.collection_items WHERE collection_id=$1`, legacyCollection)
 		removed <- err
 	}()
 	go func() {
-		_, err := pool.Exec(ctx, `INSERT INTO reelpin.collection_members(collection_id,user_id,role) VALUES($1,$2,'editor')`, legacyCollection, userB)
+		_, err := joiner.Exec(ctx, `INSERT INTO reelpin.collection_members(collection_id,user_id,role) VALUES($1,$2,'editor')`, legacyCollection, userB)
 		joined <- err
 	}()
-	waitForLocks(4, "")
+	waitForLock(remover.PgConn().PID(), removed, "item removal")
+	waitForLock(joiner.PgConn().PID(), joined, "member insertion")
 	select {
 	case err := <-marked:
 		t.Fatalf("first marker committed inside collection copy: %v", err)
