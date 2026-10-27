@@ -1175,3 +1175,57 @@ func TestEmbeddingModelTagsLoseTheirWidthSuffix(t *testing.T) {
 			verified.Embeddings.Models)
 	}
 }
+
+// Two users saved the same reel, and the reel the content version was built
+// from carries a tag of another width. The other reel's vector fits, so the
+// version takes that one, and only the reel whose tag does not fit is audited.
+func TestAContentTakesTheVectorThatFitsWhenItsFirstReelDoesNot(t *testing.T) {
+	pool := testPool(t)
+	seedScratch(t, pool)
+	ctx := context.Background()
+
+	const (
+		widerFirst = "bbbbbbbb-0000-4000-8000-00000000000b"
+		fitsLater  = "bbbbbbbb-0000-4000-8000-00000000000c"
+	)
+	exec(t, pool, `
+		INSERT INTO legacy.reels (id, user_id, url, title, embedding, embedding_model, created_at)
+		VALUES ($1, $3, 'https://www.instagram.com/reel/WIDTH9/', 'Wider first',
+		        array_fill(0.4, ARRAY[768])::public.vector, 'gemini-embedding-001@1536', '2026-01-01T00:00:00Z'),
+		       ($2, $4, 'https://www.instagram.com/reel/WIDTH9/', 'Fits later',
+		        array_fill(0.3, ARRAY[768])::public.vector, 'gemini-embedding-001@768', '2026-01-02T00:00:00Z')`,
+		widerFirst, fitsLater, userA, userB)
+
+	if _, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: scratchSchema}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	version := versionOf(t, pool, widerFirst)
+	if version != versionOf(t, pool, fitsLater) {
+		t.Fatal("the two saves of one reel do not share a content version")
+	}
+	if !exists(t, pool, `
+		SELECT 1 FROM reelpin.content_embeddings
+		WHERE content_version_id = $1 AND model = 'gemini-embedding-001'`, version) {
+		t.Error("the content has no vector although one of its reels has a vector that fits")
+	}
+	if action := auditAction(t, pool, sourceReelEmbeddings, widerFirst); action != skippedEmbeddingWidth {
+		t.Errorf("the wider vector is audited %q, want %s", action, skippedEmbeddingWidth)
+	}
+	if exists(t, pool, `
+		SELECT 1 FROM reelpin.backfill_audit
+		WHERE backfill_version = $1 AND source_table = $2 AND source_id = $3`,
+		Version, sourceReelEmbeddings, fitsLater) {
+		t.Error("the carried vector is audited as left behind")
+	}
+
+	verified, err := NewVerifier(pool).Verify(ctx, VerifyOptions{LegacySchema: scratchSchema})
+	if err != nil {
+		t.Fatalf("verifying: %v", err)
+	}
+	if !verified.OK() {
+		t.Errorf("the backfill does not verify: %+v", verified.Embeddings)
+	}
+	if verified.Embeddings.Skipped != 1 {
+		t.Errorf("embeddings skipped = %d, want 1", verified.Embeddings.Skipped)
+	}
+}

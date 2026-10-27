@@ -660,19 +660,18 @@ func (b *Backfiller) copyReelPlacesAndEmbeddings(ctx context.Context, options Op
 	}
 
 	if shape.has("embedding") {
-		chosen := chosenReels(reels, shape,
-			`l.id AS reel_id, l.embedding::text AS embedding,
-			 `+carriedModel(shape)+` AS model,
-			 `+legacyModel(shape)+` AS legacy_model`,
-			`l.embedding IS NOT NULL`)
+		// The vector is chosen among the reels whose tag fits, so a content
+		// whose first reel carries another width still takes a vector that
+		// fits from another of its reels.
 		tag, err := transaction.Exec(ctx, `
-			WITH chosen AS (`+chosen+`)
+			WITH chosen AS (`+chosenReels(reels, shape,
+			`l.embedding::text AS embedding, `+carriedModel(shape)+` AS model`,
+			`l.embedding IS NOT NULL AND `+carriedModel(shape)+` IS NOT NULL`)+`)
 			INSERT INTO reelpin.content_embeddings AS e
 				(content_version_id, embedding, model, dimension, document_version, document_hash)
 			SELECT chosen.version_id, chosen.embedding::public.vector, chosen.model, $2, $1,
 			       md5(chosen.model || '|' || chosen.embedding)
 			FROM chosen
-			WHERE chosen.model IS NOT NULL
 			ON CONFLICT (content_version_id) DO UPDATE SET
 				embedding = EXCLUDED.embedding,
 				model = EXCLUDED.model,
@@ -687,15 +686,15 @@ func (b *Backfiller) copyReelPlacesAndEmbeddings(ctx context.Context, options Op
 		}
 		report.EmbeddingsCopied = int(tag.RowsAffected())
 
-		// The audit stores identifiers only, and a model tag is not user text.
+		// Every reel whose tag does not fit is audited, chosen or not, which is
+		// what backfill-verify counts as skipped. The audit stores identifiers
+		// only, and a model tag is not user text.
 		skipped, err := transaction.Exec(ctx, `
-			WITH chosen AS (`+chosen+`)
 			INSERT INTO reelpin.backfill_audit
 				(backfill_version, batch, source_table, source_id, action, note)
-			SELECT $2, 0, $3, chosen.reel_id, $4,
-			       'embedding_model ' || chosen.legacy_model || ' does not fit vector(' || $5::int || ')'
-			FROM chosen
-			WHERE chosen.model IS NULL
+			SELECT $2, 0, $3, l.id, $4,
+			       'embedding_model ' || `+legacyModel(shape)+` || ' does not fit vector(' || $5::int || ')'
+			`+builtReels(reels, shape, `l.embedding IS NOT NULL AND `+carriedModel(shape)+` IS NULL`)+`
 			ON CONFLICT (backfill_version, source_table, source_id)
 			DO UPDATE SET action = EXCLUDED.action, note = EXCLUDED.note`,
 			legacyVersion, Version, sourceReelEmbeddings, skippedEmbeddingWidth, embed.DefaultDimension)
@@ -734,20 +733,27 @@ func carriedModel(shape tableShape) string {
 }
 
 // chosenReels picks, for every content version this backfill built, the one
-// carried legacy reel its places and embedding come from: the reel the version
-// was built from, which shares its created_at, and otherwise the lowest id.
+// carried legacy reel passing filter that its places or its embedding come
+// from: the reel the version was built from, which shares its created_at, and
+// otherwise the lowest id.
 // Taking every field from one reel keeps a location's ordinal its index in
 // that reel's locations array, which is what a hidden pin's location_index
 // and a reel:{id}:{ordinal} pin id name.
 func chosenReels(reels string, shape tableShape, columns, filter string) string {
 	return `
-		SELECT DISTINCT ON (v.id) v.id AS version_id, ` + columns + `
+		SELECT DISTINCT ON (v.id) v.id AS version_id, ` + columns + builtReels(reels, shape, filter) + `
+		ORDER BY v.id, (l.created_at IS NOT DISTINCT FROM v.created_at) DESC, l.id`
+}
+
+// builtReels is the FROM and WHERE over the carried legacy reels l whose
+// content's current version v this backfill built.
+func builtReels(reels string, shape tableShape, filter string) string {
+	return `
 		FROM ` + reels + ` l
 		JOIN reelpin.user_saves s ON s.id = l.id
 		JOIN reelpin.contents c ON c.id = s.content_id
 		JOIN reelpin.content_versions v ON v.id = c.current_version_id AND v.processor_version = $1
-		WHERE ` + filter + shape.environmentFilter() + `
-		ORDER BY v.id, (l.created_at IS NOT DISTINCT FROM v.created_at) DESC, l.id`
+		WHERE ` + filter + shape.environmentFilter()
 }
 
 // locatedEntry is a legacy location the Python map drew a pin for: numeric
