@@ -684,3 +684,88 @@ func legacySnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	}
 	return snapshot
 }
+
+// Python's user_id is text, and production holds test rows owned by
+// 'default-user' and the like beside real users. Binding one to a uuid column
+// aborted the first real rehearsal; a valid UUID nobody has is no better.
+func TestOwnersNoCanonicalRowCanBelongToAreSkippedByDryAndRealRuns(t *testing.T) {
+	pool := testPool(t)
+	seed(t, pool)
+	ctx := context.Background()
+
+	const (
+		testOwnerReel = "aaaaaaaa-0000-4000-8000-000000000006"
+		strangerReel  = "aaaaaaaa-0000-4000-8000-000000000007"
+		testOwnerJob  = "cccccccc-0000-4000-8000-000000000004"
+		unknownOwner  = "55555555-5555-4555-8555-555555555555"
+		testOwner     = "reddit-s-test"
+	)
+	exec(t, pool, `ALTER TABLE public.reels ALTER COLUMN user_id TYPE text`)
+	exec(t, pool, `ALTER TABLE public.processing_jobs ALTER COLUMN user_id TYPE text`)
+	exec(t, pool, `
+		INSERT INTO public.reels (id, user_id, url, title)
+		VALUES ($1, $2, 'https://www.instagram.com/reel/TEST9/', 'A test row'),
+		       ($3, $4, 'https://www.instagram.com/reel/STRANGER9/', 'Nobody we know')`,
+		testOwnerReel, testOwner, strangerReel, unknownOwner)
+	exec(t, pool, `
+		INSERT INTO public.processing_jobs (id, user_id, url, status, completed_at)
+		VALUES ($1, 'default-user', 'https://www.instagram.com/reel/SHARED1/', 'completed', now())`,
+		testOwnerJob)
+
+	dry, err := New(pool, quiet()).Run(ctx, Options{LegacySchema: publicSchema})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if count(t, pool, "reelpin.backfill_audit") != 0 {
+		t.Error("the dry run wrote audit rows")
+	}
+
+	executed, err := New(pool, quiet()).Run(ctx, Options{Execute: true, DumpedAt: dumpedNow(), LegacySchema: publicSchema})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// The dry run is the preview of the real run, owners included.
+	for _, side := range []struct {
+		name   string
+		report Report
+	}{{"dry run", dry}, {"real run", executed}} {
+		if side.report.SavesCreated != 4 {
+			t.Errorf("%s saves_created=%d, want 4", side.name, side.report.SavesCreated)
+		}
+		if side.report.InvalidOwners != 1 || side.report.UnknownOwners != 1 ||
+			side.report.JobsInvalidOwners != 1 || side.report.JobsUnknownOwners != 0 {
+			t.Errorf("%s owners: reels invalid=%d unknown=%d, jobs invalid=%d unknown=%d, want 1 1 1 0",
+				side.name, side.report.InvalidOwners, side.report.UnknownOwners,
+				side.report.JobsInvalidOwners, side.report.JobsUnknownOwners)
+		}
+	}
+
+	if executed.JobsCreated != 1 {
+		t.Errorf("jobs_created = %d, want 1", executed.JobsCreated)
+	}
+
+	for _, want := range []struct{ table, id, action string }{
+		{sourceReels, testOwnerReel, "skipped_invalid_owner"},
+		{sourceReels, strangerReel, "skipped_unknown_reference"},
+		{sourceJobs, testOwnerJob, "skipped_invalid_owner"},
+	} {
+		if action := auditAction(t, pool, want.table, want.id); action != want.action {
+			t.Errorf("%s %s is audited %q, want %s", want.table, want.id, action, want.action)
+		}
+	}
+
+	report := verified(t, pool)
+	if !report.OK() {
+		t.Errorf("a backfill that skipped owners does not verify: %+v", report)
+	}
+	reels := tableOf(t, report, sourceReels)
+	if reels.Unexplained != 0 || reels.SkippedByAction["skipped_invalid_owner"] != 1 ||
+		reels.SkippedByAction["skipped_unknown_reference"] != 1 {
+		t.Errorf("reels = %+v, want both owners explained", reels)
+	}
+	if jobs := tableOf(t, report, sourceJobs); jobs.Unexplained != 0 ||
+		jobs.SkippedByAction["skipped_invalid_owner"] != 1 {
+		t.Errorf("jobs = %+v, want the test owner's job explained", jobs)
+	}
+}

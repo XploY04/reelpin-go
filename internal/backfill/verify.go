@@ -39,7 +39,8 @@ type TableVerification struct {
 	// SkippedByAction breaks the skips down by the reason the backfill
 	// recorded: skipped_invalid_url, skipped_unreadable, skipped_blocklisted,
 	// skipped_active, skipped_ambiguous, skipped_conflict, skipped_invalid,
-	// skipped_unknown_reference, skipped_no_location, skipped_vanished.
+	// skipped_invalid_owner, skipped_unknown_reference, skipped_no_location,
+	// skipped_vanished.
 	SkippedByAction map[string]int `json:"skipped_by_action"`
 	// Unexplained counts legacy rows with no audit entry at all. A row that was
 	// neither carried over nor deliberately skipped is the migration mismatch
@@ -108,9 +109,13 @@ type EmbeddingCoverage struct {
 	Measured  bool `json:"measured"`
 	Legacy    int  `json:"legacy"`
 	Canonical int  `json:"canonical"`
-	// Models splits Canonical by the model each vector was made with. Search
-	// only compares a query with vectors from the configured EMBEDDING_MODEL,
-	// so a carried vector under any other model is invisible to it.
+	// Skipped is the carried reels whose vector the backfill left behind
+	// because its model tag names another width. They are not in Legacy.
+	Skipped int `json:"skipped"`
+	// Models splits Canonical by the model each vector is stored under, the
+	// legacy tag with a matching @768 suffix dropped. Search only compares a
+	// query with vectors from the configured EMBEDDING_MODEL, so a carried
+	// vector under any other model is invisible to it.
 	Models map[string]int `json:"models"`
 }
 
@@ -516,13 +521,16 @@ func (v *Verifier) countSearchAndMap(ctx context.Context, report *VerifyReport) 
 		report.Embeddings.Measured = true
 		if err := v.pool.QueryRow(ctx, `
 			SELECT
-				(SELECT count(*) FROM `+sql.legacy+` l`+where+` AND l.embedding IS NOT NULL),
+				(SELECT count(*) FROM `+sql.legacy+` l`+where+` AND l.embedding IS NOT NULL
+				   AND `+carriedModel(shape)+` IS NOT NULL),
 				(SELECT count(*) FROM `+carried+`
 				 JOIN reelpin.content_embeddings e
 				   ON e.content_version_id = c.current_version_id AND e.embedding IS NOT NULL
-				 `+where+` AND l.embedding IS NOT NULL)`,
+				 `+where+` AND l.embedding IS NOT NULL AND `+carriedModel(shape)+` IS NOT NULL),
+				(SELECT count(*) FROM `+sql.legacy+` l`+where+` AND l.embedding IS NOT NULL
+				   AND `+carriedModel(shape)+` IS NULL)`,
 			Version, nil,
-		).Scan(&report.Embeddings.Legacy, &report.Embeddings.Canonical); err != nil {
+		).Scan(&report.Embeddings.Legacy, &report.Embeddings.Canonical, &report.Embeddings.Skipped); err != nil {
 			return fmt.Errorf("counting embedding coverage: %w", err)
 		}
 		if err := v.embeddingModels(ctx, carried, where, report); err != nil {

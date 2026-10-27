@@ -130,7 +130,13 @@ func (s source) require(tables ...string) error {
 	return nil
 }
 
-const uuidPattern = `'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'`
+const uuidRegex = `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+
+const uuidPattern = `'` + uuidRegex + `'`
+
+// uuidShape is uuidPattern for a value already read into Go, so an owner is
+// judged a UUID by the same rule on both sides.
+var uuidShape = regexp.MustCompile(uuidRegex)
 
 // uuidOrNull turns a legacy text user id into a UUID, or NULL when it is not
 // one, so the NOT NULL on the canonical column rejects the row by name.
