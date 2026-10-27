@@ -1,0 +1,138 @@
+// Command maintenance runs bounded operational tasks: schema migrations now,
+// backfills and retention later. It is never part of serving traffic.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/XploY04/reelpin-go/internal/config"
+	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/migrations"
+	"github.com/XploY04/reelpin-go/internal/postgres"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	if err := run(logger, os.Args[1:]); err != nil {
+		logger.Error("maintenance command failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: maintenance <migrate|migrate-status|migrate-down|" +
+			"rebuild-queue|retention|purge|backfill-embeddings|backfill-legacy|backfill-verify|" +
+			"search-eval|curate-taxonomy|rollback-taxonomy|check-price-tracks|push-token-builds|healthcheck>")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// The container healthcheck runs before anything is configured and must not
+	// need a database URL to say whether the process is alive.
+	if args[0] == "healthcheck" {
+		return runHealthcheck(ctx, args[1:])
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	switch command := args[0]; command {
+	case "migrate":
+		flags := flag.NewFlagSet("migrate", flag.ContinueOnError)
+		requireIdle := flags.String("require-idle", "", "deployment state: bootstrap or drained")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *requireIdle != "" {
+			if *requireIdle != "bootstrap" && *requireIdle != "drained" {
+				return errors.New("--require-idle must be bootstrap or drained")
+			}
+			pool, err := db.Connect(ctx, cfg.DatabaseURL)
+			if err != nil {
+				return err
+			}
+			err = postgres.CheckMigrationIdle(ctx, pool, *requireIdle == "bootstrap")
+			pool.Close()
+			if err != nil {
+				return err
+			}
+		}
+		applied, err := migrations.Up(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		logger.Info("migrations applied", "environment", cfg.Environment, "count", len(applied), "migrations", applied)
+		return nil
+
+	case "migrate-status":
+		lines, err := migrations.Status(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		for _, line := range lines {
+			logger.Info("migration", "state", line)
+		}
+		return nil
+
+	case "backfill-embeddings":
+		return runBackfillEmbeddings(ctx, logger, cfg, args[1:])
+
+	case "backfill-legacy":
+		return runBackfillLegacy(ctx, logger, cfg, args[1:])
+
+	case "backfill-verify":
+		return runBackfillVerify(ctx, logger, cfg, args[1:])
+
+	case "search-eval":
+		return runSearchEval(ctx, logger, cfg, args[1:])
+
+	case "rebuild-queue":
+		return runRebuildQueue(ctx, logger, cfg, args[1:])
+
+	case "retention":
+		return runRetention(ctx, logger, cfg, args[1:])
+
+	case "purge":
+		return runPurge(ctx, logger, cfg, args[1:])
+
+	case "curate-taxonomy":
+		return runCurateTaxonomy(ctx, logger, cfg, args[1:])
+
+	case "rollback-taxonomy":
+		return runRollbackTaxonomy(ctx, logger, cfg, args[1:])
+
+	case "check-price-tracks":
+		return runCheckPriceTracks(ctx, logger, cfg, args[1:])
+
+	case "push-token-builds":
+		return runPushTokenBuilds(ctx, logger, cfg, args[1:])
+
+	case "migrate-down":
+		// Expand-only migrations are corrected forward in production. This is
+		// for a disposable database.
+		if cfg.Environment == "production" {
+			return errors.New("migrate-down is not allowed in production")
+		}
+		name, err := migrations.Down(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		logger.Info("last migration rolled back", "environment", cfg.Environment, "migration", name)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown command %q", command)
+	}
+}

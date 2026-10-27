@@ -1,0 +1,336 @@
+{
+  "note": "Generated from Server.routeTable(). A change here is an API change.",
+  "route_count": 55,
+  "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/v2/account",
+      "operation_id": "deleteAccount",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/account/entitlements",
+      "operation_id": "getEntitlements",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/account/library-stats",
+      "operation_id": "getLibraryStats",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collection-invites/{token}/accept",
+      "operation_id": "acceptCollectionInvite",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/collections",
+      "operation_id": "listCollections",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections",
+      "operation_id": "createCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}",
+      "operation_id": "deleteCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/collections/{collection_id}",
+      "operation_id": "getCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v2/collections/{collection_id}",
+      "operation_id": "updateCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/invites",
+      "operation_id": "createCollectionInvite",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/items",
+      "operation_id": "addCollectionItems",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}/items/{reel_id}",
+      "operation_id": "removeCollectionItem",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/leave",
+      "operation_id": "leaveCollection",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}/link",
+      "operation_id": "disableCollectionLink",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/collections/{collection_id}/link",
+      "operation_id": "enableCollectionLink",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/collections/{collection_id}/members",
+      "operation_id": "listCollectionMembers",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/collections/{collection_id}/members/{member_user_id}",
+      "operation_id": "removeCollectionMember",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/device-push-tokens",
+      "operation_id": "deleteDeviceToken",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/device-push-tokens",
+      "operation_id": "registerDeviceToken",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/discover",
+      "operation_id": "getDiscover",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/feedback",
+      "operation_id": "submitFeedback",
+      "auth": "public"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/health/live",
+      "operation_id": "getHealthLive",
+      "auth": "public"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/health/ready",
+      "operation_id": "getHealthReady",
+      "auth": "public"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/link-clicks",
+      "operation_id": "recordLinkClick",
+      "auth": "public"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/map/items/{map_item_id}",
+      "operation_id": "deleteMapItem",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/map/locations/{location_id}/hidden",
+      "operation_id": "setPinHidden",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/map/manual-pins",
+      "operation_id": "createManualPin",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/map/manual-pins/{pin_id}",
+      "operation_id": "deleteManualPin",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/nearby",
+      "operation_id": "listNearbyPins",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/pins",
+      "operation_id": "listMapPins",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/map/pins",
+      "operation_id": "pinMapPlace",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/map/search",
+      "operation_id": "searchMapPlaces",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/native-shares/reels",
+      "operation_id": "submitNativeShare",
+      "auth": "share-token"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/notifications/{notification_id}/opened",
+      "operation_id": "markNotificationOpened",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/price-tracks",
+      "operation_id": "listPriceTracks",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/price-tracks",
+      "operation_id": "createPriceTrack",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/price-tracks/{track_id}",
+      "operation_id": "deletePriceTrack",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/processing-jobs",
+      "operation_id": "listProcessingJobs",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/processing-jobs/reels",
+      "operation_id": "submitReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/processing-jobs/{job_id}",
+      "operation_id": "getProcessingJob",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/profile",
+      "operation_id": "getProfile",
+      "auth": "bearer"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v2/profile",
+      "operation_id": "putProfile",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels",
+      "operation_id": "listReels",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels/category-filters",
+      "operation_id": "getReelCategoryFilters",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels/filters",
+      "operation_id": "getReelFilters",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/reels/{reel_id}",
+      "operation_id": "deleteReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reels/{reel_id}",
+      "operation_id": "getReel",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/reminders",
+      "operation_id": "listReminders",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/reminders",
+      "operation_id": "createReminder",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/reminders/{reminder_id}",
+      "operation_id": "deleteReminder",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/search",
+      "operation_id": "searchReels",
+      "auth": "bearer"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v2/share-tokens",
+      "operation_id": "revokeShareTokens",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/share-tokens",
+      "operation_id": "mintShareToken",
+      "auth": "bearer"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/share/resolve",
+      "operation_id": "resolveShare",
+      "auth": "bearer"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/shared-collections/{token}",
+      "operation_id": "getSharedCollection",
+      "auth": "public-share"
+    }
+  ]
+}

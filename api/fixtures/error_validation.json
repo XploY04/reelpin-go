@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/reels?cursor=25"
+  },
+  "response": {
+    "error": {
+      "code": "validation_error",
+      "details": {
+        "field": "cursor",
+        "reason": "is not a cursor this API issued"
+      },
+      "message": "The request is missing required fields or contains invalid values.",
+      "request_id": "fixture-request-id",
+      "retryable": false
+    }
+  },
+  "status": 422
+}

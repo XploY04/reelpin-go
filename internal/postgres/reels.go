@@ -1,0 +1,389 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/XploY04/reelpin-go/internal/reels"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+// statsRowLimit matches the Python display query, which reads at most 5000 rows
+// per user before aggregating.
+const statsRowLimit = 5000
+
+const reelListColumns = `id, user_id, url, normalized_url, source_platform, source_content_type,
+	source_content_id, processing_version, ingestion_method, transcript_source, thumbnail_url,
+	title, summary, category, subcategory, secondary_categories, key_facts, locations,
+	people_mentioned, actionable_items, events, parse_status, created_at`
+
+// savedReels presents each canonical save under the column names
+// reelListColumns spells, so every reel reader shares one projection and one
+// scan. It has no aggregate and no LIMIT, so the planner flattens it and a
+// filter on user_id, created_at and id still reaches user_saves_list_idx.
+//
+// The version join is LEFT: a save whose version was removed still lists, as
+// an untitled reel, rather than vanishing from the library. url is the link
+// the owner submitted: the backfill keeps it on the save, the app's first job
+// keeps it otherwise, and a save with neither falls back to the normalized
+// URL. parse_status is the legacy value when the backfill kept one.
+// ingestion_method and transcript_source have no canonical source and are
+// always null.
+const savedReels = `(
+	SELECT s.id, s.user_id,
+	       coalesce(s.source_url, (SELECT j.url FROM reelpin.processing_jobs j
+	                 WHERE j.user_save_id = s.id AND j.user_id = s.user_id
+	                 ORDER BY j.created_at LIMIT 1), c.normalized_url) AS url,
+	       c.normalized_url, c.source_platform, c.source_content_type, c.source_content_id,
+	       v.processor_version AS processing_version,
+	       NULL::text AS ingestion_method, NULL::text AS transcript_source,
+	       nullif(v.media->>'thumbnail_url', '') AS thumbnail_url,
+	       v.title, v.summary, v.transcript,
+	       nullif(v.raw_extraction->>'category', '') AS category,
+	       nullif(v.raw_extraction->>'subcategory', '') AS subcategory,
+	       to_jsonb(v.tags) AS secondary_categories, to_jsonb(v.key_facts) AS key_facts,
+	       v.raw_extraction->'extraction'->'locations' AS locations,
+	       v.raw_extraction->'extraction'->'people_mentioned' AS people_mentioned,
+	       v.raw_extraction->'extraction'->'actionable_items' AS actionable_items,
+	       v.raw_extraction->'extraction'->'events' AS events,
+	       CASE WHEN v.raw_extraction ? 'parse_status' THEN v.raw_extraction->>'parse_status'
+	            WHEN v.extraction_status = 'partial' THEN 'partial'
+	            WHEN v.extraction_status = 'completed' THEN 'parsed' END AS parse_status,
+	       s.saved_at AS created_at
+	FROM reelpin.user_saves s
+	JOIN reelpin.contents c ON c.id = s.content_id
+	LEFT JOIN reelpin.content_versions v ON v.id = c.current_version_id
+) reels`
+
+type Reels struct {
+	db Querier
+}
+
+func NewReels(db Querier) *Reels {
+	return &Reels{db: db}
+}
+
+func (r *Reels) List(ctx context.Context, userID string, options reels.ListOptions) ([]reels.ReelRecord, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	args := []any{userID}
+	where := []string{"user_id = $1"}
+
+	if condition := platformCondition(options.Platforms, &args); condition != "" {
+		where = append(where, condition)
+	}
+	if options.Category != "" {
+		args = append(args, options.Category)
+		where = append(where, fmt.Sprintf("category = $%d", len(args)))
+	}
+	if options.Subcategory != "" {
+		args = append(args, options.Subcategory)
+		where = append(where, fmt.Sprintf("subcategory = $%d", len(args)))
+	}
+	if options.SavedDate != "" {
+		day, err := time.Parse("2006-01-02", options.SavedDate)
+		if err != nil {
+			return nil, fmt.Errorf("saved_date: %w", err)
+		}
+		args = append(args, day, day.AddDate(0, 0, 1))
+		where = append(where, fmt.Sprintf("created_at >= $%d AND created_at < $%d", len(args)-1, len(args)))
+	}
+
+	// Keyset, not offset: a page resumes from the last row it returned, so a
+	// save added or removed between two pages cannot shift or repeat rows.
+	if options.After != nil {
+		args = append(args, options.After.SavedAt, options.After.ID)
+		where = append(where, fmt.Sprintf(
+			"(created_at, id) < ($%d, $%d)", len(args)-1, len(args)))
+	}
+
+	args = append(args, options.Limit)
+	query := fmt.Sprintf(
+		"SELECT %s FROM %s WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d",
+		reelListColumns,
+		savedReels,
+		strings.Join(where, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := []reels.ReelRecord{}
+	for rows.Next() {
+		record, err := scanReel(rows, false)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+func (r *Reels) Get(ctx context.Context, userID string, id uuid.UUID) (reels.ReelRecord, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	query := fmt.Sprintf(
+		"SELECT %s, transcript FROM %s WHERE id = $1 AND user_id = $2",
+		reelListColumns,
+		savedReels,
+	)
+	rows, err := r.db.Query(ctx, query, id.String(), userID)
+	if err != nil {
+		return reels.ReelRecord{}, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return reels.ReelRecord{}, err
+		}
+		return reels.ReelRecord{}, reels.ErrNotFound
+	}
+	record, err := scanReel(rows, true)
+	if err != nil {
+		return reels.ReelRecord{}, err
+	}
+	return record, rows.Err()
+}
+
+func (r *Reels) Facets(ctx context.Context, userID string) ([]reels.FacetRow, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.db.Query(ctx,
+		`SELECT source_platform, category, subcategory, count(*)::int
+		 FROM `+savedReels+` WHERE user_id = $1
+		 GROUP BY source_platform, category, subcategory`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	facets := []reels.FacetRow{}
+	for rows.Next() {
+		var row reels.FacetRow
+		if err := rows.Scan(&row.SourcePlatform, &row.Category, &row.Subcategory, &row.Count); err != nil {
+			return nil, err
+		}
+		facets = append(facets, row)
+	}
+	return facets, rows.Err()
+}
+
+// Library returns the newest limit saves with only the columns the Discover
+// aggregates read: the saved date, the categories, and the fields the search
+// prompts count. It skips the text-heavy columns List selects.
+func (r *Reels) Library(ctx context.Context, userID string, limit int) ([]reels.ReelRecord, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.db.Query(ctx,
+		`SELECT id, source_platform, category, subcategory, secondary_categories,
+		        locations, people_mentioned, created_at
+		 FROM `+savedReels+` WHERE user_id = $1
+		 ORDER BY created_at DESC, id DESC LIMIT $2`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := []reels.ReelRecord{}
+	for rows.Next() {
+		var (
+			record       reels.ReelRecord
+			category     *string
+			subcategory  *string
+			secondaryRaw []byte
+			locationsRaw []byte
+			peopleRaw    []byte
+		)
+		if err := rows.Scan(&record.ID, &record.SourcePlatform, &category, &subcategory,
+			&secondaryRaw, &locationsRaw, &peopleRaw, &record.CreatedAt); err != nil {
+			return nil, err
+		}
+		record.Category = text(category)
+		record.Subcategory = text(subcategory)
+		for _, decode := range []struct {
+			raw    []byte
+			target any
+		}{
+			{secondaryRaw, &record.SecondaryCategories},
+			{locationsRaw, &record.Locations},
+			{peopleRaw, &record.PeopleMentioned},
+		} {
+			if err := decodeJSON(decode.raw, decode.target); err != nil {
+				return nil, err
+			}
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+func (r *Reels) Stats(ctx context.Context, userID string) (reels.LibraryStats, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.db.Query(ctx,
+		`SELECT id, category, subcategory, secondary_categories, locations
+		 FROM `+savedReels+` WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+		userID, statsRowLimit,
+	)
+	if err != nil {
+		return reels.LibraryStats{}, err
+	}
+	defer rows.Close()
+
+	stats := reels.LibraryStats{}
+	categories := map[string]bool{}
+	subcategories := map[[2]string]bool{}
+	tags := map[string]bool{}
+
+	for rows.Next() {
+		var (
+			id                    string
+			category, subcategory *string
+			secondaryRaw, locsRaw []byte
+			record                reels.ReelRecord
+		)
+		if err := rows.Scan(&id, &category, &subcategory, &secondaryRaw, &locsRaw); err != nil {
+			return reels.LibraryStats{}, err
+		}
+		if err := decodeJSON(secondaryRaw, &record.SecondaryCategories); err != nil {
+			return reels.LibraryStats{}, err
+		}
+		if err := decodeJSON(locsRaw, &record.Locations); err != nil {
+			return reels.LibraryStats{}, err
+		}
+		record.ID = id
+
+		stats.TotalReels++
+		cleanCategory := strings.TrimSpace(text(category))
+		cleanSubcategory := strings.TrimSpace(text(subcategory))
+		if cleanCategory != "" {
+			categories[cleanCategory] = true
+		}
+		if cleanSubcategory != "" {
+			subcategories[[2]string{cleanCategory, cleanSubcategory}] = true
+		}
+		for _, tag := range record.SecondaryCategories {
+			if cleaned := strings.TrimSpace(tag); cleaned != "" {
+				tags[cleaned] = true
+			}
+		}
+		stats.TotalPinnedLocations += len(reels.BuildMappableLocations(record))
+	}
+	if err := rows.Err(); err != nil {
+		return reels.LibraryStats{}, err
+	}
+
+	stats.TotalCategories = len(categories)
+	stats.TotalSubcategories = len(subcategories)
+	stats.TotalTags = len(tags)
+	return stats, nil
+}
+
+// platformCondition restricts a query to canonical platforms. `other` covers
+// rows whose stored platform is NULL, blank, or unknown, so saved links from
+// generic hosts stay reachable.
+func platformCondition(platforms []string, args *[]any) string {
+	if len(platforms) == 0 {
+		return ""
+	}
+
+	var parts []string
+	var stored []string
+	includesOther := false
+	for _, platform := range platforms {
+		if platform == reels.OtherPlatform {
+			includesOther = true
+			continue
+		}
+		stored = append(stored, reels.StoredPlatformValues(platform)...)
+	}
+
+	if len(stored) > 0 {
+		*args = append(*args, stored)
+		parts = append(parts, fmt.Sprintf("lower(trim(source_platform)) = ANY($%d)", len(*args)))
+	}
+	if includesOther {
+		*args = append(*args, reels.KnownStoredPlatformValues())
+		parts = append(parts, fmt.Sprintf(
+			"(source_platform IS NULL OR lower(trim(source_platform)) <> ALL($%d))",
+			len(*args),
+		))
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// scanReel reads one row of reelListColumns, then the transcript when it was
+// selected, then any extra columns the caller selected after those.
+func scanReel(rows pgx.Rows, includeTranscript bool, extra ...any) (reels.ReelRecord, error) {
+	var (
+		record       reels.ReelRecord
+		title        *string
+		summary      *string
+		transcript   *string
+		category     *string
+		subcategory  *string
+		parseStatus  *string
+		secondaryRaw []byte
+		keyFactsRaw  []byte
+		locationsRaw []byte
+		peopleRaw    []byte
+		actionsRaw   []byte
+		eventsRaw    []byte
+	)
+
+	targets := []any{
+		&record.ID, &record.UserID, &record.URL, &record.NormalizedURL, &record.SourcePlatform,
+		&record.SourceContentType, &record.SourceContentID, &record.ProcessingVersion,
+		&record.IngestionMethod, &record.TranscriptSource, &record.ThumbnailURL,
+		&title, &summary, &category, &subcategory, &secondaryRaw, &keyFactsRaw, &locationsRaw,
+		&peopleRaw, &actionsRaw, &eventsRaw, &parseStatus, &record.CreatedAt,
+	}
+	if includeTranscript {
+		targets = append(targets, &transcript)
+	}
+	targets = append(targets, extra...)
+	if err := rows.Scan(targets...); err != nil {
+		return reels.ReelRecord{}, err
+	}
+
+	record.Title = text(title)
+	record.Summary = text(summary)
+	record.Transcript = text(transcript)
+	record.Category = text(category)
+	record.Subcategory = text(subcategory)
+	record.ParseStatus = parseStatus
+
+	for _, decode := range []struct {
+		raw    []byte
+		target any
+	}{
+		{secondaryRaw, &record.SecondaryCategories},
+		{keyFactsRaw, &record.KeyFacts},
+		{locationsRaw, &record.Locations},
+		{peopleRaw, &record.PeopleMentioned},
+		{actionsRaw, &record.ActionableItems},
+		{eventsRaw, &record.Events},
+	} {
+		if err := decodeJSON(decode.raw, decode.target); err != nil {
+			return reels.ReelRecord{}, err
+		}
+	}
+	return record, nil
+}

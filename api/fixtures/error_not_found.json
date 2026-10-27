@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/reels/00000000-0000-4000-8000-000000000000"
+  },
+  "response": {
+    "error": {
+      "code": "reel_not_found",
+      "message": "The requested record was not found.",
+      "request_id": "fixture-request-id",
+      "retryable": false
+    }
+  },
+  "status": 404
+}

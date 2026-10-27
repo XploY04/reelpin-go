@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/share-tokens"
+  },
+  "response": {
+    "expires_at": "2027-09-06T00:00:00Z",
+    "token": "fixture-share-token"
+  },
+  "status": 200
+}

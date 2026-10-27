@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/share/resolve"
+  },
+  "response": {
+    "source_content_type": "reel",
+    "source_platform": "instagram",
+    "supported": true,
+    "url": "https://www.instagram.com/reel/C8abc123/"
+  },
+  "status": 200
+}

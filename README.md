@@ -1,73 +1,39 @@
-# ReelPin Go
+# reelpin-go
 
-The Go backend for ReelPin: it ingests saved Instagram reels/posts, runs them
-through a processing pipeline (download → transcribe → extract → embed → save),
-and serves them back to the Flutter app for browsing, map pins, and semantic
-search.
+The Go backend for ReelPin. Users share a link from Instagram, YouTube, TikTok,
+X, LinkedIn, Reddit or Pinterest into the app; the backend downloads it,
+transcribes it, extracts structured detail, categorises it and saves it, and the
+app reads it back as a feed, a map and a search index.
 
-The service presents a stable REST contract that the frontend consumes directly.
+**This service does not serve real users yet.** They are on `reelpin-api`
+(Python/FastAPI). This is a rewrite, built one reviewable layer at a time.
 
-## Target architecture
-
-**Modular monolith, monorepo, two binaries (API + worker), with a plugin-style
-platform abstraction. Not microservices.**
-
-- **`cmd/api`** — stateless HTTP API, N replicas, presents the public contract. Never processes reels directly.
-- **`cmd/worker`** — long-running workers, M replicas, drain the queue and run the pipeline.
-- **Postgres** owns state (source of truth); `pgvector` + FTS for hybrid search in one DB.
-- **RabbitMQ** moves work: topic exchange, per-platform routing keys + retry + dead-letter.
-- **Redis** stores fast, losable things (caches, rate limits, SSE progress). Never the source of truth.
-- **Platform abstraction** (`internal/platform/`): a `Handler` interface + registry, one implementation per platform. Adding a platform = one new file. Instagram ships first; TikTok/YouTube are seams only, built when real.
-
-
-## Current state
-
-**Phase 1** (API + Postgres + job CRUD). What runs today:
-
-- `net/http` API with a `server` struct holding its dependencies (store + DB pool).
-- Reel store behind a `reelStore` interface (in-memory now, Postgres-backed next), so the swap is drop-in.
-- Postgres via docker-compose, `pgx` pool created once in `main` and closed on exit.
-- Sentinel + custom errors (`ErrNotFound`, `ValidationError`) mapped to 404/400 in handlers.
-- `httptest` tests.
-
-On the roadmap: goose migrations, the Postgres-backed store, RabbitMQ, the worker,
-the processing pipeline, search, Redis, chi, observability.
-
-### Endpoints
-
-All under `/api/v1`:
-
-| Method | Path | What |
-|--------|------|------|
-| `GET` | `/health/live` | liveness, always 200 |
-| `GET` | `/health/ready` | readiness, pings the DB (503 if down) |
-| `POST` | `/reels` | create a reel (400 on invalid JSON / validation) |
-| `GET` | `/reels` | list reels |
-| `GET` | `/reels/{id}` | get one (404 if missing) |
-
-## Running it
+## Quick start
 
 ```sh
-docker compose up -d          # Postgres on :5432
-go run ./cmd/api              # API on :8000
+docker compose up -d          # postgres on :5432
+go run ./cmd/api              # :8000 unless PORT says otherwise
+make check                    # what CI runs
 ```
 
-`DATABASE_URL` overrides the connection string; it defaults to the docker-compose
-DB (`postgres://reelpin:reelpin@localhost:5432/reelpin`).
+## Where things are
 
-```sh
-go test ./...                 # tests
-go test -race ./...           # with the race detector
-```
+- **[`AGENTS.md`](AGENTS.md)**: the short map: commands, layout, rules, traps.
+  Read this first. `CLAUDE.md` is a symlink to it.
+- **[`ARCHITECTURE.md`](ARCHITECTURE.md)**: the shape of the system, and which
+  parts of it exist today.
+- **[`docs/`](docs/index.md)**: the detail: domain model, API contract,
+  operations, decision records, plans.
 
-## Layout
+Nested `AGENTS.md` files under `cmd/` and `internal/` carry the rules that
+differ in those directories.
 
-```
-cmd/api/         API binary + handler tests
-internal/db/     pgx pool connect helper
-internal/store/  reel store (in-memory now, interface-backed)
-docker-compose.yml
-```
+## What runs today
 
-Layout will grow toward the target shape as phases land: `internal/http`,
-`queue`, `cache`, `search`, `platform`, `config`, and `migrations`.
+Two health endpoints and seven authenticated read endpoints over PostgreSQL,
+with Supabase JWTs verified locally. Nothing writes.
+[`docs/api-contract.md`](docs/api-contract.md) is the full list.
+
+The worker, the processing pipeline, RabbitMQ, Redis, embeddings and search are
+planned and not here; [`ARCHITECTURE.md`](ARCHITECTURE.md) says what is coming
+and in what shape.

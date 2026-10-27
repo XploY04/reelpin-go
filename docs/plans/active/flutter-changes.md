@@ -1,0 +1,508 @@
+# Flutter changes for the Go v2 API
+
+The handoff for the app developer: everything the Flutter app and both native
+share extensions must change to move from the Python `/api/v1` service to the Go
+`/api/v2` service. It was updated in the same pull request as each backend
+change, so it is not behind the contract.
+
+The backend contract is complete as of this writing: **40 operations**, all of
+`/api/v2`. Read **Migrating the app** at the end for the checklist and the test
+gate; the sections before it are the reference for each area.
+
+The machine-readable source of truth is `api/openapi.yaml` (embedded and
+published with a SHA-256 digest per release). This page is the narrative: what
+changed, why, and what it means in the app. Task 30 of
+`implementation-plan.md` is the migration task itself; nothing here requires an
+app release before then, because Python v1 keeps serving installed versions
+throughout coexistence.
+
+## Base URL and versioning
+
+- Dev: `https://api-dev.reelpin.in/api/v2/...` (once Task 22 deploys it).
+- Production: `/api/v1` stays Python, `/api/v2` is Go. Updated clients call v2
+  only; route selection is done by path, never by anything the client sets.
+- **Bare aliases are gone.** The shipped app calls some endpoints without the
+  `/api/v1` prefix (`/reels`, `/processing-jobs`, ...). v2 has no bare aliases;
+  every call must use the full `/api/v2/<path>`.
+
+## Error envelope (every endpoint)
+
+v1 errors were flat and inconsistent. Every v2 error, including 404 and 405, is:
+
+```json
+{
+  "error": {
+    "code": "reel_not_found",
+    "message": "The requested record was not found.",
+    "request_id": "abc123...",
+    "retryable": false,
+    "details": {}
+  }
+}
+```
+
+- Match on `error.code`, never on `message` (message text may change).
+- `success`, `error_code`, `detail` and top-level `allowed` no longer exist.
+  The allowed-platform list now arrives as `error.details.allowed`.
+- Show or log `request_id` in support flows; it is the correlation handle.
+- `retryable` says whether repeating the same request may succeed.
+
+## Pagination: opaque cursors replace offsets
+
+`GET /api/v2/reels`:
+
+- **Request**: `cursor` (opaque string from the previous page), `limit`
+  (default 25, max 100 — v1 defaulted to 50). `offset` and `sort` are gone;
+  there is one order, newest saved first.
+- **Response**: `{"reels": [...], "next_cursor": "...", "has_more": bool,
+  "limit": n}`. `total_count`, `offset` and `next_offset` are gone.
+- Treat `next_cursor` as a black box. Do not parse it, store it across app
+  launches, or synthesize one. Sending anything the API did not issue is a
+  `422 validation_error`.
+- The old client behaviour of passing an integer cursor/offset will be rejected,
+  not silently accepted.
+
+## Submission (built)
+
+`POST /api/v2/processing-jobs/reels`, bearer auth:
+
+- Body: `{"url": "...", "collection_ids": ["..."]}`.
+- **New required header: `Idempotency-Key: <uuid>`.** Generate one UUID per
+  submission attempt in the UI; reuse it for network retries of that attempt;
+  new deliberate submission = new key. Reusing a key with a different body is a
+  `409`.
+- Every success body carries `already_saved`: `true` when this user had the
+  link before this submission, saved or still processing.
+- `200` = the reel is ready, no job to poll. `already_saved` is `false` only when it was saved just now from content
+  someone else had already processed.
+- `202` = a processing job to poll. With `already_saved: false` it is new
+  work. With `already_saved: true` it is **the job this user already has
+  processing for the same link**; no second job was made.
+- The lookup is by the normalized URL and runs before the active-job cap, so a
+  user at the cap who shares a link already in flight gets that job, not `429`.
+- v1's single-status behaviour is gone; handle both.
+- **`collection_ids` files the save into those collections.** When the filing
+  becomes visible depends on which status came back. On a `200` the save
+  already exists, so it is filed inside the same transaction as the response:
+  reopen the collection straight away and the reel is there. On a `202` there
+  is no save yet, so the ids ride the job (they come back on it, and on every
+  poll) and the filing happens when the job turns `completed`. Refresh the
+  collection there, not on submit.
+- Every id must be a collection this user owns or edits. Any other id (a
+  stranger's, a deleted one, a viewer-only one, something that is not a UUID)
+  answers `422 validation_error` with `error.details.field` = `collection_ids`,
+  and **nothing is enqueued**: fix the list and submit again with a new key.
+  The reply is the same whether the collection is out of reach or does not
+  exist, so it cannot be used to probe for other people's collections.
+- A collection deleted while the job is still running is skipped at completion.
+  The save and the job still complete; the reel is simply not in it.
+
+**New error codes on this endpoint**, all matched on `error.code`:
+
+| Code | Status | What the app should do |
+|---|---|---|
+| `active_job_limit` | 429 | Two submissions are already processing. Show "wait for one to finish"; do not retry automatically. |
+| `idempotency_conflict` | 409 | The key was reused with a different body. This is a client bug: generate a new key. |
+| `rate_limited` | 429 | Obey the `Retry-After` header; `error.details.retry_after_seconds` carries the same number. |
+| `processing_unavailable` | 503 | Submissions are temporarily off: a safety dependency is down. Retryable; reads still work. |
+| `spend_limit_reached` | 503 | The monthly provider budget has been reached. **Not** retryable; see below. |
+| `validation_error` | 422 | `error.details.field` names the offending field, including a missing `Idempotency-Key`. |
+
+**The body is strict.** Unknown JSON fields are rejected with `422`, so a stale
+client that still sends `user_id` in the body **will now fail**. Remove it
+before pointing a build at v2.
+
+### `spend_limit_reached` is a real state, not a bug
+
+The backend meters what each saved link costs the AI and scraping providers, and
+refuses new submissions once the month reaches a limit set by us. When that
+happens a submission answers `503` with `error.code = "spend_limit_reached"` and
+`retryable: false`.
+
+What the app should do:
+
+- **Do not retry automatically, and do not back off and retry.** Nothing the app
+  does clears this. It clears when we reopen submissions or when the calendar
+  month rolls over.
+- **Show it as a wait, not a failure.** "We have paused new saves for now.
+  Everything you have saved is still here." A crash report or a red error is the
+  wrong shape: nothing is broken and no data is at risk.
+- **Keep the rest of the app working.** The library, search, the map, collections
+  and any job already processing are all unaffected. A job that was already
+  running still finishes and still produces its reel, so keep polling it.
+- **Expect it per link, not per session.** Sources stop in an order, so an
+  Instagram link can be refused while a plain web link is still accepted. Do not
+  cache "submissions are off" and stop sending; send the link and read the
+  answer.
+- The idempotency key is unused when this comes back, so reuse it or mint a new
+  one, whichever is simpler.
+
+## Native share extensions (Android + iOS) — biggest change
+
+The two-call flow (resolve, then enqueue) is replaced by **one atomic call**,
+because an extension can be killed between two calls:
+
+- `POST /api/v2/native-shares/reels` with header `X-Share-Token: <token>` and
+  body `{"raw_payload_text": "<exactly what the OS handed you>",
+  "collection_ids": [...]}` plus `Idempotency-Key`.
+- Responses are the same `200`-reel / `202`-job pair as above.
+- A missing/invalid token is `401 share_token_required`.
+- The extensions should persist the idempotency key with the pending payload so
+  a retry after being killed cannot double-enqueue.
+
+Bad or missing share tokens answer `401` with `share_token_required` (no header)
+or `invalid_share_token` (unknown, expired or revoked — the three are
+deliberately indistinguishable). On `invalid_share_token` the extension should
+stop retrying and prompt the user to open the app, which mints a fresh token.
+
+Share tokens are minted and revoked from the app process (bearer auth):
+
+- `POST /api/v2/share-tokens` → `{"token": "...", "expires_at": "..."}`. The
+  value is returned once; store it in the native-owned store as today.
+- `DELETE /api/v2/share-tokens` revokes all of them (use on sign-out).
+
+`POST /api/v2/share/resolve` (bearer) still exists, but only for interactive
+in-app URL preview. The extensions must not call it any more.
+
+## Endpoint-by-endpoint map
+
+| v1 (Python) | v2 (Go) | Changes beyond the envelope |
+|---|---|---|
+| `GET /api/v1/health/live`, `/ready` | same paths under `/api/v2` | none |
+| `GET /api/v1/health` | **removed** | poll `/ready` instead; it was a compat alias |
+| `GET /api/v1/reels` (+ bare alias) | `GET /api/v2/reels` | cursor pagination, default limit 25, no `sort`, no `offset`, no `total_count` |
+| `GET /api/v1/reels/{id}` | `GET /api/v2/reels/{reel_id}` | transcript never in lists; carries the list's display fields; `sub_category` (see **Reel detail**) |
+| `GET /api/v1/reels/filters` | `GET /api/v2/reels/filters` | none |
+| `GET /api/v1/reels/category-filters` | `GET /api/v2/reels/category-filters` | none |
+| `GET /api/v1/processing-jobs` | `GET /api/v2/processing-jobs` | bounded list, no pagination; `active_only` default is still `false` |
+| `GET /api/v1/processing-jobs/{id}` | `GET /api/v2/processing-jobs/{job_id}` | none |
+| `POST /api/v1/processing-jobs/reels` | `POST /api/v2/processing-jobs/reels` | `Idempotency-Key` required; `200` vs `202` split |
+| native share enqueue (v1 two-step) | `POST /api/v2/native-shares/reels` | one atomic call, `X-Share-Token` |
+| `POST /api/v1/share-tokens` / `DELETE` | same paths under `/api/v2` | bearer only |
+| `GET /api/v1/account/library-stats` | `GET /api/v2/account/library-stats` | none |
+| `POST /api/v1/share/resolve` | `POST /api/v2/share/resolve` | takes `raw_payload_text`; unsupported is a `200`, not an error |
+| search (v1) | `POST /api/v2/search` | now a POST with a JSON body; see **Search** below |
+| collections (v1) | 15 routes under `/api/v2/collections` | see **Collections** |
+| map (v1) | 5 routes under `/api/v2/map` | see **Map** |
+| push tokens (v1) | `POST`/`DELETE /api/v2/device-push-tokens` | `platform` validated; token never echoed |
+| notification opened (v1) | `POST /api/v2/notifications/{notification_id}/opened` | none |
+| delete reel (v1) | `DELETE /api/v2/reels/{reel_id}` | `204`, no body |
+| delete account (v1) | `DELETE /api/v2/account` | see **Deletion**; the two halves report separately |
+| `GET /api/v1/account/entitlements` | `GET /api/v2/account/entitlements` | see **Entitlements** |
+
+Everything above is the complete v2 surface: **40 operations**. Anything the app
+calls today that is not in this table does not exist in v2, and `/api/v1` keeps
+serving it for installed versions throughout coexistence.
+
+## Reel detail (built)
+
+`GET /api/v2/reels/{reel_id}` now answers every record field it did before
+plus the display fields a list item carries: `category_label`,
+`sub_category_label`, `relative_date`, `display_date`, `saved_date_key`,
+`content_type`, `parse_status`, `events`, `has_map_locations`,
+`mappable_locations`, `map_location_count` and `primary_location_label`. They
+come from the same code as the list, so a reel reads identically in the feed
+and on the detail screen, and the detail screen needs no list item to fill
+them in. A submission's `200` body is the same shape.
+
+**The subcategory has one name: `sub_category`** (with `sub_category_label`),
+in every response that carries a reel: the reel list, the detail, search,
+Discover, collection items, shared collections and map pins. Two shapes sent
+it as `subcategory` first, the single reel and map pins. They still send
+`subcategory` beside `sub_category`, with the same value, **for one release
+only**; it is marked deprecated in the contract. Read `sub_category`
+everywhere now. Filters are unchanged: the `subcategory` query parameter and
+the `subcategory` field of a search body keep their names.
+
+## Entitlements (built)
+
+`GET /api/v2/account/entitlements` exists. It answers the signed-in user's
+plan, usage totals, limits, feature flags, pricing, plan cards and paywall
+copy. When the plan cannot be verified it still answers `200`, with
+`current_entitlement.restricted: true` and an `error_message`, so the account
+screen degrades and retries rather than showing an error. Move this call to v2
+with the rest.
+
+## Search (built)
+
+`POST /api/v2/search`, not a GET with query parameters. The body is
+`{"query": "...", "limit": 5, "platform": ..., "category": ..., "subcategory":
+..., "saved_date": "YYYY-MM-DD"}` and **unknown fields are rejected**, so a
+leftover `user_id` from the v1 call is a `422` rather than being ignored.
+
+- `query` is capped at 200 characters. **Under two characters returns an empty
+  result, not an error** — do not treat it as a failure state.
+- `limit` is 1 to 20, default 5.
+- The response carries `search_mode`, which says which arms answered. It is
+  diagnostic: show results the same way whatever it says. A mode of `lexical`
+  alone means the embedding provider was unavailable and the answer is
+  word-matching only, which is a degraded result, not a wrong one.
+- `saved_date` is one day, not a range.
+
+## Collections (built)
+
+15 operations under `/api/v2/collections`, all bearer except the shared view.
+Item ids in requests and responses are `reel_id` and are unchanged save ids, so
+existing local caches keep working. What changed beyond the envelope:
+
+- **Detail shape**: `{collection, items, page:{next_cursor,has_more,limit},
+  can_edit}`. The old `reels[]` plus `pagination{offset,total_count}` shape
+  is gone.
+- **Each item is a full reel.** `GET /api/v2/reels/{reel_id}` only answers the
+  save's owner, so a collaborator or someone opening a shared link would get
+  `404` for every reel they did not save themselves. The item is instead the
+  very object `getReel` answers for that save, built by the same code from the
+  same row: every display field (`id`, `category_label`, `sub_category`,
+  `relative_date`, `mappable_locations`, ...), plus `transcript`, `locations`,
+  `key_facts`, `people_mentioned`, `actionable_items` and `events`, so one
+  decoder reads both. The item fields stay:
+  `reel_id` (the same value as `id`), `source_platform` (never null here),
+  `saved_at`, `added_at` and `added_by`. Open an item's detail screen from the
+  item itself, not by calling `getReel`.
+- **`?view=concise`** on both `GET /api/v2/collections/{collection_id}` and
+  `GET /api/v2/shared-collections/{token}` leaves out `transcript`,
+  `key_facts`, `people_mentioned`, `actionable_items` and `events`. Use it for
+  a grid that never shows them; the default is the full item.
+- **Item paging is opaque cursors**, same rule as the library: pass
+  `next_cursor` as `cursor`, never construct one; a v1-style offset is a `422`.
+- **Shared view** moves to `GET /api/v2/shared-collections/{token}`, is
+  unauthenticated, and no longer returns `owner_id`, `owner_name` or
+  `member_count`.
+- **Invite accept** moves to `POST /api/v2/collection-invites/{token}/accept`.
+- **Links expire.** `enableCollectionLink` and `createCollectionInvite` return
+  `expires_at` (links default to 30 days); the UI should surface that a link
+  needs re-minting.
+- **Member responses drop `display_name`** — there is no profiles table in the
+  canonical schema yet. Show ids or resolve names client-side.
+- New codes to match: `collection_not_found` (404), `collection_forbidden`
+  (403), `collection_invite_invalid` (400).
+- Request bodies reject unknown fields, so a misspelled key now fails loudly
+  instead of being silently ignored.
+
+`collection_ids` on submission is accepted now. **Submission** above says which
+ids it takes and when the filing shows up.
+
+## Notifications (built)
+
+- `POST /api/v2/device-push-tokens` with `{"token": "...", "platform":
+  "ios"|"android"|"web"}` — `platform` is now validated, so the old free-text
+  value fails with `422`. Registering the same token again moves it to the
+  current user, which is what makes a shared phone behave.
+- **Send the build with every registration.** The body also takes
+  `app_version` (string, up to 64 characters, such as `"2.4.0"`), `app_build`
+  (integer, 0 to 2147483647, the store build number), `timezone` (IANA, such
+  as `"Asia/Kolkata"`, up to 64) and `locale` (BCP 47, such as `"en-IN"`, up
+  to 35). All four are optional, so a build that sends none still registers.
+  They are stored on the token and **replaced on every registration**, absent
+  ones included, so register on every launch, not only when the token
+  changes. This is how a forced update sees which builds are still live
+  before it cuts one off; an operator reads it with
+  `maintenance push-token-builds -days 30`. A blank string counts as not
+  sent; a negative or fractional `app_build`, or a string that is too long, is
+  `422` naming the field. Any other field is still a `422`, and the `DELETE`
+  body still takes the token alone.
+- `DELETE /api/v2/device-push-tokens` with the same body. Another user's token
+  answers `404 device_token_not_found`.
+- `POST /api/v2/notifications/{notification_id}/opened` — a second open, and
+  another user's notification, both answer `404`.
+- **The token is never echoed back** by any endpoint, so do not expect to read
+  it from a response.
+- **Campaign endpoints are gone from the product API.** Campaign sends are an
+  operator command now; a client token can no longer reach them.
+- One notification per job: the backend dedupes by job id, so a retried
+  delivery cannot buzz the phone twice.
+
+## Map (built)
+
+- `GET /api/v2/map/pins?south=&west=&north=&east=` returns `{pins: [...]}`.
+  A pin is `{id, kind, name, address, latitude, longitude, reel_id,
+  confidence, category, sub_category}`; `kind` is `content` (carries
+  `reel_id`) or `manual` (does not). Pins also send the deprecated
+  `subcategory` for one release; read `sub_category`.
+- **`&category=` filters on the server**, the same as v1's `/map?category=`:
+  only pins whose category is exactly that value, content and manual pins
+  alike, with a pin that has no category counting as `Other`. The match is
+  exact and case-sensitive, so send the `category` value the filters
+  returned, not its label. It applies before the 500-pin cap, so a filtered
+  map in a dense area is not short of pins. Leave it out, or send it empty,
+  for every category. Drop any client-side category filtering of pins.
+- **A box whose `west` is greater than `east` is valid** and means a viewport
+  crossing the antimeridian. Do not "normalise" it client-side; the backend
+  handles it as two boxes and a normalised box would return the whole world.
+- `GET /api/v2/map/nearby?latitude=&longitude=&radius_metres=&limit=` orders by
+  real distance in metres.
+- `POST /api/v2/map/manual-pins` returns `201` with the pin;
+  `DELETE /api/v2/map/manual-pins/{pin_id}` returns `204`.
+- `POST /api/v2/map/locations/{location_id}/hidden` with `{"hidden": true}`
+  hides a pin **for this user only**. Hidden pins are already excluded from the
+  responses above, so the client does not filter them.
+- A bad or missing coordinate is `422` with `error.details.field` naming it,
+  never a silent default that moves the map to the Gulf of Guinea.
+
+## Sources and platforms (built)
+
+`source_platform` on a reel or a job is one of `instagram`, `youtube`,
+`tiktok`, `x`, `reddit`, `linkedin`, `pinterest`, or, for anything else, the
+link's **hostname** (`google_maps`, `tripadvisor`, `zomato`, `someblog.com`).
+Do not hard-code the list into a switch that throws on an unknown value: a new
+handler adds a value without a client release. Treat an unrecognised platform
+as generic and render the hostname.
+
+`source_content_type` is `reel`, `post`, `video`, `short`, `page`, `pin`,
+`profile` or `link`. Same rule: unknown means generic.
+
+The app does no host filtering today and should keep doing none. Post the link
+and let the backend decide; an unsupported link comes back as a `422` naming
+`url`, with the allowed list in `error.details.allowed`.
+
+## Share preview (built)
+
+`POST /api/v2/share/resolve` with `{"raw_payload_text": "<whatever was
+shared>"}` answers `200` in both cases:
+
+```json
+{"supported": true,  "url": "...", "source_platform": "instagram", "source_content_type": "reel"}
+{"supported": false, "url": null,  "source_platform": null,        "source_content_type": null}
+```
+
+**Unsupported is a `200`, not an error.** It is a preview answer, so the share
+sheet can say "we cannot read this link" without an error path. It also accepts
+the messy text a share sheet actually hands over (a caption with a URL buried
+in it), which is why it takes `raw_payload_text` rather than `url`.
+
+This endpoint is bearer-authenticated and is for the in-app share sheet. The
+native extensions do not need it: `POST /api/v2/native-shares/reels` resolves
+the same payload itself in one call.
+
+## Deletion (built)
+
+`DELETE /api/v2/reels/{reel_id}` returns `204`. There is no body: the reel is
+gone and the client already knows which one.
+
+`DELETE /api/v2/account` returns `200` with:
+
+```json
+{
+  "data_deleted": true,
+  "identity_deleted": false,
+  "pending": true,
+  "removed": {"saves": 42, "processing_jobs": 3, "idempotency_keys": 12, "private_content": 7}
+}
+```
+
+**`data_deleted: true` with `identity_deleted: false` and `pending: true` is a
+real, expected outcome, not a failure.** It means the rows are gone but the
+Supabase identity has not been removed yet. Sign the user out and clear local
+state either way. The two halves are reported separately on purpose: a client
+told "deleted" while the sign-in still works cannot act on the difference.
+
+Once a deletion is under way, any other request from that user answers `409`
+with code `account_deletion_pending`. Treat it as terminal for the session:
+sign out, do not retry.
+
+## Categories (built)
+
+`category` and `subcategory` come from a taxonomy that **grows on its own**.
+A weekly curator can activate a new category without an app release, so the
+list the app sees is not fixed at build time.
+
+- Drive the filter UI from `GET /api/v2/reels/category-filters`, never from a
+  hard-coded list.
+- An unknown category must render as itself, not as "Other" and not as a crash.
+- Category colours: the app's `app_theme.dart` map is keyed by category name,
+  so a new category has no colour. Fall back to a neutral rather than throwing.
+
+## IDs and data
+
+- Reel ids do not change. `user_saves.id` keeps every existing
+  `public.reels.id`, so deep links, local caches and share cards keep working.
+- Job `status` values are unchanged (`queued`, `processing`, `completed`,
+  `failed`, `dead_lettered`); on terminal failures match `failure_code`, which
+  is stable, not the message.
+- `collection_ids` on a job is always an array, never null.
+- Every job also carries `stage` (short words such as `Transcribing`),
+  `estimated_seconds_remaining` (an upper bound from the pipeline's stage
+  budgets; null once terminal or when the step is unknown) and `summary` (the
+  first line of the saved reel's summary, null until completed).
+- Every reel, collection and collection item carries `web_url`, its public page:
+  `https://reelpin.in/r/{reel_id}` or
+  `https://reelpin.in/collections/{collection_id}`.
+- `GET /reels`, `POST /search`, `GET /collections/{id}` and
+  `GET /shared-collections/{token}` accept `?view=concise`, which leaves out
+  `key_facts`, `people_mentioned`, `actionable_items` and `events` (and
+  `transcript` on a collection item). The default is `detailed`, which is what
+  the app already reads, so the app needs no change.
+
+## Auth
+
+Unchanged: the same Supabase project, the same access token in
+`Authorization: Bearer`. Go verifies it locally, so nothing about token refresh
+changes in the app. `user_id` in bodies or query strings is ignored — remove it
+from requests when convenient, but sending it breaks nothing.
+
+## Migrating the app (Task 30)
+
+This is the checklist for the app change itself. Nothing before this point
+requires an app release; Python v1 keeps serving installed versions.
+
+**Vendor the contract, do not copy endpoints by hand.** Take the released
+`api/openapi.yaml` artifact, record the Go commit and its SHA-256 digest
+alongside it, and generate the Dart client from that file. A hand-written client
+drifts silently; a vendored one fails loudly when the contract moves. The web
+app does exactly this in `reelpin-web/api/reelpin-v2.lock.json`, and its
+`scripts/generate-api-client.mjs` is a working reference for the drift check.
+
+**Change only what the contract intentionally changed.** Those are: cursors,
+the error envelope, submission idempotency, and processing job states. Anything
+else that looks different is a mapping bug, not a migration.
+
+**Keep `reel` and reel IDs at the Flutter boundary.** `user_saves.id` carries
+every existing `public.reels.id`, so deep links, local caches and share cards
+keep working untouched. Do not rename the concept in the app just because the
+backend calls the table something else.
+
+**Point dev at `api-dev.reelpin.in`.** Flutter dev and *both* native share
+extensions. **No production endpoint changes in this task** — production stays
+on v1 until Task 32.
+
+**Both share extensions send one atomic call.** Raw shared text, collection ids
+and a stable retry idempotency key, to `POST /api/v2/native-shares/reels` with
+`X-Share-Token`. The v1 two-step resolve-then-enqueue is gone. The key must be
+stable across retries of one share and different for a new share, exactly as
+described under **Submission**.
+
+**Token behaviour does not change.** Same Supabase project, same access token,
+same refresh. The long-lived native share token keeps its current lifecycle;
+it is still mirrored into the native-owned store, and the Android background
+share still reads the handoff through the native MethodChannel store rather
+than `shared_preferences`.
+
+### What the app must prove before it ships
+
+- Android and iOS unit and widget tests pass.
+- On a device or simulator: sign-in, feed, detail, filters, submission,
+  background polling, native share, collections, map, search and deletion.
+- Two users, and an expired token, against Go dev.
+- No production endpoint changed.
+
+### The five states that are easy to get wrong
+
+Each of these is a real, expected answer that reads like a bug:
+
+1. **`202` with `already_saved: true` on submission** is not a duplicate. It
+   is the job already in flight for this link: poll it as you would a new one.
+2. **`data_deleted: true` with `identity_deleted: false` and `pending: true`**
+   is a successful account deletion in progress. Sign out.
+3. **`{"supported": false}` from share resolve is a `200`.** It is a preview
+   answer, not an error path.
+4. **A search returning nothing for a one-character query is a `200`** with an
+   empty list.
+5. **An unknown `source_platform` or `category`** is a new handler or a newly
+   curated category, not corrupt data. Render it as itself.
+
+## Still open
+
+- The dev base URL is live only once Task 22's deployment is deployed.
+- `spend_limit_reached` is built, but the monthly limits are not set on any
+  deployment, so it cannot fire yet. Handle it before the first public web
+  release rather than after the first time it appears.

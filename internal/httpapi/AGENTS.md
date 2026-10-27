@@ -1,0 +1,61 @@
+# internal/httpapi
+
+The transport layer: routing, middleware, request parsing, response shapes.
+Nothing here knows what a database is.
+
+Read [`../../docs/api-contract.md`](../../docs/api-contract.md) before changing
+anything a client can see. Flutter dev is updated after the backend contract is
+correct and tested.
+
+## Rules that differ here
+
+- **`Routes()` is the only place a route is declared.** Public routes live under
+  `/api/v1`; bare aliases and legacy compatibility endpoints are not registered.
+- **A route names the `Deps` fields it needs.** `New` resolves every name
+  against `Deps` and refuses to return a server when one is nil, unknown, or
+  not declared at all. A route registered against a nil dependency panics on
+  its first request, the recovery middleware turns that into a 500, and nothing
+  else notices, so startup is the only place it can be caught.
+- **The user id comes from the token, always.** `requestUserID(r)` reads it from
+  the context the auth middleware populated. A `user_id` in a query string or
+  body is never used for authorization.
+- **Every response is JSON, including errors, 404 and 405.** `writeJSON` encodes
+  into a buffer before writing the status, so an encoding failure becomes a 500
+  rather than a 200 with a truncated body. `GET /metrics` is the one exception:
+  it answers the Prometheus exposition format, which is why it is registered
+  directly on the mux instead of in `routeTable()` and stays out of
+  `api/openapi.yaml`. It is served only when both a registry and an admin key
+  are configured.
+- **`/mcp` and its `/.well-known/oauth-protected-resource/mcp` document are
+  the other exception.** They are JSON-RPC and OAuth metadata, not REST
+  operations, so they are mounted beside `/metrics` and stay out of the
+  contract; `/mcp` is served only when `PublicAPIBaseURL` is set. The tools
+  in `mcp_tools.go` decode, call a service and encode, exactly like a
+  handler, and answer a tool error in place of an error envelope. See
+  `docs/mcp.md`.
+- **A log line never carries a user id.** `metrics.Hash` turns it into a stable
+  16-character digest, and the path logged is `r.Pattern`, not the raw URL: a
+  raw path carries reel and job ids.
+- **A driver error never reaches a body.** Log it with the request id, return
+  the error code and a sentence a person can read.
+- **Missing, forbidden and malformed all answer the same 404.** Distinguishing
+  them tells a stranger which ids exist.
+- **A list field is `[]`, never `null`.** The app decodes into a non-nullable
+  list and a `null` is a crash on a phone.
+- **Handlers decode, call, encode.** The use case is a function in a domain
+  package taking `(ctx, userID, params)`: `reels.Service`, `jobs.Service`,
+  `collections.Service`, `entitlements.Service`, `search.Service`, and the
+  others in `Deps`. The website, the MCP server and the browser extension call
+  the same functions, so logic left in a handler is logic they do not get. A
+  handler that formats a date or chains two reads is doing the domain's job in
+  the wrong package.
+
+## Testing
+
+Handler tests use the fakes in `fakes_test.go` and need no database. A test that
+reaches for PostgreSQL to test a handler is testing the wrong thing; the SQL has
+its own tagged tests in `internal/postgres`.
+
+Assert on the status, the error code, and the field the change is about. Do not
+assert on the whole body: it makes every future field addition a test failure
+for no reason.

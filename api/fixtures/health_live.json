@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/health/live"
+  },
+  "response": {
+    "checked_at": "",
+    "checks": {
+      "api": {
+        "checked_at": "",
+        "details": {},
+        "healthy": true,
+        "message": "API process is reachable.",
+        "status": "ok"
+      }
+    },
+    "ready": true,
+    "service": "ReelPin API",
+    "status": "ok",
+    "version": "test"
+  },
+  "status": 200
+}

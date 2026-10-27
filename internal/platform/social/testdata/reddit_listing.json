@@ -1,0 +1,50 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "title": "Best cold brew in North Goa?",
+            "selftext": "Visiting for a week and want somewhere that opens early.",
+            "url_overridden_by_dest": "",
+            "preview": {
+              "images": [
+                {"source": {"url": "https:\/\/preview.example-cdn.com\/reddit\/coldbrew.jpg"}}
+              ]
+            },
+            "stickied": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {"body": "Please read the subreddit rules before posting.", "stickied": true}
+        },
+        {
+          "kind": "t1",
+          "data": {"body": "Artjuna in Anjuna, opens at 8.", "stickied": false}
+        },
+        {
+          "kind": "t1",
+          "data": {"body": "   ", "stickied": false}
+        },
+        {
+          "kind": "t1",
+          "data": {"body": "Second Artjuna. Bean Me Up also does a good one.", "stickied": false}
+        },
+        {
+          "kind": "more",
+          "data": {"body": "", "stickied": false}
+        }
+      ]
+    }
+  }
+]

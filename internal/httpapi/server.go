@@ -5,56 +5,396 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"runtime/debug"
+	"sort"
+	"strings"
 	"time"
+
+	"github.com/XploY04/reelpin-go/internal/auth"
+	"github.com/XploY04/reelpin-go/internal/collections"
+	"github.com/XploY04/reelpin-go/internal/entitlements"
+	"github.com/XploY04/reelpin-go/internal/jobs"
+	"github.com/XploY04/reelpin-go/internal/metrics"
+	"github.com/XploY04/reelpin-go/internal/reels"
 )
 
-// DatabasePinger is the only thing the health endpoints need from the pool.
-type DatabasePinger interface {
-	Ping(context.Context) error
+// Pinger is one bounded liveness check against a dependency this process owns.
+// It is all the health endpoints need from the pool or from Redis, and it
+// never reaches a paid provider.
+type Pinger interface {
+	Ping(ctx context.Context) error
 }
 
+// WorkerCounter reports how many workers are currently heartbeating.
+type WorkerCounter interface {
+	LiveWorkers(ctx context.Context) (int, error)
+}
+
+// Deps is everything the API needs from the outside world.
+type Deps struct {
+	DB    Pinger
+	Auth  auth.Authenticator
+	Reels reels.ReelReader
+	Jobs  jobs.JobReader
+	// Entitlements reports whether a user is on the paid plan. It is backed by
+	// a cache, so this never reaches the database on the request path.
+	Entitlements entitlements.ProStatus
+	// Enqueue is the submission use case; ShareTokens authenticates and
+	// manages the native extensions' credential.
+	Enqueue     Submitter
+	ShareTokens ShareTokenStore
+	// Resolver previews shared text without processing it.
+	Resolver ShareResolver
+	// Collections owns a user's arrangement of their own saves.
+	Collections collections.Store
+	// Notifications owns device tokens and open receipts. Campaigns are an
+	// operator command, not part of this surface.
+	Notifications Notifications
+	// Lifecycle owns deletion: one save, or a whole account.
+	Lifecycle Lifecycle
+	// Map answers what is on the user's map.
+	Map MapView
+	// MapPlaces searches Google places and the user's pins, and pins a place.
+	MapPlaces MapPlaces
+	// Profiles owns each user's display details.
+	Profiles Profiles
+	// Website records feedback and store-link taps from the marketing site.
+	Website Website
+	// Search is hybrid retrieval over one user's saves.
+	Search Searcher
+	// Reminders and PriceTracks own what a user asked to be told about later.
+	Reminders   Reminders
+	PriceTracks PriceTracks
+	// Limiter is nil outside production-shaped setups. Provider-costing
+	// endpoints fail closed without a decision; reads never consult it.
+	Limiter RateLimiter
+	// Metrics is optional: nil means this process exports none and /metrics is
+	// not served at all.
+	Metrics *metrics.Metrics
+	// AdminKey guards /metrics. Empty means the endpoint is not mounted.
+	AdminKey string
+	// IPBucketSecret verifies the bucket the web boundary forwards. Empty means
+	// per-IP limits use the socket peer, which is the behaviour without a web.
+	IPBucketSecret string
+	// Cache is optional: when set, every successful write a user makes drops
+	// their cached reads before the response goes out.
+	Cache CacheInvalidator
+	// Migrations records the first authenticated request this process serves
+	// for each user, which tells the legacy backfill to stop writing that
+	// user's rows. Nil records nothing.
+	Migrations UserMigrations
+	// Redis and Workers are readiness inputs. Each is optional: a process
+	// without one is ready without it.
+	Redis   Pinger
+	Workers WorkerCounter
+	Logger  *slog.Logger
+	Version string
+	Now     func() time.Time
+	// PublicWebBaseURL is the site every reel and collection links to as its
+	// web_url.
+	PublicWebBaseURL string
+	// PublicAPIBaseURL is the origin this API is reached on. The MCP endpoint
+	// names itself by it in its OAuth protected-resource metadata, so empty
+	// means /mcp is not served.
+	PublicAPIBaseURL string
+	// OAuthIssuer is the authorization server that metadata sends MCP clients
+	// to: the Supabase project's /auth/v1, the same issuer every token here
+	// is verified against.
+	OAuthIssuer string
+	// StageBudgets are the pipeline's stages in order, which a job's remaining
+	// time is estimated from. Nil means no job carries an estimate.
+	StageBudgets []jobs.StageBudget
+}
+
+// Server holds the use-case services the handlers call. They are built from
+// Deps here, so every handler reaches the same code path the website and the
+// MCP server reuse.
 type Server struct {
-	db      DatabasePinger
-	logger  *slog.Logger
-	version string
+	deps         Deps
+	reels        *reels.Service
+	jobs         *jobs.Service
+	entitlements *entitlements.Service
+	collections  *collections.Service
+	mcp          *mcpServer
 }
 
-func New(db DatabasePinger, logger *slog.Logger, version string) *Server {
-	return &Server{db: db, logger: logger, version: version}
+func New(deps Deps) (*Server, error) {
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
+	reelService := reels.NewService(deps.Reels, deps.PublicWebBaseURL, deps.Now)
+	server := &Server{
+		deps:         deps,
+		reels:        reelService,
+		jobs:         jobs.NewService(deps.Jobs, reelService, deps.StageBudgets, deps.Now),
+		entitlements: entitlements.NewService(deps.Reels, deps.Entitlements),
+		collections:  collections.NewService(deps.Collections, deps.PublicWebBaseURL, deps.Now),
+	}
+	if err := checkDependencies(deps, server.routeTable()); err != nil {
+		return nil, err
+	}
+	if deps.PublicAPIBaseURL != "" {
+		if deps.OAuthIssuer == "" {
+			return nil, fmt.Errorf("PublicAPIBaseURL is set but OAuthIssuer is empty: the MCP metadata would name no authorization server")
+		}
+		if err := checkDependencies(deps, server.mcpRequirements()); err != nil {
+			return nil, err
+		}
+		server.mcp = newMCPServer(server)
+	}
+	return server, nil
 }
 
+// checkDependencies refuses to build a server whose routes are registered
+// against something nil. Such a route panics on its first request, the
+// recovery middleware turns that into a 500, and nothing else notices: the
+// process is healthy, the contract check passes, and every client sees
+// internal_error until someone looks. Startup is the only place it can be
+// caught, so it is caught here and the process does not start.
+//
+// The names are resolved against Deps by reflection rather than against a list
+// kept beside it, so the route table stays the only thing to maintain: a
+// dependency that is renamed, removed, or misspelled in a route fails here too.
+func checkDependencies(deps Deps, table []Route) error {
+	fields := reflect.ValueOf(deps)
+
+	unset := map[string][]string{}
+	unknown := map[string][]string{}
+	undeclared := []string{}
+
+	for _, route := range table {
+		label := route.Method + " " + route.Path
+		if len(route.requires) == 0 {
+			undeclared = append(undeclared, label)
+			continue
+		}
+		for _, name := range route.requires {
+			field := fields.FieldByName(name)
+			switch {
+			case !field.IsValid():
+				unknown[name] = append(unknown[name], label)
+			case !supplied(field):
+				unset[name] = append(unset[name], label)
+			}
+		}
+	}
+
+	problems := append(describe(unset, "is nil"), describe(unknown, "is not a field of Deps")...)
+	if len(undeclared) > 0 {
+		problems = append(problems,
+			"these routes declare no dependency at all: "+strings.Join(undeclared, ", "))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the route table is registered against dependencies that cannot serve it:\n  %s",
+		strings.Join(problems, "\n  "))
+}
+
+// supplied reports whether a dependency was actually handed over. Only the
+// kinds that can be nil are judged: an empty string is a legitimate value for
+// the ones that are optional by design.
+func supplied(field reflect.Value) bool {
+	switch field.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !field.IsNil()
+	}
+	return true
+}
+
+func describe(byName map[string][]string, problem string) []string {
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, fmt.Sprintf("%s %s; needed by %s",
+			name, problem, strings.Join(byName[name], ", ")))
+	}
+	return lines
+}
+
+func (s *Server) now() time.Time { return s.deps.Now().UTC() }
+
+// Routes registers the table and nothing else. A path that exists with other
+// methods answers a JSON 405 naming them; anything unknown answers a JSON 404.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health/live", s.handleLive)
-	mux.HandleFunc("GET /api/v1/health/ready", s.handleReady)
-	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
-	// The mux answers a wrong method with a plain-text 405, so claim the paths again
-	// without a method and keep every body JSON.
-	for _, path := range []string{"/api/v1/health/live", "/api/v1/health/ready", "/api/v1/health"} {
-		mux.HandleFunc(path, methodNotAllowed)
+	methodsByPath := map[string][]string{}
+	for _, route := range s.routeTable() {
+		methodsByPath[route.Path] = append(methodsByPath[route.Path], route.Method)
 	}
+
+	claimed := map[string]bool{}
+	for _, route := range s.routeTable() {
+		mux.HandleFunc(route.Method+" "+route.Path, route.handler)
+		if route.claimMethods && !claimed[route.Path] {
+			claimed[route.Path] = true
+			mux.HandleFunc(route.Path, s.methodNotAllowed(methodsByPath[route.Path]))
+		}
+	}
+
+	// Prometheus scrapes this. It is deliberately outside the route table and
+	// the contract: it answers the exposition format, not JSON, and no
+	// generated client should ever call it.
+	if s.deps.Metrics != nil && s.deps.AdminKey != "" {
+		mux.Handle("GET /metrics", s.deps.Metrics.GuardedHandler(s.deps.AdminKey))
+	}
+
+	// The MCP endpoint and its OAuth metadata are outside the route table and the
+	// contract for the same reason /metrics is: they are not REST operations and
+	// no generated client calls them. /mcp carries JSON-RPC over POST; the
+	// method-less patterns answer the same JSON 405 every v2 path does. There is
+	// no root metadata document: RFC 9728 has it name the origin, which is not
+	// a protected resource here.
+	if s.mcp != nil {
+		mux.Handle("POST /mcp", s.mcp.origins.Handler(s.mcpAuthenticated(s.mcp.handler)))
+		mux.HandleFunc("/mcp", s.methodNotAllowed([]string{http.MethodPost}))
+		mux.Handle("GET /.well-known/oauth-protected-resource/mcp", s.mcp.metadata)
+		mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", s.methodNotAllowed([]string{http.MethodGet, http.MethodHead}))
+	}
+
 	mux.HandleFunc("/", notFound)
 
-	return s.requestID(s.logRequest(s.recoverPanic(jsonContentType(mux))))
+	return s.requestID(s.observe(s.logRequest(s.recoverPanic(jsonContentType(mux)))))
+}
+
+func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := bearerToken(r.Header.Get("Authorization"))
+		if token == "" {
+			writeError(w, http.StatusUnauthorized, errorBody{
+				Code:    "authentication_required",
+				Message: "Sign in is required.",
+			})
+			return
+		}
+
+		principal, err := s.deps.Auth.Authenticate(r.Context(), token)
+		if err != nil {
+			// The verification error stays in the log; the client learns nothing.
+			s.deps.Logger.Info("token rejected",
+				"route", routeLabel(r.Pattern),
+				"request_id", w.Header().Get("X-Request-ID"),
+				"error", err)
+			writeError(w, http.StatusUnauthorized, errorBody{
+				Code:    "invalid_auth_token",
+				Message: "Your sign-in session is invalid or expired.",
+			})
+			return
+		}
+
+		// The log middleware runs outside this one and cannot see a context
+		// value set here, so the hashed user is handed back through a holder.
+		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok {
+			holder.hashedUser = metrics.Hash(principal.UserID)
+		}
+		if s.deps.Migrations != nil {
+			s.deps.Migrations.Seen(r.Context(), principal.UserID)
+		}
+		ctx := auth.WithClientID(auth.WithUserID(r.Context(), principal.UserID), principal.ClientID)
+		next(s.invalidatingWrites(w, r, principal.UserID), r.WithContext(ctx))
+	}
+}
+
+// UserMigrations notes that a user has reached this backend. It writes at
+// most once per user per process, so it is safe on every request.
+type UserMigrations interface {
+	Seen(ctx context.Context, userID string)
+}
+
+// CacheInvalidator drops a user's cached reads.
+type CacheInvalidator interface {
+	InvalidateUser(ctx context.Context, userID string) error
+}
+
+// invalidatingWrites makes a write drop the caller's cached reads just before
+// its response starts, which is after the handler committed: a client that
+// reads again on seeing the response can never be served the state from before
+// its own write. Covering every write here, rather than in each handler, means
+// a new write route cannot forget.
+func (s *Server) invalidatingWrites(w http.ResponseWriter, r *http.Request, userID string) http.ResponseWriter {
+	if s.deps.Cache == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return w
+	}
+	return &invalidatingWriter{ResponseWriter: w, invalidate: func() {
+		if err := s.deps.Cache.InvalidateUser(r.Context(), userID); err != nil {
+			// The read cache expires on its own; a stale screen is the cost.
+			s.deps.Logger.Warn("invalidating the user's cache failed",
+				"request_id", w.Header().Get("X-Request-ID"), "error", err)
+		}
+	}}
+}
+
+type invalidatingWriter struct {
+	http.ResponseWriter
+	invalidate func()
+	started    bool
+}
+
+func (w *invalidatingWriter) WriteHeader(status int) {
+	if !w.started {
+		w.started = true
+		if status < http.StatusBadRequest {
+			w.invalidate()
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *invalidatingWriter) Write(body []byte) (int, error) {
+	if !w.started {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *invalidatingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func bearerToken(header string) string {
+	value := strings.TrimSpace(header)
+	const prefix = "bearer "
+	if len(value) <= len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(value[len(prefix):])
+}
+
+// errorBody is the one error envelope every v2 response uses. Details are
+// optional and carry only values the caller supplied or may choose from; a
+// driver message never reaches it.
+type errorBody struct {
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"request_id"`
+	Retryable bool           `json:"retryable"`
+	Details   map[string]any `json:"details,omitempty"`
 }
 
 type errorResponse struct {
-	Success   bool   `json:"success"`
-	ErrorCode string `json:"error_code"`
-	Message   string `json:"message"`
-	Detail    string `json:"detail"`
-	Retryable bool   `json:"retryable"`
+	Error errorBody `json:"error"`
 }
 
-var internalError = errorResponse{
-	ErrorCode: "internal_error",
-	Message:   "The server could not finish this request.",
-	Detail:    "Unhandled server error",
-	Retryable: true,
+// writeError fills in the request id from the response headers, so no handler
+// has to remember to correlate its own errors.
+func writeError(w http.ResponseWriter, status int, body errorBody) {
+	body.RequestID = w.Header().Get("X-Request-ID")
+	writeJSON(w, status, errorResponse{Error: body})
 }
+
+var internalErrorBody = errorResponse{Error: errorBody{
+	Code:      "internal_error",
+	Message:   "The server could not finish this request.",
+	Retryable: true,
+}}
 
 // writeJSON encodes before touching the status line, so a broken payload still
 // leaves room for the standard 500.
@@ -62,7 +402,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(data); err != nil {
 		buf.Reset()
-		json.NewEncoder(&buf).Encode(internalError)
+		json.NewEncoder(&buf).Encode(internalErrorBody)
 		status = http.StatusInternalServerError
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -71,20 +411,25 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 func notFound(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotFound, errorResponse{
-		ErrorCode: "not_found",
-		Message:   "This endpoint does not exist.",
-		Detail:    "Unknown route",
+	writeError(w, http.StatusNotFound, errorBody{
+		Code:    "not_found",
+		Message: "This endpoint does not exist.",
 	})
 }
 
-func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", http.MethodGet)
-	writeJSON(w, http.StatusMethodNotAllowed, errorResponse{
-		ErrorCode: "method_not_allowed",
-		Message:   "This endpoint does not accept that method.",
-		Detail:    "Only GET is allowed",
-	})
+// methodNotAllowed answers for a path that exists with methods that do not.
+// The allowed set comes from the route table, so it cannot drift.
+func (s *Server) methodNotAllowed(allowed []string) http.HandlerFunc {
+	sort.Strings(allowed)
+	header := strings.Join(allowed, ", ")
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", header)
+		writeError(w, http.StatusMethodNotAllowed, errorBody{
+			Code:    "method_not_allowed",
+			Message: "This endpoint does not accept that method.",
+			Details: map[string]any{"allowed": allowed},
+		})
+	}
 }
 
 type statusRecorder struct {
@@ -117,6 +462,14 @@ func validRequestID(id string) bool {
 	return true
 }
 
+// logSubject carries the hashed user back out to the log middleware. One
+// request is handled by one goroutine, so it needs no lock.
+type logSubject struct{ hashedUser string }
+
+type logSubjectKeyType struct{}
+
+var logSubjectKey logSubjectKeyType
+
 func (s *Server) requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
@@ -124,8 +477,36 @@ func (s *Server) requestID(next http.Handler) http.Handler {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), logSubjectKey, &logSubject{})))
 	})
+}
+
+// observe records the request against the registry. It sits inside the
+// request-id middleware and outside everything else, so it sees the status any
+// handler or middleware wrote.
+func (s *Server) observe(next http.Handler) http.Handler {
+	if s.deps.Metrics == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		s.deps.Metrics.ObserveRequest(routeLabel(r.Pattern), r.Method, rec.status, time.Since(start))
+	})
+}
+
+// routeLabel keeps a label to the shape of the route, not the request. The mux
+// fills in r.Pattern during routing; the raw path carries reel and job ids and
+// would grow a time series per id.
+func routeLabel(pattern string) string {
+	if pattern == "" {
+		return "unmatched"
+	}
+	if _, path, found := strings.Cut(pattern, " "); found {
+		return path
+	}
+	return pattern
 }
 
 func (s *Server) logRequest(next http.Handler) http.Handler {
@@ -133,13 +514,20 @@ func (s *Server) logRequest(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		s.logger.Info("request",
+
+		// The user is hashed and the path is the route pattern: a log line is
+		// for correlating, never for identifying.
+		fields := []any{
 			"method", r.Method,
-			"path", r.URL.Path,
+			"route", routeLabel(r.Pattern),
 			"status", rec.status,
-			"duration_ms", float64(time.Since(start).Microseconds())/1000,
+			"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
 			"request_id", w.Header().Get("X-Request-ID"),
-		)
+		}
+		if holder, ok := r.Context().Value(logSubjectKey).(*logSubject); ok && holder.hashedUser != "" {
+			fields = append(fields, "user", holder.hashedUser)
+		}
+		s.deps.Logger.Info("request", fields...)
 	})
 }
 
@@ -147,12 +535,13 @@ func (s *Server) recoverPanic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				s.logger.Error("panic recovered",
+				s.deps.Logger.Error("panic recovered",
 					"panic", v,
 					"path", r.URL.Path,
 					"request_id", w.Header().Get("X-Request-ID"),
+					"stack", string(debug.Stack()),
 				)
-				writeJSON(w, http.StatusInternalServerError, internalError)
+				writeJSON(w, http.StatusInternalServerError, internalErrorBody)
 			}
 		}()
 		next.ServeHTTP(w, r)

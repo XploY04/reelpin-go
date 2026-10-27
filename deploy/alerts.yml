@@ -1,0 +1,277 @@
+# Prometheus alerting rules for reelpin-go.
+#
+# Every rule here is something a person should act on at the time it fires. If
+# an alert is not worth waking up for, it belongs on a dashboard instead.
+#
+# internal/metrics/alerts_test.go checks these against the real registry, so a
+# rule cannot name a metric or a label that nothing exports.
+#
+# Load with: rule_files: [ "alerts.yml" ] in prometheus.yml.
+groups:
+  - name: reelpin-api
+    rules:
+      - alert: SustainedServerErrors
+        expr: |
+          sum(rate(reelpin_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(reelpin_http_requests_total[5m])) > 0.02
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: More than 2% of requests are failing
+          description: >-
+            The 5xx rate has been above 2% for ten minutes. Check the API logs
+            for the route and the error, and whether the database or Redis is
+            the cause.
+
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(reelpin_http_request_duration_seconds_bucket[5m]))) > 1.5
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: p95 latency is above 1.5 seconds
+          description: >-
+            Look at the pool gauges first: reelpin_db_pool_connections with
+            acquired at max means requests are queueing for a connection.
+
+      - alert: DatabasePoolExhausted
+        # The state label has to be aggregated away, or the two series never
+        # match and the rule can never fire. The API and the worker each export
+        # their own pool, so the comparison stays per instance.
+        expr: |
+          sum by (instance) (reelpin_db_pool_connections{state="acquired"})
+            >= sum by (instance) (reelpin_db_pool_connections{state="max"})
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Every database connection is checked out on {{ $labels.instance }}
+          description: >-
+            Requests are now waiting on the pool. Either a query is slow enough
+            to hold connections, or the pool is too small for current traffic.
+
+  - name: reelpin-pipeline
+    rules:
+      - alert: NoLiveWorkers
+        expr: reelpin_live_workers == 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: No worker is heartbeating
+          description: >-
+            Nothing is processing shares. Jobs will keep queueing and users will
+            see them stuck. Check the worker units and RabbitMQ connectivity.
+
+      # The two age gauges below are read from the database only after the
+      # pool is used, so a process that has seen no traffic keeps reporting
+      # its last values. Read them with reelpin_db_gauges_staleness_seconds on
+      # the same instance: when it is large, the age is that old a reading,
+      # and the backlog may since have grown or cleared.
+      - alert: JobsQueuedTooLong
+        expr: reelpin_jobs_oldest_queued_seconds > 900
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: The oldest queued job is more than 15 minutes old
+          description: >-
+            Either no worker is consuming, or one platform is failing every
+            attempt. Check reelpin_live_workers and
+            reelpin_provider_failures_total. If
+            reelpin_db_gauges_staleness_seconds is large, this is an old
+            reading.
+
+      - alert: OutboxFallingBehind
+        expr: reelpin_outbox_oldest_pending_seconds > 300
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Outbox events are not being published
+          description: >-
+            The dispatcher is stuck or RabbitMQ is refusing publishes. Enqueued
+            work is committed but never reaches a worker. If
+            reelpin_db_gauges_staleness_seconds is large, this is an old
+            reading.
+
+      - alert: DeadLettersArriving
+        expr: sum by (queue) (increase(reelpin_queue_dead_lettered_total[15m])) > 0
+        for: 1m
+        labels:
+          severity: warn
+        annotations:
+          summary: Messages are being dead-lettered on {{ $labels.queue }}
+          description: >-
+            These will not retry on their own. Inspect the dead-letter queue and
+            replay once the cause is fixed.
+
+      - alert: PublishesNotConfirmed
+        expr: |
+          sum(rate(reelpin_queue_published_total{outcome="failed"}[10m]))
+            / sum(rate(reelpin_queue_published_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: More than one publish in ten is not confirmed
+          description: >-
+            The broker is refusing or not confirming. Outbox rows stay
+            unpublished and retry, so nothing is lost yet, but the backlog grows.
+
+      - alert: OnePlatformFailingEveryShare
+        expr: |
+          sum by (platform) (
+            rate(reelpin_provider_failures_total{class="provider_exhausted"}[30m])) > 0.1
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.platform }} has been refusing for 30 minutes"
+          description: >-
+            Every share from this platform is being deferred. A refusal that
+            does not clear usually means credentials or cookies, not rate limits.
+
+      - alert: SearchReturningNothing
+        expr: |
+          sum(rate(reelpin_search_results_total{outcome="empty"}[1h]))
+            / clamp_min(sum(rate(reelpin_search_results_total[1h])), 0.001) > 0.4
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: More than two in five searches find nothing
+          description: >-
+            Either the embedding index has fallen behind the saves it should
+            cover, or the dense arm's relevance gate is cutting too deep. Check
+            reelpin_search_duration_seconds by mode first: an hour of nothing
+            but lexical means the embedder is down, not that the gate is wrong.
+
+      - alert: TempDiskGrowing
+        expr: reelpin_worker_temp_bytes > 5e9
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: The worker is holding more than 5 GB of temporary media
+          description: >-
+            Runs delete their directories on every exit, so a rising number
+            means runs are being killed rather than finishing.
+
+  - name: reelpin-delivery
+    rules:
+      - alert: PushDeliveryFailing
+        expr: |
+          sum(rate(reelpin_push_delivery_total{outcome!="sent"}[15m]))
+            / sum(rate(reelpin_push_delivery_total[15m])) > 0.5
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: More than half of push notifications are failing
+          description: >-
+            Check the Firebase credentials first. A wholesale failure is usually
+            an expired service account, not the devices.
+
+  - name: reelpin-cost
+    rules:
+      # The amounts are not in this file. They are configuration the product
+      # owner approves, exported as gauges, so a rule can compare spend against
+      # the approved number without anyone editing a limit into a rules file.
+      - alert: ProviderSpendWarning
+        expr: |
+          reelpin_cost_gate_warn_usd > 0
+            and reelpin_provider_spend_month_usd >= reelpin_cost_gate_warn_usd
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: Provider spend has reached the approved warning amount
+          description: >-
+            This month's provider spend is at or above the warning amount. The
+            first stop-order group sheds new submissions at this point; the rest
+            follow as spend climbs toward the hard stop. Read
+            docs/reopening-submissions.md before changing anything.
+
+      - alert: ProviderSpendHardStop
+        expr: |
+          reelpin_cost_gate_stop_usd > 0
+            and reelpin_provider_spend_month_usd >= reelpin_cost_gate_stop_usd
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Provider spend has reached the hard stop
+          description: >-
+            Every provider-costing submission is now refused with
+            spend_limit_reached. Reads and jobs already committed are
+            unaffected. Reopening is a decision, not a restart:
+            docs/reopening-submissions.md.
+
+      - alert: CostGateUndercounting
+        expr: |
+          sum by (provider, accounting) (
+            increase(reelpin_provider_calls_total{accounting=~"unpriced|unrecorded"}[1h])) > 0
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: "{{ $labels.provider }} calls are {{ $labels.accounting }}"
+          description: >-
+            The gate is spending money it cannot see. unpriced means
+            COST_GATE_PRICES has no entry for that provider and model;
+            unrecorded means the ledger insert failed and the call is missing
+            from the month's total entirely.
+
+  # Task 29's automatic rollback triggers, kept apart from the pages above on
+  # purpose. These are tighter than the operational rules and they exist to be
+  # read by automation, not by a person: autorollback="true" is the contract
+  # between this file and whatever runs the rollback.
+  #
+  # They are deliberately not the same thresholds as SustainedServerErrors and
+  # SlowRequests. Those page a human about a service that is misbehaving. These
+  # decide that a new deployment is worse than the one it replaced, which is a
+  # lower bar and has to fire sooner.
+  - name: reelpin-rollback
+    rules:
+      - alert: RollbackOnServerErrors
+        # The request floor is the point. Two failures out of three requests is
+        # 66% and means nothing at three in five minutes; without the floor a
+        # quiet window rolls back a healthy deployment on noise.
+        expr: |
+          sum(increase(reelpin_http_requests_total[5m])) >= 100
+            and
+          sum(rate(reelpin_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(reelpin_http_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: page
+          autorollback: "true"
+        annotations:
+          summary: v2 is failing more than 2% of at least 100 requests
+          description: >-
+            Roll back to the previous image digest. Do not roll back the
+            database: every migration in this stack is expand-only, so the
+            prior digest reads the current schema. docs/cutover.md has the
+            command and the order.
+
+      - alert: RollbackOnSlowReads
+        # GET only. A slow submission is a provider being slow, which is not a
+        # reason to roll back a read path that is fine.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(reelpin_http_request_duration_seconds_bucket{method="GET"}[15m]))) > 0.8
+        for: 15m
+        labels:
+          severity: page
+          autorollback: "true"
+        annotations:
+          summary: Read p95 is above 800ms for fifteen minutes
+          description: >-
+            The rehearsal gate is 800ms with database network time under 150ms.
+            Check the network time first: compute in ap-south-1 against a
+            database in ap-northeast-1 measured about 265ms on its own, and no
+            amount of rolling back fixes distance.

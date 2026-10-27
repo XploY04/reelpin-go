@@ -1,0 +1,2671 @@
+openapi: 3.0.3
+
+info:
+  title: ReelPin API
+  version: "2.0.0"
+  description: |
+    The Go-owned ReelPin contract. Every client the ReelPin team ships — the web
+    product, updated Flutter releases and both native share extensions — talks to
+    this surface.
+
+    `/api/v1` belongs to the Python service and is not described here. It stays
+    available for installed Flutter versions during coexistence and is retired
+    separately.
+
+    Operations that answer `503 processing_unavailable` are declared but not yet
+    built on every deployment. They are in the contract from the start so a
+    client can be generated once, rather than regenerated each time a capability
+    lands.
+
+servers:
+  - url: https://api.reelpin.in
+    description: Production
+  - url: https://api-dev.reelpin.in
+    description: Development
+
+tags:
+  - name: health
+    description: Liveness and readiness. No authentication.
+  - name: reels
+    description: A user's saved reels.
+  - name: processing
+    description: Submitting links and following the work.
+  - name: account
+    description: Account-scoped reads.
+  - name: sharing
+    description: Native share tokens and share-text resolution.
+  - name: map
+    description: Places reachable through a user's saves, and their own pins.
+  - name: collections
+    description: Named sets of saves, shared by membership or link.
+  - name: notifications
+    description: Device push tokens and open receipts.
+  - name: profile
+    description: The signed-in user's display details.
+  - name: website
+    description: Feedback and store-link taps from the marketing site.
+  - name: reminders
+    description: Pushes a user scheduled for later, and price watches on product pages.
+
+security:
+  - supabaseBearer: []
+
+paths:
+  /api/v2/health/live:
+    get:
+      operationId: getHealthLive
+      tags: [health]
+      summary: Liveness
+      description: |
+        Never touches a dependency and always answers 200. A failure here means
+        the process is gone. Use this for a container health check.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/health/ready:
+    get:
+      operationId: getHealthReady
+      tags: [health]
+      summary: Readiness
+      description: |
+        Reports whether this instance can serve the core read path. Degraded
+        capabilities are named in `checks` without failing readiness; only the
+        core read path failing answers 503. Use this for a load balancer.
+      security: []
+      responses:
+        "200":
+          description: The core read path is available.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: The core read path is unavailable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/reels:
+    get:
+      operationId: listReels
+      tags: [reels]
+      summary: List saved reels
+      description: |
+        One page of the authenticated user's saved reels, newest first.
+
+        Pagination is by opaque cursor. Pass `next_cursor` from the previous
+        page as `cursor`; do not construct, decode or store the value. The order
+        is saved time descending, then reel id descending, so a save added or
+        removed between two pages cannot shift or repeat a row.
+
+        Transcripts are never included here. Request one reel to get its
+        transcript.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Platform"
+        - $ref: "#/components/parameters/Category"
+        - $ref: "#/components/parameters/Subcategory"
+        - $ref: "#/components/parameters/SavedDate"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: One page of saved reels.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReelPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/reels/filters:
+    get:
+      operationId: getReelFilters
+      tags: [reels]
+      summary: Platform filter facets
+      description: The platforms present in this user's library, with counts.
+      responses:
+        "200":
+          description: Platform facets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlatformFilters" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v2/reels/category-filters:
+    get:
+      operationId: getReelCategoryFilters
+      tags: [reels]
+      summary: Category filter facets
+      description: The categories and subcategories present in this user's library.
+      responses:
+        "200":
+          description: Category facets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryFilters" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v2/reels/{reel_id}:
+    get:
+      operationId: getReel
+      tags: [reels]
+      summary: Get one saved reel
+      description: |
+        The full reel, including its transcript when one exists, with the same
+        display fields a list item carries (`category_label`,
+        `sub_category_label`, `relative_date`, `display_date`,
+        `saved_date_key`, `content_type`, `has_map_locations`,
+        `mappable_locations`, `map_location_count`,
+        `primary_location_label`), so a detail view needs no second source.
+
+        A reel that belongs to another user answers 404, the same as one that
+        does not exist. A different answer would tell a stranger which ids are
+        real.
+      parameters:
+        - $ref: "#/components/parameters/ReelID"
+      responses:
+        "200":
+          description: The reel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    delete:
+      operationId: deleteReel
+      tags: [reels]
+      summary: Delete one saved reel
+      description: |
+        Removes this user's save and its collection memberships. The content it
+        was made from stays reusable: other people may still be reading the
+        same extraction, and a future share of the same link reuses it.
+
+        Content nobody can reach any more, and that was never public, is
+        removed with the save.
+      parameters:
+        - $ref: "#/components/parameters/ReelID"
+      responses:
+        "204":
+          description: The save is gone.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/AccountDeletionPending" }
+
+  /api/v2/processing-jobs:
+    get:
+      operationId: listProcessingJobs
+      tags: [processing]
+      summary: List processing jobs
+      description: |
+        This user's recent processing jobs. The list is bounded rather than
+        paged: a user has a small number of jobs in flight and a short tail of
+        finished ones.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: active_only
+          in: query
+          required: false
+          description: Return only jobs that are still queued or processing.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Recent jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJobList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/processing-jobs/{job_id}:
+    get:
+      operationId: getProcessingJob
+      tags: [processing]
+      summary: Get one processing job
+      description: |
+        Poll this after a submission. A terminal job carries either
+        `result_reel_id` or a stable failure code.
+      parameters:
+        - $ref: "#/components/parameters/JobID"
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/processing-jobs/reels:
+    post:
+      operationId: submitReel
+      tags: [processing]
+      summary: Submit a link
+      description: |
+        Submits one URL for processing.
+
+        Before anything is created, the user's save or job in flight for the
+        same normalized URL is looked up. `200` means the reel is ready, with
+        no job to poll. `202` carries a job to poll: new work, or the job this
+        user already has in flight for the same link. On both,
+        `already_saved` says whether the user had the link before this
+        submission.
+
+        `Idempotency-Key` is required. Retrying a failed network call with the
+        same key returns the same outcome; reusing a key with a different body
+        is a `409`. A deliberate second submission uses a new key.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubmitReelRequest" }
+      responses:
+        "200":
+          description: The reel is ready. No job to poll.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reel" }
+        "202":
+          description: |
+            A job to poll: new work, or the job this user already has in flight
+            for the same link (`already_saved` true). No second job is made.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJob" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+
+  /api/v2/native-shares/reels:
+    post:
+      operationId: submitNativeShare
+      tags: [processing]
+      summary: Submit raw shared text from a native share extension
+      description: |
+        Resolves shared text to a URL and enqueues it in one request.
+
+        A share extension runs outside the app process, cannot refresh a
+        Supabase session and may be killed at any moment, so it authenticates
+        with a long-lived share token and cannot be asked to make two calls that
+        must both succeed.
+      security:
+        - nativeShareToken: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NativeShareRequest" }
+      responses:
+        "200":
+          description: The reel is ready. No job to poll.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reel" }
+        "202":
+          description: |
+            A job to poll: new work, or the job this user already has in flight
+            for the same link (`already_saved` true). No second job is made.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProcessingJob" }
+        "401": { $ref: "#/components/responses/ShareTokenRequired" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/share/resolve:
+    post:
+      operationId: resolveShare
+      tags: [sharing]
+      summary: Resolve shared text without processing it
+      description: |
+        Turns shared text into a recognised URL so an interactive client can
+        preview what it is about to submit. It starts no work and costs no
+        provider call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveShareRequest" }
+      responses:
+        "200":
+          description: What the text resolved to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResolvedShare" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/share-tokens:
+    post:
+      operationId: mintShareToken
+      tags: [sharing]
+      summary: Mint a native share token
+      description: |
+        Issues the long-lived token a native share extension presents. The value
+        is returned once and is not retrievable afterwards.
+      responses:
+        "200":
+          description: The new token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MintedShareToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+    delete:
+      operationId: revokeShareTokens
+      tags: [sharing]
+      summary: Revoke every native share token
+      description: |
+        Revokes all of this user's share tokens. Used on sign-out and when a
+        device is lost.
+      responses:
+        "200":
+          description: How many tokens were revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevokedShareTokens" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+
+  /api/v2/device-push-tokens:
+    post:
+      operationId: registerDeviceToken
+      tags: [notifications]
+      summary: Register this device for push
+      description: |
+        Records the device's push token for the signed-in user. Sending the same
+        token again moves it to this user and refreshes it: a shared phone is a
+        real thing, and the newest sign-in owns the device.
+
+        The optional build fields are stored on the token and replaced on every
+        registration, absent ones included, so the row describes the build
+        that registered it last. Send them on every launch: they are how a
+        forced update sees which builds are still live.
+
+        The token is a credential. It is never returned by any endpoint and
+        never appears in a log or an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterDeviceTokenRequest" }
+      responses:
+        "200":
+          description: The device is registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registered]
+                properties:
+                  registered: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    delete:
+      operationId: deleteDeviceToken
+      tags: [notifications]
+      summary: Remove this device
+      description: |
+        Removes one of this user's devices, on sign-out or when push is turned
+        off. Another user's token answers 404, the same as one that does not
+        exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceTokenRequest" }
+      responses:
+        "200":
+          description: The device is removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/notifications/{notification_id}/opened:
+    post:
+      operationId: markNotificationOpened
+      tags: [notifications]
+      summary: Record that a notification was opened
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [opened]
+                properties:
+                  opened: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: |
+            No such notification for this user, or it was already recorded as
+            opened.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v2/account:
+    delete:
+      operationId: deleteAccount
+      tags: [account]
+      summary: Delete this account
+      description: |
+        Records a durable deletion request, removes every row this user owns,
+        then deletes the sign-in identity.
+
+        The two halves cannot commit together, so the response reports them
+        separately. `pending: true` means the request is recorded and will be
+        retried until the identity is gone; treat the account as deleted and
+        the session as unusable either way.
+      responses:
+        "200":
+          description: What was removed, and which halves finished.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountDeletion" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/pins:
+    get:
+      operationId: listMapPins
+      tags: [map]
+      summary: Pins inside a viewport
+      description: |
+        Every place reachable through this user's saves that falls inside the
+        box, plus their own manual pins. A pin the user hid is not returned at
+        all. Content and manual pins are ordered together, newest first, and
+        cut at 500; `truncated` says when that happened.
+
+        A box whose `west` is greater than `east` crosses the antimeridian and
+        is handled as two boxes, so panning across the Pacific works.
+      parameters:
+        - { name: south, in: query, required: true, schema: { type: number } }
+        - { name: west, in: query, required: true, schema: { type: number } }
+        - { name: north, in: query, required: true, schema: { type: number } }
+        - { name: east, in: query, required: true, schema: { type: number } }
+        - name: category
+          in: query
+          required: false
+          description: |
+            Only pins in exactly this category, on content and manual pins
+            alike. A pin with no category counts as `Other`. Applied before the
+            500-pin cap. Absent or empty means every category.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The pins in view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PinList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: pinMapPlace
+      tags: [map]
+      summary: Pin a Google place
+      description: |
+        Makes a manual pin from a place a map search offered with `can_pin`.
+        Idempotent per place: pinning a place this user already pinned returns
+        that pin with `200` and does not ask Google again. A new pin answers
+        `201`. A place Google does not know, or knows without coordinates,
+        answers `404 place_not_found`, and so does every pin while the
+        deployment has no Google key.
+
+        A new place can cost a Google call, so pinning is rate limited per
+        user and per IP and answers `503 map_unavailable` when it cannot be
+        metered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PinPlaceRequest" }
+      responses:
+        "200":
+          description: The pin this user already had for the place.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "201":
+          description: The new pin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/search:
+    get:
+      operationId: searchMapPlaces
+      tags: [map]
+      summary: Find a place to pin
+      description: |
+        This user's own pins that match the query come first, as `existing`
+        results with `can_pin: false` and the pin in `map_item`. Google places
+        follow as `google` results with `can_pin: true`, minus any that are
+        one of those pins again by place id, coordinates or address.
+
+        `search_mode` is `existing`, `google` or `mixed` by where the results
+        came from, and `google` when there are none at all. Google failing, or
+        a deployment with no Google key, leaves the user's own pins as the
+        whole answer rather than failing the search.
+
+        A query can cost a Google call, so this shares the search rate limits
+        and answers `503 search_unavailable` when it cannot be metered.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema: { type: string, minLength: 2 }
+        - name: limit
+          in: query
+          required: false
+          description: The most results of each kind, so at most twice this in all.
+          schema: { type: integer, minimum: 1, maximum: 10, default: 8 }
+        - name: category
+          in: query
+          required: false
+          description: Only this user's pins in this category. Google results are not filtered.
+          schema: { type: string }
+        - name: session_token
+          in: query
+          required: false
+          description: |
+            A Google Places session token. Send the same one on the pin that
+            follows, so Google bills the search and the pin as one session.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The matches.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MapPlaceSearch" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/nearby:
+    get:
+      operationId: listNearbyPins
+      tags: [map]
+      summary: Pins near a point, nearest first
+      description: |
+        Distance is metres on a sphere, not degrees on a plane, so the ordering
+        is the one a person would draw.
+      parameters:
+        - { name: latitude, in: query, required: true, schema: { type: number } }
+        - { name: longitude, in: query, required: true, schema: { type: number } }
+        - name: radius_metres
+          in: query
+          required: false
+          schema: { type: number, default: 5000, minimum: 1, maximum: 100000 }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: The nearest pins.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PinList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/manual-pins:
+    post:
+      operationId: createManualPin
+      tags: [map]
+      summary: Drop a pin of your own
+      description: A manual pin belongs to one user and is visible to nobody else.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManualPinRequest" }
+      responses:
+        "201":
+          description: The pin.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Pin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/manual-pins/{pin_id}:
+    delete:
+      operationId: deleteManualPin
+      tags: [map]
+      summary: Remove one of your own pins
+      parameters:
+        - { name: pin_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/items/{map_item_id}:
+    delete:
+      operationId: deleteMapItem
+      tags: [map]
+      summary: Remove an item from your map
+      description: |
+        Accepts exactly three id forms:
+
+        - `{location_id}`, a bare UUID: the id `listMapPins` and
+          `listNearbyPins` return for a content pin. Hides that location for
+          you only, the same preference `setPinHidden` records.
+        - `reel:{reel_id}:{index}`: hides the reel's location at that index for
+          you only, the same way.
+        - `manual:{pin_id}`: deletes that manual pin.
+
+        The map list returns the bare location UUID for a content pin, not the
+        `reel:` form. It returns a manual pin's bare UUID too, with
+        `kind: manual`; send that one as `manual:{pin_id}`, because a bare UUID
+        is always read as a location id. An id that is malformed, unknown, or
+        not reachable through your own saves answers 404.
+      parameters:
+        - { name: map_item_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/map/locations/{location_id}/hidden:
+    post:
+      operationId: setPinHidden
+      tags: [map]
+      summary: Hide or show a pin, for you only
+      description: |
+        A preference, not a deletion: the place stays, and no other user's map
+        changes. A location this user cannot reach through one of their own
+        saves answers 404, so this cannot be used to discover ids.
+      parameters:
+        - { name: location_id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hidden]
+              additionalProperties: false
+              properties:
+                hidden: { type: boolean }
+      responses:
+        "200":
+          description: The new state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hidden]
+                properties:
+                  hidden: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/account/library-stats:
+    get:
+      operationId: getLibraryStats
+      tags: [account]
+      summary: Library totals
+      responses:
+        "200":
+          description: Totals for this user's library.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LibraryStats" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/account/entitlements:
+    get:
+      operationId: getEntitlements
+      tags: [account]
+      summary: Plan, usage and limits
+      description: |
+        The authenticated user's plan, cumulative usage totals, limits, feature
+        flags, pricing and paywall copy. When the plan cannot be verified the
+        response is a restricted body with HTTP 200, not an error, so the client
+        degrades and retries rather than blanking the account view.
+      responses:
+        "200":
+          description: The user's entitlements.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Entitlements" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/discover:
+    get:
+      operationId: getDiscover
+      tags: [reels]
+      summary: The Discover tab
+      description: |
+        Recent saves, the dates that have saves, the reels on a chosen date, the
+        category grid and a few search prompts, for the authenticated user.
+
+        The recent-saves list pages by opaque cursor, the same as the reel list.
+
+        The dates, the search prompts and the counts read the newest 5000 saves,
+        so `recent_saves_count` and `pagination.total_count` stop at 5000.
+        `reels_for_selected_date` is filtered by the database, so a date older
+        than those 5000 still returns its reels.
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/SavedDate"
+      responses:
+        "200":
+          description: The Discover tab.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoverResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/search:
+    post:
+      operationId: searchReels
+      tags: [reels]
+      summary: Search saved reels
+      description: |
+        Hybrid search over the authenticated user's own saves: meaning, exact
+        words and misspellings, fused into one ranking. Filters narrow the
+        library before ranking, so they never trim an already-ranked list.
+
+        `relevance_percent` is relative to the top hit of the same search. It
+        compares results within one response and means nothing across two.
+
+        `search_mode` names the arms that produced the answer. It degrades to
+        the lexical arms when a query vector is unavailable, which is a
+        successful search with fewer arms, not an error.
+
+        A query costs one embedding call, so this endpoint is rate limited and
+        answers `503 search_unavailable` when it cannot be metered.
+      parameters:
+        - $ref: "#/components/parameters/View"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SearchRequest" }
+      responses:
+        "200":
+          description: The ranked results.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResults" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProcessingUnavailable" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/profile:
+    get:
+      operationId: getProfile
+      tags: [profile]
+      summary: Read your profile
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    put:
+      operationId: putProfile
+      tags: [profile]
+      summary: Create or update your profile
+      description: |
+        An upsert for the user in the token. A field that is absent, null or
+        blank leaves the stored value as it is.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileRequest" }
+      responses:
+        "200":
+          description: The profile after the write.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/feedback:
+    post:
+      operationId: submitFeedback
+      tags: [website]
+      summary: Send feedback
+      description: |
+        Public, no session required, because the website's form is anonymous.
+        A valid bearer token, when one is sent, stores the message against that
+        user; a missing or rejected token stores it with no user. Limited per
+        IP; the signed bucket the web boundary forwards is honoured, a forged
+        one is ignored. Answers 503 `feedback_unavailable` when the limiter
+        cannot answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, format: uuid }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { description: "The rate limiter cannot answer, so the write is refused." }
+
+  /api/v2/link-clicks:
+    post:
+      operationId: recordLinkClick
+      tags: [website]
+      summary: Count a store-link tap
+      description: |
+        Public, no session. Limited per IP; the signed bucket the web boundary
+        forwards is honoured, a forged one is ignored. Answers 503
+        `link_clicks_unavailable` when the limiter cannot answer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LinkClickRequest" }
+      responses:
+        "204": { description: Counted. }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+        "503": { description: "The rate limiter cannot answer, so the write is refused." }
+
+  /api/v2/collections:
+    get:
+      operationId: listCollections
+      tags: [collections]
+      summary: List collections
+      description: |
+        Everything this user owns or belongs to, newest activity first. The
+        list is bounded at 200 rather than paged: a person curates tens of
+        collections, and one query serves the whole screen.
+      responses:
+        "200":
+          description: The user's collections.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createCollection
+      tags: [collections]
+      summary: Create a collection
+      description: |
+        Creates a collection, optionally filing saves into it in the same
+        transaction. Every filed reel id must be one of the caller's own
+        saves: an unknown or foreign id answers `404 reel_not_found` and
+        nothing is created. Malformed ids are skipped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCollectionRequest" }
+      responses:
+        "200":
+          description: The new collection and how many saves were filed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}:
+    get:
+      operationId: getCollection
+      tags: [collections]
+      summary: Get a collection with one page of items
+      description: |
+        The signed-in view: the collection, one cursor page of items, and
+        whether this user may change it. Each item is the full reel, because a
+        collaborator cannot call `getReel` for a save that is not theirs: the
+        display fields, `transcript`, `locations` and the long-form extraction,
+        plus when and by whom it was filed.
+
+        A collection this user cannot see answers 404, identically to one that
+        does not exist.
+
+        `view=concise` leaves out `transcript`, `key_facts`,
+        `people_mentioned`, `actionable_items` and `events`, the same way it
+        trims the reel list.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: The collection detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    patch:
+      operationId: updateCollection
+      tags: [collections]
+      summary: Rename or restyle a collection
+      description: |
+        Owner only. Absent fields keep their values. The cover must be a save
+        already in the collection; anything else is silently kept as-is.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCollectionRequest" }
+      responses:
+        "200":
+          description: The updated collection.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    delete:
+      operationId: deleteCollection
+      tags: [collections]
+      summary: Delete a collection
+      description: |
+        Owner only. Items, members and invites go with it; the saves themselves
+        are untouched.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/items:
+    post:
+      operationId: addCollectionItems
+      tags: [collections]
+      summary: File saves into a collection
+      description: |
+        Owner or editor. Idempotent: re-adding a save changes nothing and is
+        not an error. Every reel id must be one of the caller's own saves:
+        editing a collection grants no right to anyone else's. An unknown or
+        foreign id answers `404 reel_not_found`, the same as `getReel`, and
+        a batch that contains one files nothing. Malformed ids are skipped.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionItemsRequest" }
+      responses:
+        "200":
+          description: The collection and how many saves were newly filed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/items/{reel_id}:
+    delete:
+      operationId: removeCollectionItem
+      tags: [collections]
+      summary: Remove one save from a collection
+      description: Owner or editor. The save itself is untouched.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+        - $ref: "#/components/parameters/ReelID"
+      responses:
+        "200":
+          description: Removed, or was never there.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/members:
+    get:
+      operationId: listCollectionMembers
+      tags: [collections]
+      summary: List collaborators
+      description: Any role may see who else can see the collection they are in.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: The owner and every member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMembers" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/members/{member_user_id}:
+    delete:
+      operationId: removeCollectionMember
+      tags: [collections]
+      summary: Remove a collaborator
+      description: Owner only.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+        - $ref: "#/components/parameters/MemberUserID"
+      responses:
+        "200":
+          description: Removed, or was never a member.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/leave:
+    post:
+      operationId: leaveCollection
+      tags: [collections]
+      summary: Leave a collection
+      description: |
+        A member removing themselves. The owner cannot leave their own
+        collection; they delete it or keep it.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: Left.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/link:
+    post:
+      operationId: enableCollectionLink
+      tags: [collections]
+      summary: Mint a read-only share link
+      description: |
+        Owner only. The token is returned once and stored only as a hash.
+        Re-minting replaces the previous link, which revokes it. Links expire
+        after 30 days; re-mint to extend.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: The link. The raw token exists here and nowhere else.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionLink" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      operationId: disableCollectionLink
+      tags: [collections]
+      summary: Revoke the share link
+      description: Owner only. Revocation forgets the hash, immediately.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collections/{collection_id}/invites:
+    post:
+      operationId: createCollectionInvite
+      tags: [collections]
+      summary: Mint an invite
+      description: |
+        Owner only. An invite grants editor or viewer membership to whoever
+        accepts it before it expires. The token is returned once.
+      parameters:
+        - $ref: "#/components/parameters/CollectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionInviteRequest" }
+      responses:
+        "200":
+          description: The invite. The raw token exists here and nowhere else.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionInvite" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/CollectionForbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/collection-invites/{token}/accept:
+    post:
+      operationId: acceptCollectionInvite
+      tags: [collections]
+      summary: Accept an invite
+      description: |
+        Turns the capability into membership. Accepting twice leaves one
+        membership and spends one use. Unknown, expired, revoked and exhausted
+        invites are all the same error: which one it was is exactly what a
+        token guesser wants to learn.
+      parameters:
+        - $ref: "#/components/parameters/ShareLinkToken"
+      responses:
+        "200":
+          description: The collection this user now belongs to.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollectionMutation" }
+        "400": { $ref: "#/components/responses/InviteInvalid" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/shared-collections/{token}:
+    get:
+      operationId: getSharedCollection
+      tags: [collections]
+      summary: Read a collection through its share link
+      description: |
+        The anonymous read-only view. The unguessable token in the path is the
+        whole authorization; it grants a view of the saves, never membership,
+        and the response carries no owner id and no member information.
+
+        Items are full reels, as on `getCollection`, except that they carry
+        no `user_id`: the link does not say whose account a save belongs to.
+        `view=concise` trims them the same way.
+
+        Unknown, expired and revoked tokens answer the same 404.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ShareLinkToken"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: The shared view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SharedCollection" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/reminders:
+    get:
+      operationId: listReminders
+      tags: [reminders]
+      summary: List reminders
+      description: |
+        This user's reminders, soonest first, sent ones included. Bounded at
+        200 rather than paged.
+      responses:
+        "200":
+          description: The user's reminders.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReminderList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: createReminder
+      tags: [reminders]
+      summary: Schedule a reminder
+      description: |
+        Stores the reminder and schedules one push at `fire_at`. A `fire_at`
+        already in the past fires within seconds. `reel_id`, when given, must
+        be one of this user's saves; deleting that save deletes the reminder.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReminderRequest" }
+      responses:
+        "200":
+          description: The new reminder.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Reminder" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/reminders/{reminder_id}:
+    delete:
+      operationId: deleteReminder
+      tags: [reminders]
+      summary: Delete a reminder
+      description: A pending reminder that is deleted never fires.
+      parameters:
+        - $ref: "#/components/parameters/ReminderID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+  /api/v2/price-tracks:
+    get:
+      operationId: listPriceTracks
+      tags: [reminders]
+      summary: List price tracks
+      description: This user's price watches, newest first. Bounded at 200.
+      responses:
+        "200":
+          description: The user's price tracks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceTrackList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+    post:
+      operationId: createPriceTrack
+      tags: [reminders]
+      summary: Watch a product page's price
+      description: |
+        The page is read once a day from its structured data (Open Graph or
+        product meta tags, `itemprop=price`, or JSON-LD offers). When the
+        price is at or below `target_price` the user gets one push. The page
+        is not fetched when the track is created.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePriceTrackRequest" }
+      responses:
+        "200":
+          description: The new price track.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceTrack" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+
+  /api/v2/price-tracks/{track_id}:
+    delete:
+      operationId: deletePriceTrack
+      tags: [reminders]
+      summary: Stop watching a price
+      parameters:
+        - $ref: "#/components/parameters/PriceTrackID"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OK" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "405": { $ref: "#/components/responses/MethodNotAllowed" }
+
+
+components:
+  securitySchemes:
+    supabaseBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A Supabase access token. It is verified locally against the project's
+        JWKS; the `sub` claim is the user, and no request body or query
+        parameter can name a different one.
+    nativeShareToken:
+      type: apiKey
+      in: header
+      name: X-Share-Token
+      description: |
+        A long-lived token held by a native share extension. It authenticates
+        exactly one endpoint and resolves to exactly one user. It is never
+        accepted in place of a session anywhere else.
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: |
+        An opaque cursor from a previous page's `next_cursor`. Do not construct
+        or decode it. A value this API did not issue is a validation error.
+      schema: { type: string }
+    View:
+      name: view
+      in: query
+      required: false
+      description: |
+        How much of each reel to send. `detailed`, the default, is the full
+        display shape. `concise` leaves out `transcript`, `key_facts`,
+        `people_mentioned`, `actionable_items` and `events`, which an agent or a
+        browser card pays for without showing.
+      schema:
+        type: string
+        enum: [concise, detailed]
+        default: detailed
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Platform:
+      name: platform
+      in: query
+      required: false
+      description: |
+        A platform filter. `other` means every source that is not one of the
+        named platforms.
+      schema:
+        type: string
+        enum: [instagram, youtube, tiktok, x, linkedin, reddit, pinterest, other]
+    Category:
+      name: category
+      in: query
+      required: false
+      schema: { type: string }
+    Subcategory:
+      name: subcategory
+      in: query
+      required: false
+      schema: { type: string }
+    SavedDate:
+      name: saved_date
+      in: query
+      required: false
+      description: A single day, in UTC.
+      schema: { type: string, format: date }
+    ReelID:
+      name: reel_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    JobID:
+      name: job_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CollectionID:
+      name: collection_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MemberUserID:
+      name: member_user_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ReminderID:
+      name: reminder_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PriceTrackID:
+      name: track_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ShareLinkToken:
+      name: token
+      in: path
+      required: true
+      description: An unguessable capability token. Treat it as a secret.
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        A client-generated UUID identifying one submission attempt. Reuse it for
+        network retries of that attempt; generate a new one for a deliberate new
+        submission.
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: The request could not be understood.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: No valid session.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ShareTokenRequired:
+      description: No valid share token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: |
+        No such record for this user. Returned both when a record does not exist
+        and when it belongs to somebody else.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    IdempotencyConflict:
+      description: This idempotency key was already used with a different body.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationFailed:
+      description: A field is missing or invalid.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MethodNotAllowed:
+      description: This path exists but does not accept that method.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    CollectionForbidden:
+      description: This user may read the collection but not make this change.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InviteInvalid:
+      description: The invite is unknown, expired, revoked or exhausted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AccountDeletionPending:
+      description: |
+        This account is being deleted, so no further changes are accepted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ProcessingUnavailable:
+      description: |
+        Submissions are not being accepted. Reads stay healthy either way, and
+        anything already saved or already processing is unaffected. Match on
+        `error.code` to tell the two states apart:
+
+        - `processing_unavailable`: a capability this endpoint needs is
+          temporarily down. `retryable` is `true`; try again later.
+        - `spend_limit_reached`: the month's provider spending has reached the
+          limit the operator set, so no new work that costs a provider is
+          accepted. `retryable` is `false`: this clears when an operator reopens
+          submissions or the month rolls over, never by repeating the request.
+          Some sources may stop before others, so one link can be refused while
+          another is still accepted.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id, retryable]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: |
+                A stable identifier to match on. The message is for people and
+                may change; the code may not.
+            message: { type: string }
+            request_id:
+              type: string
+              description: Quote this when reporting a problem.
+            retryable:
+              type: boolean
+              description: Whether the same request may succeed if repeated.
+            details:
+              type: object
+              description: |
+                Optional, and only ever values the caller supplied or may
+                choose from. Never internal or driver text.
+              additionalProperties: true
+
+    Health:
+      type: object
+      required: [status, ready, version, service, checked_at, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        ready: { type: boolean }
+        version: { type: string }
+        service: { type: string }
+        checked_at: { type: string, format: date-time }
+        checks:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/HealthCheck" }
+
+    HealthCheck:
+      type: object
+      required: [healthy, status]
+      properties:
+        healthy: { type: boolean }
+        status: { type: string }
+        latency_ms: { type: number }
+        message: { type: string }
+        checked_at: { type: string, format: date-time }
+        details: { type: object, additionalProperties: true }
+
+    ReelPage:
+      type: object
+      required: [reels, has_more, limit, next_cursor]
+      properties:
+        reels:
+          type: array
+          items: { $ref: "#/components/schemas/Reel" }
+        has_more: { type: boolean }
+        limit: { type: integer }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` for the next page. Null on the last page.
+
+    Reel:
+      type: object
+      required: [id, url, title, summary, category, subcategory, sub_category]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        web_url:
+          type: string
+          description: The reel's public page, `{PUBLIC_WEB_BASE_URL}/r/{id}`.
+        thumbnail_url: { type: string, nullable: true }
+        source_platform: { type: string, nullable: true }
+        source_content_type: { type: string, nullable: true }
+        content_type:
+          type: string
+          enum: [reel, post, carousel]
+          description: The share-card kind derived from `source_content_type`.
+        parse_status: { type: string }
+        title: { type: string }
+        summary: { type: string }
+        transcript:
+          type: string
+          description: Present only on a single-reel request, never in a list.
+        category: { type: string }
+        sub_category:
+          type: string
+          description: The subcategory, under the one name every reel-bearing response uses.
+        subcategory:
+          type: string
+          deprecated: true
+          description: |
+            The same value as `sub_category`, sent only on the single-reel
+            shape (`getReel` and a submission's `200`), under the name it used
+            first. Read `sub_category`; this goes after one release.
+        category_label: { type: string }
+        sub_category_label: { type: string }
+        display_date:
+          type: string
+          description: The save date for display, such as `Sep 2, 2026`, in UTC.
+        relative_date:
+          type: string
+          description: The save date relative to now, such as `Today` or `2 days ago`.
+        saved_date_key:
+          type: string
+          nullable: true
+          description: The save date as `YYYY-MM-DD`, in UTC, for grouping.
+        has_map_locations: { type: boolean }
+        mappable_locations:
+          type: array
+          description: The locations that have coordinates, ready to pin.
+          items: { $ref: "#/components/schemas/MappableLocation" }
+        map_location_count: { type: integer }
+        primary_location_label:
+          type: string
+          nullable: true
+          description: The first mappable location's label. Null when there is none.
+        secondary_categories: { type: array, items: { type: string } }
+        key_facts:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        people_mentioned:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        actionable_items:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        events:
+          type: array
+          description: Left out under `view=concise`.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              date: { type: string }
+              time: { type: string }
+        locations:
+          type: array
+          items: { $ref: "#/components/schemas/Location" }
+        saved_at: { type: string, nullable: true, format: date-time }
+        already_saved:
+          type: boolean
+          description: |
+            Only on a submission's `200`. True when this user had the reel
+            before this submission. False when it was saved just now from
+            content someone else had already processed.
+
+    MappableLocation:
+      type: object
+      required: [name, latitude, longitude, marker_id, location_display_label]
+      properties:
+        name: { type: string }
+        address: { type: string, nullable: true }
+        neighborhood: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        country: { type: string, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
+        marker_id:
+          type: string
+          description: "`{reel_id}:{index}`, stable for one reel's locations."
+        location_name: { type: string }
+        location_address: { type: string }
+        location_display_label: { type: string }
+        google_maps_url: { type: string, nullable: true }
+
+    Location:
+      type: object
+      required: [name, latitude, longitude]
+      properties:
+        name: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        address: { type: string, nullable: true }
+        location_display_label: { type: string }
+
+    SearchRequest:
+      type: object
+      required: [query]
+      additionalProperties: false
+      properties:
+        query:
+          type: string
+          maxLength: 200
+          description: What the user typed. Shorter than two characters returns nothing.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+        platform: { type: string }
+        category: { type: string }
+        subcategory: { type: string }
+        saved_date:
+          type: string
+          format: date
+          description: One day, as YYYY-MM-DD.
+
+    SearchResults:
+      type: object
+      required: [query, search_mode, total, results]
+      properties:
+        query:
+          type: string
+          description: The query as it was searched, trimmed and bounded.
+        search_mode:
+          type: string
+          description: |
+            The arms that produced this ranking, joined by `+`, or `empty` when
+            none ran. `dense` is vectors, `sparse` is full text, `fuzzy` is
+            trigrams.
+          example: dense+sparse+fuzzy
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/SearchResult" }
+
+    SearchResult:
+      type: object
+      required: [reel, relevance_score, relevance_percent, display_score_label]
+      properties:
+        reel: { $ref: "#/components/schemas/Reel" }
+        relevance_score:
+          type: number
+          description: The fused rank score. Useful for ordering, not for display.
+        relevance_percent:
+          type: integer
+          description: Relative to the top hit of this same search, never across searches.
+        display_score_label: { type: string }
+
+    PlatformFilters:
+      type: object
+      required: [filters]
+      properties:
+        filters:
+          type: array
+          items:
+            type: object
+            required: [platform, count]
+            properties:
+              platform: { type: string }
+              count: { type: integer }
+
+    CategoryFilters:
+      type: object
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items:
+            type: object
+            required: [category, subcategories]
+            properties:
+              category: { type: string }
+              count: { type: integer }
+              subcategories:
+                type: array
+                items:
+                  type: object
+                  required: [subcategory, count]
+                  properties:
+                    subcategory: { type: string }
+                    count: { type: integer }
+
+    ProcessingJobList:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/ProcessingJob" }
+
+    ProcessingJob:
+      type: object
+      required: [id, status, url, collection_ids]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [queued, processing, completed, failed, dead_lettered]
+        url: { type: string }
+        source_platform: { type: string, nullable: true }
+        current_step: { type: string, nullable: true }
+        progress_percent: { type: integer, minimum: 0, maximum: 100 }
+        status_message: { type: string }
+        stage:
+          type: string
+          description: |
+            Where the job is, in short words a person or an agent can repeat:
+            `Queued`, `Reading the link`, `Downloading`, `Transcribing`,
+            `Extracting details`, `Categorizing`, `Saving`, `Waiting to retry`,
+            `Done` or `Failed`. For display; match on `status`.
+          example: Transcribing
+        estimated_seconds_remaining:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            An upper bound in seconds: the time budgets of the pipeline stages
+            still to run, less what the current one has used, plus any wait
+            before a scheduled retry. Null once the job is terminal or when its
+            step is not one the estimate knows.
+        failure_code:
+          type: string
+          nullable: true
+          description: A stable code on a terminal failure. Match on this.
+        result_reel_id: { type: string, nullable: true, format: uuid }
+        summary:
+          type: string
+          nullable: true
+          description: The first line of the saved reel's summary. Null until the job completes.
+        already_saved:
+          type: boolean
+          description: |
+            Only on a submission's `202`. True when this is the job the user
+            already had in flight for the same link, so no second job was made.
+            False when the submission started new work.
+        collection_ids:
+          type: array
+          items: { type: string, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+        updated_at: { type: string, nullable: true, format: date-time }
+
+    SubmitReelRequest:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          description: An http or https URL.
+        collection_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: |
+            File the resulting save into these collections. Every id must be
+            one this user owns or edits; any other answers 422 with
+            `error.details.field` = `collection_ids` and enqueues nothing.
+
+            On a 200 the save already exists and is filed before the response
+            is written. On a 202 there is no save yet, so the ids ride the job
+            and are filed when it completes.
+
+    NativeShareRequest:
+      type: object
+      required: [raw_payload_text]
+      additionalProperties: false
+      properties:
+        raw_payload_text:
+          type: string
+          maxLength: 8192
+          description: Exactly what the operating system handed the extension.
+        collection_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: As on submitReel.
+
+    ResolveShareRequest:
+      type: object
+      required: [raw_payload_text]
+      additionalProperties: false
+      properties:
+        raw_payload_text: { type: string, maxLength: 8192 }
+
+    ResolvedShare:
+      type: object
+      required: [supported]
+      properties:
+        supported: { type: boolean }
+        url: { type: string, nullable: true }
+        source_platform: { type: string, nullable: true }
+        source_content_type: { type: string, nullable: true }
+
+    MintedShareToken:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: Returned once. It cannot be read back.
+        expires_at: { type: string, format: date-time }
+
+    RevokedShareTokens:
+      type: object
+      required: [revoked]
+      properties:
+        revoked: { type: integer }
+
+    DeviceTokenRequest:
+      type: object
+      required: [token]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: The FCM registration token. Write-only; never returned.
+        platform:
+          type: string
+          enum: [ios, android, web]
+
+    RegisterDeviceTokenRequest:
+      type: object
+      required: [token]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: The FCM registration token. Write-only; never returned.
+        platform:
+          type: string
+          enum: [ios, android, web]
+        app_version:
+          type: string
+          maxLength: 64
+          description: The marketing version, such as `2.4.0`. Blank counts as absent.
+        app_build:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          description: The build number the store knows the release by.
+        timezone:
+          type: string
+          maxLength: 64
+          description: The device's IANA zone, such as `Asia/Kolkata`. Blank counts as absent.
+        locale:
+          type: string
+          maxLength: 35
+          description: The device's BCP 47 locale, such as `en-IN`. Blank counts as absent.
+    AccountDeletion:
+      type: object
+      required: [data_deleted, identity_deleted, pending, removed]
+      properties:
+        data_deleted:
+          type: boolean
+          description: Every row this user owned has been removed.
+        identity_deleted:
+          type: boolean
+          description: |
+            The sign-in identity has been removed. False with `pending: true`
+            means the data is gone and removing the identity is still being
+            retried.
+        pending:
+          type: boolean
+          description: Some half of the deletion is unfinished and will be retried.
+        removed:
+          type: object
+          properties:
+            saves: { type: integer }
+            processing_jobs: { type: integer }
+            idempotency_keys: { type: integer }
+            private_content: { type: integer }
+
+    PinList:
+      type: object
+      required: [pins]
+      properties:
+        pins:
+          type: array
+          items: { $ref: "#/components/schemas/Pin" }
+        truncated:
+          type: boolean
+          description: |
+            True when more than 500 pins matched and the list was cut. The
+            list is ordered newest first, so the pins kept are the same on
+            every request; the client can ask the user to zoom in.
+
+    Pin:
+      type: object
+      required: [id, kind, name, latitude, longitude]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [content, manual]
+          description: |
+            `content` came from something the user saved and carries `reel_id`;
+            `manual` is the user's own pin.
+        name: { type: string }
+        address: { type: string, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
+        reel_id: { type: string, format: uuid, nullable: true }
+        confidence:
+          type: number
+          nullable: true
+          description: |
+            How much to trust the place. An extraction guess and a geocoded
+            address are not the same claim.
+        category:
+          type: string
+          nullable: true
+          description: |
+            A content pin's category from its save; `Other` on a pin made from
+            a Google place.
+        sub_category:
+          type: string
+          nullable: true
+          description: The subcategory, under the one name every reel-bearing response uses.
+        subcategory:
+          type: string
+          nullable: true
+          deprecated: true
+          description: |
+            The same value as `sub_category`, under the name pins sent first.
+            Read `sub_category`; this goes after one release.
+        google_place_id:
+          type: string
+          nullable: true
+          description: Set only on a manual pin made from a Google place.
+        google_maps_url: { type: string, nullable: true }
+        place_types:
+          type: array
+          items: { type: string }
+
+    PinPlaceRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        `google_place_id` is required. `googlePlaceId` and `sessionToken` are
+        accepted as the same fields under the spelling older app builds send.
+      properties:
+        google_place_id: { type: string }
+        googlePlaceId: { type: string }
+        session_token: { type: string }
+        sessionToken: { type: string }
+
+    MapPlaceSearch:
+      type: object
+      required: [query, search_mode, total, results]
+      properties:
+        query: { type: string }
+        search_mode:
+          type: string
+          enum: [empty, existing, google, mixed]
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/MapPlaceResult" }
+
+    MapPlaceResult:
+      type: object
+      required: [result_type, display_title, display_address, place_name, place_types, can_pin]
+      properties:
+        result_type:
+          type: string
+          enum: [existing, google]
+        source_type:
+          type: string
+          nullable: true
+          enum: [content, manual]
+          description: The pin's kind for an `existing` result; null for `google`.
+        map_item:
+          type: object
+          allOf: [{ $ref: "#/components/schemas/Pin" }]
+          nullable: true
+        google_place_id: { type: string, nullable: true }
+        display_title: { type: string }
+        display_address: { type: string }
+        place_name: { type: string }
+        latitude:
+          type: number
+          nullable: true
+          description: Null for a `google` result; pinning it fetches the coordinates.
+        longitude: { type: number, nullable: true }
+        google_maps_url: { type: string, nullable: true }
+        place_types:
+          type: array
+          items: { type: string }
+        can_pin: { type: boolean }
+
+    ManualPinRequest:
+      type: object
+      required: [name, latitude, longitude]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        address: { type: string, nullable: true }
+        latitude: { type: number }
+        longitude: { type: number }
+
+    Profile:
+      type: object
+      required: [id, email, full_name, avatar_url, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: The user id. }
+        email: { type: string, nullable: true }
+        full_name: { type: string, nullable: true }
+        avatar_url: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    ProfileRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        email: { type: string, nullable: true, maxLength: 254 }
+        full_name: { type: string, nullable: true, maxLength: 200 }
+        avatar_url: { type: string, nullable: true, maxLength: 2048, description: An http or https URL. }
+
+    FeedbackRequest:
+      type: object
+      required: [topic, message]
+      additionalProperties: false
+      properties:
+        topic: { type: string, enum: [Feedback, Support, Partnership, Privacy request] }
+        email: { type: string, maxLength: 254 }
+        message: { type: string, minLength: 1, maxLength: 2000 }
+
+    LinkClickRequest:
+      type: object
+      required: [target]
+      additionalProperties: false
+      properties:
+        target: { type: string, enum: [play, ios] }
+        referer: { type: string, maxLength: 500 }
+        user_agent: { type: string, maxLength: 500 }
+        country: { type: string, maxLength: 8 }
+
+    LibraryStats:
+      type: object
+      required: [total_reels]
+      properties:
+        total_reels: { type: integer }
+        total_pinned_locations:
+          type: integer
+          description: >-
+            Pins on the map: the user's saved locations they have not hidden,
+            plus their manual pins. Equals the count GET /map/pins returns for
+            a viewport covering them all.
+        total_tags: { type: integer }
+        total_categories: { type: integer }
+        total_subcategories: { type: integer }
+
+    PlanLimits:
+      type: object
+      properties:
+        saved_reels: { type: integer, nullable: true }
+        pinned_locations: { type: integer, nullable: true }
+        searches_per_month: { type: integer, nullable: true }
+        processing_jobs_per_hour: { type: integer, nullable: true }
+
+    Entitlements:
+      type: object
+      required: [user_id, current_entitlement, usage, limits, features, plan, is_premium]
+      properties:
+        user_id: { type: string }
+        current_entitlement:
+          type: object
+          required: [plan, is_premium, restricted]
+          properties:
+            plan: { type: string }
+            billing_interval: { type: string }
+            subscription_status: { type: string }
+            is_premium: { type: boolean }
+            restricted: { type: boolean }
+            error_message: { type: string, nullable: true }
+        usage:
+          type: object
+          properties:
+            saved_reels: { type: integer }
+            pinned_locations: { type: integer }
+            tags: { type: integer }
+            categories: { type: integer }
+            subcategories: { type: integer }
+        limits: { $ref: "#/components/schemas/PlanLimits" }
+        features:
+          type: object
+          additionalProperties: { type: boolean }
+        pricing:
+          type: object
+          additionalProperties: { type: string }
+        plan_cards:
+          type: array
+          items:
+            type: object
+            properties:
+              plan: { type: string }
+              name: { type: string }
+              billing_interval: { type: string }
+              price: { type: string }
+              features: { type: array, items: { type: string } }
+              limits: { $ref: "#/components/schemas/PlanLimits" }
+              cta_label: { type: string }
+        paywall_messages:
+          type: object
+          additionalProperties: { type: string }
+        plan: { type: string }
+        is_premium: { type: boolean }
+
+    DiscoverResponse:
+      type: object
+      required: [recent_saves, recent_saves_count, saved_dates, category_grid, quick_search_prompts, pagination]
+      properties:
+        recent_saves:
+          type: array
+          items: { type: object }
+        recent_saves_count:
+          type: integer
+          description: Saves counted, capped at 5000.
+        saved_dates:
+          type: array
+          items: { type: string }
+        selected_date: { type: string, nullable: true }
+        reels_for_selected_date:
+          type: array
+          items: { type: object }
+        category_grid:
+          type: array
+          items: { type: object }
+        quick_search_prompts:
+          type: array
+          items: { type: string }
+        pagination:
+          type: object
+          properties:
+            next_cursor: { type: string, nullable: true }
+            has_more: { type: boolean }
+            limit: { type: integer }
+            total_count:
+              type: integer
+              description: Saves counted, capped at 5000.
+
+    Collection:
+      type: object
+      required: [id, name, description, visibility, role, item_count, member_count]
+      properties:
+        id: { type: string, format: uuid }
+        web_url:
+          type: string
+          description: The collection's public page, `{PUBLIC_WEB_BASE_URL}/collections/{id}`.
+        name: { type: string }
+        description: { type: string }
+        cover_reel_id: { type: string, nullable: true, format: uuid }
+        visibility: { type: string, enum: [private, link] }
+        role: { type: string, enum: [owner, editor, viewer] }
+        item_count: { type: integer }
+        member_count: { type: integer }
+        created_at: { type: string, nullable: true, format: date-time }
+        updated_at: { type: string, nullable: true, format: date-time }
+
+    CollectionList:
+      type: object
+      required: [collections]
+      properties:
+        collections:
+          type: array
+          items: { $ref: "#/components/schemas/Collection" }
+
+    CollectionMutation:
+      type: object
+      required: [collection, added_count]
+      properties:
+        collection: { $ref: "#/components/schemas/Collection" }
+        added_count:
+          type: integer
+          description: How many saves were newly filed. Re-adds count zero.
+
+    CollectionItem:
+      type: object
+      required: [reel_id, title, summary, url, source_platform, id, category, sub_category, locations]
+      description: |
+        One filed save as a full reel, plus when and by whom it was filed.
+        `reel_id` and `id` are the same save id `getReel` accepts, but a
+        collaborator or a link viewer cannot call `getReel` for a save that is
+        not theirs, so everything a detail view shows is here. Apart from
+        `reel_id`, `saved_at`, `added_at` and `added_by`, a detailed item is
+        exactly the object `getReel` answers for that save: the same record,
+        presented by the same code.
+        `view=concise` leaves out `transcript`, `key_facts`,
+        `people_mentioned`, `actionable_items` and `events`.
+      properties:
+        reel_id: { type: string, format: uuid }
+        id: { type: string, format: uuid }
+        user_id:
+          type: string
+          format: uuid
+          description: |
+            The user whose save this is. Absent on `getSharedCollection`,
+            whose anonymous reader must not learn whose account a save is.
+        normalized_url: { type: string, nullable: true }
+        source_content_id: { type: string, nullable: true }
+        processing_version: { type: string, nullable: true }
+        ingestion_method: { type: string, nullable: true }
+        transcript_source: { type: string, nullable: true }
+        subcategory:
+          type: string
+          deprecated: true
+          description: The same value as `sub_category`, as `getReel` sends it. Read `sub_category`.
+        secondary_categories: { type: array, items: { type: string } }
+        title: { type: string }
+        summary: { type: string }
+        url: { type: string }
+        web_url:
+          type: string
+          description: The reel's public page, `{PUBLIC_WEB_BASE_URL}/r/{reel_id}`.
+        thumbnail_url: { type: string, nullable: true }
+        source_platform: { type: string }
+        source_content_type: { type: string, nullable: true }
+        content_type:
+          type: string
+          enum: [reel, post, carousel]
+        parse_status: { type: string }
+        category: { type: string }
+        sub_category: { type: string }
+        category_label: { type: string }
+        sub_category_label: { type: string }
+        created_at:
+          type: string
+          nullable: true
+          format: date-time
+          description: When the save was made; the same instant as `saved_at`.
+        display_date: { type: string }
+        relative_date: { type: string }
+        saved_date_key: { type: string, nullable: true }
+        has_map_locations: { type: boolean }
+        mappable_locations:
+          type: array
+          items: { $ref: "#/components/schemas/MappableLocation" }
+        map_location_count: { type: integer }
+        primary_location_label: { type: string, nullable: true }
+        transcript:
+          type: string
+          description: Left out under `view=concise`.
+        locations:
+          type: array
+          description: |
+            Every extracted location, with or without coordinates. The ones
+            with coordinates are also in `mappable_locations`.
+          items:
+            type: object
+            required: [name, latitude, longitude]
+            properties:
+              name: { type: string }
+              address: { type: string, nullable: true }
+              neighborhood: { type: string, nullable: true }
+              city: { type: string, nullable: true }
+              state: { type: string, nullable: true }
+              country: { type: string, nullable: true }
+              latitude: { type: number, nullable: true }
+              longitude: { type: number, nullable: true }
+        key_facts:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        people_mentioned:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        actionable_items:
+          type: array
+          items: { type: string }
+          description: Left out under `view=concise`.
+        events:
+          type: array
+          description: Left out under `view=concise`.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              date: { type: string }
+              time: { type: string }
+        saved_at: { type: string, nullable: true, format: date-time }
+        added_at: { type: string, nullable: true, format: date-time }
+        added_by: { type: string, nullable: true, format: uuid }
+
+    CollectionPage:
+      type: object
+      required: [next_cursor, has_more, limit]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Pass as `cursor` for the next page. Null on the last page.
+        has_more: { type: boolean }
+        limit: { type: integer }
+
+    CollectionDetail:
+      type: object
+      required: [collection, items, page, can_edit]
+      properties:
+        collection: { $ref: "#/components/schemas/Collection" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionItem" }
+        page: { $ref: "#/components/schemas/CollectionPage" }
+        can_edit: { type: boolean }
+
+    SharedCollection:
+      type: object
+      required: [collection, items, page]
+      description: |
+        The anonymous view. `member_count` is always zero here, `role` is
+        always `viewer`, and items carry no `user_id`: the token grants a view
+        of the saves, not of who owns or can see them.
+      properties:
+        collection: { $ref: "#/components/schemas/Collection" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionItem" }
+        page: { $ref: "#/components/schemas/CollectionPage" }
+
+    CollectionMember:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id: { type: string, format: uuid }
+        role: { type: string, enum: [editor, viewer] }
+        created_at: { type: string, nullable: true, format: date-time }
+
+    CollectionMembers:
+      type: object
+      required: [owner_id, members]
+      properties:
+        owner_id: { type: string, format: uuid }
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/CollectionMember" }
+
+    CollectionLink:
+      type: object
+      required: [url, token, expires_at]
+      properties:
+        url: { type: string }
+        token:
+          type: string
+          description: Returned once. It cannot be read back.
+        expires_at: { type: string, format: date-time }
+
+    CollectionInvite:
+      type: object
+      required: [url, token, role, expires_at]
+      properties:
+        url: { type: string }
+        token:
+          type: string
+          description: Returned once. It cannot be read back.
+        role: { type: string, enum: [editor, viewer] }
+        expires_at: { type: string, format: date-time }
+
+    OK:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+
+    Reminder:
+      type: object
+      required: [id, title, body, fire_at, status, reel_id, created_at, sent_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        fire_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, sent] }
+        reel_id: { type: string, nullable: true, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+        sent_at: { type: string, nullable: true, format: date-time }
+
+    ReminderList:
+      type: object
+      required: [reminders]
+      properties:
+        reminders:
+          type: array
+          items: { $ref: "#/components/schemas/Reminder" }
+
+    CreateReminderRequest:
+      type: object
+      required: [title, fire_at]
+      additionalProperties: false
+      properties:
+        title: { type: string, description: Required after trimming whitespace. }
+        fire_at:
+          type: string
+          format: date-time
+          description: An RFC 3339 instant with an offset. The app converts the event's local time to it.
+        body: { type: string, default: "" }
+        reel_id: { type: string, nullable: true, format: uuid }
+
+    PriceTrack:
+      type: object
+      required: [id, url, title, target_price, currency, last_price, active,
+                 last_checked_at, notified_at, reel_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        url: { type: string }
+        title: { type: string }
+        target_price: { type: number }
+        currency: { type: string }
+        last_price:
+          type: number
+          nullable: true
+          description: What the last check read. Null when the page did not say.
+        active: { type: boolean }
+        last_checked_at: { type: string, nullable: true, format: date-time }
+        notified_at:
+          type: string
+          nullable: true
+          format: date-time
+          description: When the one price-drop push went out. Set at most once.
+        reel_id: { type: string, nullable: true, format: uuid }
+        created_at: { type: string, nullable: true, format: date-time }
+
+    PriceTrackList:
+      type: object
+      required: [price_tracks]
+      properties:
+        price_tracks:
+          type: array
+          items: { $ref: "#/components/schemas/PriceTrack" }
+
+    CreatePriceTrackRequest:
+      type: object
+      required: [url, target_price]
+      additionalProperties: false
+      properties:
+        url: { type: string, description: An http or https product page. }
+        target_price: { type: number, exclusiveMinimum: true, minimum: 0 }
+        title: { type: string, default: "" }
+        reel_id: { type: string, nullable: true, format: uuid }
+
+    CreateCollectionRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        reel_ids:
+          type: array
+          maxItems: 100
+          items: { type: string, format: uuid }
+
+    UpdateCollectionRequest:
+      type: object
+      additionalProperties: false
+      description: Absent fields keep their values.
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 2000 }
+        cover_reel_id:
+          type: string
+          format: uuid
+          description: Must be a save already in this collection.
+
+    CollectionItemsRequest:
+      type: object
+      required: [reel_ids]
+      additionalProperties: false
+      properties:
+        reel_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { type: string, format: uuid }
+
+    CollectionInviteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [editor, viewer]
+          default: viewer

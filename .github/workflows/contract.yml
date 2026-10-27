@@ -1,0 +1,42 @@
+name: contract
+
+# The contract is the artifact clients are generated from, so each merged commit
+# publishes the exact bytes and records their digest. A client vendors one of
+# these artifacts and pins the digest; a sibling checkout is never a dependency.
+on:
+  push:
+    branches: [dev, main]
+    paths: ["api/**"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: digest
+        id: digest
+        run: |
+          digest=$(sha256sum api/openapi.yaml | cut -d' ' -f1)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "contract sha256: $digest"
+
+      - name: stage the artifact content-addressed
+        run: |
+          mkdir -p artifact
+          cp api/openapi.yaml "artifact/openapi-${{ steps.digest.outputs.digest }}.yaml"
+          cp api/routes.json "artifact/routes-${{ steps.digest.outputs.digest }}.json"
+          printf '%s  openapi.yaml\n' "${{ steps.digest.outputs.digest }}" > artifact/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reelpin-v2-contract-${{ steps.digest.outputs.digest }}
+          path: artifact/
+          if-no-files-found: error
+
+      - name: the published bytes match the repository byte for byte
+        run: |
+          published="artifact/openapi-${{ steps.digest.outputs.digest }}.yaml"
+          cmp api/openapi.yaml "$published"
+          echo "artifact matches the repository file"

@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "target": "/api/v2/account/library-stats"
+  },
+  "response": {
+    "total_categories": 0,
+    "total_pinned_locations": 0,
+    "total_reels": 0,
+    "total_subcategories": 0,
+    "total_tags": 0
+  },
+  "status": 200
+}

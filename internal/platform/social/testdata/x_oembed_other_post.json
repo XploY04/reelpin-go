@@ -1,0 +1,8 @@
+{
+  "url": "https://twitter.com/someoneelse/status/2022222222222222222",
+  "author_name": "Someone Else",
+  "html": "<blockquote class=\"twitter-tweet\"><p lang=\"en\" dir=\"ltr\">A completely different post.</p></blockquote>",
+  "type": "rich",
+  "provider_name": "Twitter",
+  "version": "1.0"
+}

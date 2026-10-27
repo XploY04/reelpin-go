@@ -1,6 +1,11 @@
+# Local and dev only. Production uses managed PostgreSQL/Supabase, managed
+# Redis and managed RabbitMQ; see docs/cutover.md.
 services:
   postgres:
-    image: postgres:16
+    # PostGIS is required by the global content schema. pgvector is not in this
+    # image and the embedding migration needs it, so install it once:
+    # docker exec reelpin-postgres apt-get update && apt-get install -y postgresql-16-pgvector
+    image: postgis/postgis:16-3.5
     container_name: reelpin-postgres
     environment:
       POSTGRES_USER: reelpin
@@ -11,5 +16,22 @@ services:
     volumes:
       - reelpin_pgdata:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    container_name: reelpin-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: reelpin-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - reelpin_rabbitdata:/var/lib/rabbitmq
+
 volumes:
   reelpin_pgdata:
+  reelpin_rabbitdata:

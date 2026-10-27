@@ -8,16 +8,71 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/auth"
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
+	"github.com/XploY04/reelpin-go/internal/embed"
+	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/entitlements"
+	"github.com/XploY04/reelpin-go/internal/googleplaces"
 	"github.com/XploY04/reelpin-go/internal/httpapi"
+	"github.com/XploY04/reelpin-go/internal/lifecycle"
+	"github.com/XploY04/reelpin-go/internal/mapview"
+	"github.com/XploY04/reelpin-go/internal/metrics"
+	"github.com/XploY04/reelpin-go/internal/notify"
+	"github.com/XploY04/reelpin-go/internal/outbox"
+	"github.com/XploY04/reelpin-go/internal/pipeline"
+	"github.com/XploY04/reelpin-go/internal/postgres"
+	"github.com/XploY04/reelpin-go/internal/pricetracks"
+	"github.com/XploY04/reelpin-go/internal/profiles"
+	"github.com/XploY04/reelpin-go/internal/ratelimit"
+	"github.com/XploY04/reelpin-go/internal/readcache"
+	"github.com/XploY04/reelpin-go/internal/reminders"
+	"github.com/XploY04/reelpin-go/internal/safehttp"
+	"github.com/XploY04/reelpin-go/internal/search"
+	"github.com/XploY04/reelpin-go/internal/sharetoken"
+	"github.com/XploY04/reelpin-go/internal/sourceidentity"
+	"github.com/XploY04/reelpin-go/internal/spend"
+	"github.com/XploY04/reelpin-go/internal/usermigration"
+	"github.com/XploY04/reelpin-go/internal/website"
+	"github.com/XploY04/reelpin-go/internal/workerhealth"
+	"github.com/redis/go-redis/v9"
 )
+
+type pingFunc func(ctx context.Context) error
+
+func (f pingFunc) Ping(ctx context.Context) error { return f(ctx) }
+
+type workerCountFunc metrics.WorkerCount
+
+func (f workerCountFunc) LiveWorkers(ctx context.Context) (int, error) { return f(ctx) }
+
+// workerCounter keeps a nil count function from becoming a non-nil interface
+// holding nil, which would look configured and then report an error on every
+// readiness check.
+func workerCounter(count metrics.WorkerCount) httpapi.WorkerCounter {
+	if count == nil {
+		return nil
+	}
+	return workerCountFunc(count)
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	// This binary takes no arguments. Being handed some means something meant
+	// to run a different command inside the image and forgot --entrypoint, and
+	// silently serving instead would hide it.
+	if len(os.Args) > 1 {
+		logger.Error("this command takes no arguments",
+			"args", os.Args[1:],
+			"hint", "to run another binary in this image, pass --entrypoint")
+		os.Exit(2)
+	}
 
 	if err := run(logger); err != nil {
 		logger.Error("startup failed", "error", err)
@@ -40,9 +95,168 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 
+	verifier, err := auth.NewVerifier(ctx, cfg.SupabaseURL, cfg.SupabaseJWTAudience)
+	if err != nil {
+		return fmt.Errorf("supabase jwks: %w", err)
+	}
+	// Runs before the pool closes, after the server has stopped serving.
+	defer func() {
+		if err := verifier.Shutdown(context.Background()); err != nil {
+			logger.Error("jwks cache shutdown failed", "error", err)
+		}
+	}()
+
+	meters := metrics.New()
+
+	// Redis is optional outside production: without it there are no limits, and
+	// submissions fail closed while every read keeps serving.
+	// It also carries the read cache and the outbox signal, which is what
+	// lets an idle database suspend; without it both pass straight through.
+	var (
+		limiter          httpapi.RateLimiter
+		redisPinger      httpapi.Pinger
+		liveWorkers      metrics.WorkerCount
+		cache            *readcache.Cache
+		invalidator      lifecycle.CacheInvalidator
+		outboxSignal     *outbox.Signal
+		reminderSchedule reminders.Schedule
+	)
+	if cfg.RedisURL != "" {
+		options, err := cfg.RedisOptions()
+		if err != nil {
+			return err
+		}
+		client := redis.NewClient(options)
+		defer client.Close()
+		if err := client.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("redis connect: %w", err)
+		}
+		limiter = ratelimit.New(client, cfg.RedisKeyPrefix, ratelimit.NewHasher(cfg.RateLimitSalt))
+		redisPinger = pingFunc(func(ctx context.Context) error { return client.Ping(ctx).Err() })
+		liveWorkers = func(ctx context.Context) (int, error) {
+			return workerhealth.Live(ctx, client, cfg.RedisKeyPrefix)
+		}
+		cache = readcache.New(client, cfg.RedisKeyPrefix, logger)
+		invalidator = cache
+		outboxSignal = outbox.NewSignal(client, cfg.RedisKeyPrefix, logger)
+		reminderSchedule = reminders.NewRedisSchedule(client, cfg.RedisKeyPrefix)
+	} else {
+		logger.Warn("no REDIS_URL: submissions fail closed, reads are unaffected",
+			"environment", cfg.Environment)
+	}
+
+	// One resolver serves both preview and submission, so a link that previews
+	// resolves identically when it is submitted.
+	resolver := &sourceidentity.Resolver{Redirects: safehttp.New(safehttp.Config{})}
+	shareTokens := sharetoken.NewStore(pool)
+
+	// Every search embeds its query, so the API spends money too and writes the
+	// same ledger the worker does.
+	prices, err := spend.ParsePricesOrNone(cfg.CostGatePrices)
+	if err != nil {
+		return fmt.Errorf("COST_GATE_PRICES: %w", err)
+	}
+	ledger := postgres.NewSpend(pool)
+
+	// Without a key the embedder answers ErrNotConfigured, which search treats
+	// as one arm being unavailable rather than as a failure.
+	embedder := embed.NewGeminiQuery(embed.GeminiConfig{
+		APIKey:    cfg.GeminiAPIKey,
+		Model:     cfg.EmbeddingModel,
+		Dimension: cfg.EmbeddingDimension,
+		Usage:     spend.NewLedger(ledger, prices, meters, logger),
+	})
+	if cfg.AdminKey == "" {
+		logger.Warn("no ADMIN_KEY: metrics are collected but /metrics is not served")
+	}
+	if cfg.PublicAPIBaseURL == "" {
+		logger.Warn("no PUBLIC_API_BASE_URL: the MCP endpoint is not served")
+	}
+	activity := metrics.NewActivity(pool)
+	go metrics.Sample(ctx, meters, activity, liveWorkers, nil)
+
+	// The API is the one process that publishes the fleet's month-to-date
+	// spend, whether or not a gate is configured: watching it is how the
+	// limits get chosen.
+	go metrics.SampleSpend(ctx, meters, activity, func(ctx context.Context) (float64, error) {
+		total, err := ledger.MonthToDateMicros(ctx)
+		return total.USD(), err
+	})
+
+	gate, err := costGate(cfg, ledger, meters, logger)
+	if err != nil {
+		return err
+	}
+
+	searchService := search.NewService(pool, embedder, logger, time.Now)
+	searchService.Metrics = meters
+	searchService.WebBaseURL = cfg.PublicWebBaseURL
+	if cfg.SearchDenseMaxDistance > 0 {
+		searchService.MaxDistance = cfg.SearchDenseMaxDistance
+	}
+
+	// Without a service-role key the account deletion still removes every row
+	// and then reports that the identity is still there, which the app already
+	// handles; inventing a deletion would be the only worse answer.
+	if cfg.SupabaseServiceRoleKey == "" {
+		logger.Warn("no SUPABASE_SERVICE_ROLE_KEY: an account deletion removes the data, leaves the sign-in working, and stays pending")
+	}
+
+	submissions := postgres.NewEnqueue(pool)
+	submissions.Outbox = outboxSignal
+
+	places := googleplaces.New(googleplaces.Config{
+		APIKey:  cfg.GoogleMapsAPIKey,
+		Timeout: cfg.GoogleMapsTimeout,
+		Metrics: meters,
+	})
+	if !places.Configured() {
+		logger.Warn("no GOOGLE_MAPS_API_KEY: map search answers the user's own pins only, and pinning a place answers not found")
+	}
+	mapService := mapview.New(pool, time.Now)
+
+	api, err := httpapi.New(httpapi.Deps{
+		DB:             pool,
+		Auth:           verifier,
+		Reels:          readcache.CachedReels(mapview.WithPinCount(postgres.NewReels(pool), mapService), cache),
+		Jobs:           readcache.CachedJobs(postgres.NewJobs(pool), cache),
+		Entitlements:   entitlements.NewCache(postgres.NewEntitlements(pool), time.Minute, time.Now, logger),
+		Enqueue:        enqueue.New(submissions, resolver, optionalGate(gate)),
+		ShareTokens:    shareTokens,
+		Resolver:       resolver,
+		Collections:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
+		Lifecycle:      lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), invalidator, logger),
+		Map:            mapService,
+		MapPlaces:      mapview.NewPlaces(mapService, places, logger),
+		Profiles:       profiles.New(pool),
+		Website:        website.New(pool),
+		Notifications:  notify.NewService(pool, notify.NewFCM(cfg.FirebaseCredentialsJSON, cfg.FirebaseProjectID, 0), logger, time.Now),
+		Search:         searchService,
+		Reminders:      reminders.NewService(postgres.NewReminders(pool), reminderSchedule, logger),
+		PriceTracks:    pricetracks.NewService(postgres.NewPriceTracks(pool)),
+		Limiter:        limiter,
+		Cache:          invalidator,
+		Migrations:     usermigration.New(pool, logger),
+		Metrics:        meters,
+		AdminKey:       cfg.AdminKey,
+		IPBucketSecret: cfg.IPBucketSecret,
+		Redis:          redisPinger,
+		Workers:        workerCounter(liveWorkers),
+		Logger:         logger,
+		Version:        cfg.Version,
+
+		PublicWebBaseURL: cfg.PublicWebBaseURL,
+		PublicAPIBaseURL: cfg.PublicAPIBaseURL,
+		OAuthIssuer:      verifier.Issuer(),
+		StageBudgets:     pipeline.StageBudgets(),
+	})
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           httpapi.New(pool, logger, cfg.Version).Routes(),
+		Handler:           api.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -70,4 +284,38 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	return nil
+}
+
+// costGate builds the gate from the approved values, or returns nil when none
+// are configured. A nil gate refuses nothing: the amounts are a product
+// decision, and inventing one would look like it had been made.
+func costGate(cfg config.Config, ledger *postgres.Spend, meters *metrics.Metrics, logger *slog.Logger) (*spend.Gate, error) {
+	if !cfg.CostGateConfigured() {
+		logger.Warn("no cost gate is configured: provider spending is measured but not limited",
+			"set", "COST_GATE_WARN_USD, COST_GATE_STOP_USD, COST_GATE_STOP_ORDER, COST_GATE_PRICES")
+		return nil, nil
+	}
+	limits, err := spend.NewLimits(cfg.CostGateWarnUSD, cfg.CostGateStopUSD, cfg.CostGateStopOrder)
+	if err != nil {
+		return nil, fmt.Errorf("the cost gate: %w", err)
+	}
+	ladder := make([]string, 0, len(limits.StopOrder))
+	for position, group := range limits.StopOrder {
+		ladder = append(ladder, fmt.Sprintf("%s at $%.2f", group, limits.ShedAt(position).USD()))
+	}
+	logger.Info("cost gate enabled",
+		"warn_usd", limits.WarnMicros.USD(),
+		"stop_usd", limits.StopMicros.USD(),
+		"ladder", strings.Join(ladder, ", "))
+	return spend.NewGate(limits, ledger, meters), nil
+}
+
+// optionalGate prevents a nil *spend.Gate from becoming a non-nil interface.
+// Calling a method through that typed-nil interface panics on the first
+// submission when the development cost gate is intentionally disabled.
+func optionalGate(gate *spend.Gate) enqueue.Gate {
+	if gate == nil {
+		return nil
+	}
+	return gate
 }

@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/processing-jobs/reels"
+  },
+  "response": {
+    "error": {
+      "code": "idempotency_conflict",
+      "message": "This Idempotency-Key was already used with a different request.",
+      "request_id": "fixture-request-id",
+      "retryable": false
+    }
+  },
+  "status": 409
+}

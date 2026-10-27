@@ -1,0 +1,40 @@
+# RabbitMQ for the development Go worker. The stopped Python stack's existing
+# localhost Redis is reused under the separate `reelpin-go-dev` key prefix.
+#
+# This host has 911 MiB of RAM and is already into swap with Python idle, so
+# both services are capped rather than left to their defaults. RabbitMQ's
+# default high watermark is 0.4 of *available* memory, which on this host
+# computes to roughly 364 MiB, more than is free: under queue pressure it
+# expands into swap instead of pushing back, and the worker doing media work is
+# what gets killed. An absolute watermark makes it refuse publishes instead,
+# which is a visible, recoverable failure.
+#
+# Measured idle footprints on the current build: Go API 35.5 MiB, Go worker
+# 30.6 MiB, Redis 8.9 MiB, RabbitMQ 142.6 MiB. About 218 MiB total against
+# roughly 317 MiB free. It fits at idle and has little room for a media job, so
+# these caps are the difference between a clean refusal and a thrash.
+
+services:
+  rabbitmq-go:
+    image: rabbitmq:3-management-alpine
+    container_name: reelpin-rabbitmq-dev
+    restart: unless-stopped
+    env_file: /etc/reelpin/rabbitmq-dev.env
+    environment:
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >-
+        -rabbit vm_memory_high_watermark {absolute,201326592}
+        disk_free_limit 1073741824
+    ports:
+      # Loopback only. Nginx never proxies these and they must not be reachable
+      # from outside the host.
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - reelpin_rabbitdata_dev:/var/lib/rabbitmq
+    mem_limit: 256m
+    memswap_limit: 384m
+    cpus: 0.40
+    pids_limit: 256
+
+volumes:
+  reelpin_rabbitdata_dev:

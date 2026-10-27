@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "POST",
+    "target": "/api/v2/native-shares/reels"
+  },
+  "response": {
+    "error": {
+      "code": "share_token_required",
+      "message": "This endpoint requires a share token.",
+      "request_id": "fixture-request-id",
+      "retryable": false
+    }
+  },
+  "status": 401
+}

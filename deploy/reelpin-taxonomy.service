@@ -1,0 +1,28 @@
+[Unit]
+Description=ReelPin weekly taxonomy curation
+Documentation=https://github.com/XploY04/reelpin-go
+# The database is the only hard dependency. A failed run changes nothing and
+# waits for next week, so this never blocks anything else.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=reelpin
+Group=reelpin
+EnvironmentFile=/etc/reelpin/production.env
+ExecStart=/usr/local/bin/reelpin-maintenance curate-taxonomy
+
+# One run should never sit forever holding a model call open.
+TimeoutStartSec=15min
+
+# Read-only root with one writable temp: this command writes only to the
+# database.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=
+
+[Install]
+WantedBy=multi-user.target

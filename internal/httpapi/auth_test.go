@@ -1,0 +1,139 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// serve runs one authenticated-looking request against a server built from deps.
+func serve(deps Deps, method, target, authorization string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, nil)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	rec := httptest.NewRecorder()
+	routes(deps).ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeError(t *testing.T, rec *httptest.ResponseRecorder) errorResponse {
+	t.Helper()
+	var body errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	return body
+}
+
+func TestAuthorizationHeader(t *testing.T) {
+	tests := []struct {
+		name          string
+		authorization string
+		authErr       error
+		wantStatus    int
+		wantCode      string
+	}{
+		{name: "missing header", wantStatus: http.StatusUnauthorized, wantCode: "authentication_required"},
+		{name: "not a bearer token", authorization: "Basic abc", wantStatus: http.StatusUnauthorized, wantCode: "authentication_required"},
+		{name: "bearer with no token", authorization: "Bearer ", wantStatus: http.StatusUnauthorized, wantCode: "authentication_required"},
+		{name: "rejected token", authorization: "Bearer bad.token", authErr: errFake, wantStatus: http.StatusUnauthorized, wantCode: "invalid_auth_token"},
+		{name: "accepted token", authorization: "Bearer good.token", wantStatus: http.StatusOK},
+		{name: "lowercase scheme", authorization: "bearer good.token", wantStatus: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := testDeps(&fakePinger{})
+			deps.Auth = fakeAuth{userID: testUserID, err: tt.authErr}
+
+			rec := serve(deps, "GET", "/api/v2/reels", tt.authorization)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantCode == "" {
+				return
+			}
+
+			body := decodeError(t, rec)
+			if body.Error.Code != tt.wantCode {
+				t.Errorf("error_code = %q, want %q", body.Error.Code, tt.wantCode)
+			}
+			if body.Error.RequestID == "" {
+				t.Error("no request id to quote")
+			}
+		})
+	}
+}
+
+type seenUsers struct{ users []string }
+
+func (s *seenUsers) Seen(_ context.Context, userID string) { s.users = append(s.users, userID) }
+
+// The backfill stops writing a user's rows once Go has served them, so every
+// verified request reports the user, and a rejected one never does.
+func TestAVerifiedRequestRecordsTheUser(t *testing.T) {
+	seen := &seenUsers{}
+	deps := testDeps(&fakePinger{})
+	deps.Migrations = seen
+
+	if rec := serve(deps, "GET", "/api/v2/reels", "Bearer good.token"); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(seen.users) != 1 || seen.users[0] != testUserID {
+		t.Errorf("seen = %v, want just the verified user", seen.users)
+	}
+
+	deps.Auth = fakeAuth{err: errFake}
+	serve(deps, "GET", "/api/v2/reels", "Bearer bad.token")
+	serve(deps, "GET", "/api/v2/reels", "")
+	if len(seen.users) != 1 {
+		t.Errorf("seen = %v after rejected requests, want them ignored", seen.users)
+	}
+}
+
+func TestRejectedTokenNeverLeaksTheReason(t *testing.T) {
+	deps := testDeps(&fakePinger{})
+	deps.Auth = fakeAuth{err: errFake}
+
+	rec := serve(deps, "GET", "/api/v2/reels", "Bearer bad.token")
+	if got := rec.Body.String(); strings.Contains(got, errFake.Error()) {
+		t.Fatalf("response leaks the verification error: %s", got)
+	}
+}
+
+func TestUserIDComesFromTheTokenOnly(t *testing.T) {
+	reader := &fakeReels{}
+	deps := testDeps(&fakePinger{})
+	deps.Reels = reader
+
+	rec := serve(deps, "GET", "/api/v2/reels?user_id=someone-else", "Bearer good.token")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if reader.lastUserID != testUserID {
+		t.Fatalf("queried user %q, want %q", reader.lastUserID, testUserID)
+	}
+}
+
+func TestBareRoutesAreNotRegistered(t *testing.T) {
+	for _, path := range []string{
+		"/reels",
+		"/reels/filters",
+		"/reels/category-filters",
+		"/reels/" + testReelID,
+		"/processing-jobs",
+		"/processing-jobs/" + testJobID,
+		"/account/library-stats",
+	} {
+		t.Run(path, func(t *testing.T) {
+			rec := serve(testDeps(&fakePinger{}), "GET", path, "Bearer good.token")
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", rec.Code)
+			}
+		})
+	}
+}
