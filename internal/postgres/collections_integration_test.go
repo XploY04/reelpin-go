@@ -31,49 +31,14 @@ const (
 // included, as the detailed view asks.
 var firstPage = collections.ItemQuery{Limit: 25, Transcripts: true}
 
-// legacyReelsTable is the public.reels shape Supabase owns and no migration
-// here creates. Reels.Get and the collection items both read it, so an item
-// test needs it as production has it.
-const legacyReelsTable = `
-CREATE TABLE public.reels (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL,
-    url TEXT NOT NULL,
-    normalized_url TEXT,
-    source_platform TEXT,
-    source_content_type TEXT,
-    source_content_id TEXT,
-    processing_version TEXT,
-    ingestion_method TEXT,
-    transcript_source TEXT,
-    thumbnail_url TEXT,
-    title TEXT NOT NULL DEFAULT 'Untitled',
-    summary TEXT DEFAULT '',
-    transcript TEXT DEFAULT '',
-    category TEXT DEFAULT 'Other',
-    subcategory TEXT DEFAULT 'Other',
-    secondary_categories JSONB DEFAULT '[]'::jsonb,
-    key_facts JSONB DEFAULT '[]'::jsonb,
-    locations JSONB DEFAULT '[]'::jsonb,
-    people_mentioned JSONB DEFAULT '[]'::jsonb,
-    actionable_items JSONB DEFAULT '[]'::jsonb,
-    events JSONB NOT NULL DEFAULT '[]'::jsonb,
-    parse_status TEXT NOT NULL DEFAULT 'parsed',
-    created_at TIMESTAMPTZ DEFAULT now()
-)`
-
-// collectionPool builds one throwaway database per test with a
-// production-shaped auth.users and public.reels, then migrates it. Cleanup
-// drops WITH (FORCE), so a connection left open by a failure cannot hang the
-// package.
+// collectionPool builds one migrated throwaway database per test and seeds
+// the three users. Cleanup drops WITH (FORCE), so a connection left open by a
+// failure cannot hang the package.
 func collectionPool(t *testing.T) *Collections {
 	t.Helper()
 	pool := rawPool(t)
 
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, legacyReelsTable); err != nil {
-		t.Fatalf("creating the production-shaped public.reels: %v", err)
-	}
 	for _, id := range []string{ownerID, strangerID, collaborator} {
 		if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("seeding a user: %v", err)
@@ -129,15 +94,8 @@ func rawPool(t *testing.T) *pgxpool.Pool {
 		_, _ = cleanup.Exec(context.Background(), `DROP DATABASE IF EXISTS `+name+` WITH (FORCE)`)
 	})
 
-	if _, err := pool.Exec(ctx, `
-		CREATE SCHEMA auth;
-		CREATE TABLE auth.users (
-			id         UUID PRIMARY KEY,
-			email      TEXT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`); err != nil {
-		t.Fatalf("creating the production-shaped auth schema: %v", err)
-	}
+	// Neon-shaped: the migrations create the auth.users mirror themselves, and
+	// no Python table exists for a reader to fall back on.
 	if _, err := migrations.Up(ctx, parsed.String()); err != nil {
 		t.Fatalf("migrating: %v", err)
 	}
@@ -145,7 +103,6 @@ func rawPool(t *testing.T) *pgxpool.Pool {
 }
 
 // seedSave creates one content, one version and one user's save of it, and
-// the public.reels row the pipeline writes beside them under the same id, and
 // returns the save id, which is the public reel id.
 func seedSave(t *testing.T, c *Collections, userID, sourceID string) string {
 	t.Helper()
@@ -177,17 +134,6 @@ func seedSave(t *testing.T, c *Collections, userID, sourceID string) string {
 		INSERT INTO reelpin.user_saves (user_id, content_id) VALUES ($1, $2)
 		RETURNING id::text`, userID, contentID).Scan(&saveID); err != nil {
 		t.Fatalf("seeding a save: %v", err)
-	}
-	if _, err := c.pool.Exec(ctx, `
-		INSERT INTO public.reels
-			(id, user_id, url, normalized_url, source_platform, source_content_type,
-			 source_content_id, thumbnail_url, title, summary, created_at)
-		SELECT s.id, s.user_id, co.normalized_url, co.normalized_url, co.source_platform,
-		       co.source_content_type, co.source_content_id, 'https://cdn/x.jpg',
-		       'A title', 'A summary', s.saved_at
-		FROM reelpin.user_saves s JOIN reelpin.contents co ON co.id = s.content_id
-		WHERE s.id = $1`, saveID); err != nil {
-		t.Fatalf("seeding the legacy reel: %v", err)
 	}
 	return saveID
 }
@@ -684,6 +630,15 @@ func TestACollaboratorReadsTheFullReel(t *testing.T) {
 	if _, err := c.AddItems(ctx, collection.ID, ownerID, []string{saveID}); err != nil {
 		t.Fatal(err)
 	}
+	// The link the owner submitted, which only their job kept. The reader's
+	// own jobs must not stand in for it.
+	const submitted = "https://www.instagram.com/reel/FULL1/?igsh=owner"
+	if _, err := c.pool.Exec(ctx, `
+		INSERT INTO reelpin.processing_jobs (user_id, user_save_id, url, normalized_url, status)
+		VALUES ($1, $2, $3, 'https://www.instagram.com/reel/FULL1/', 'completed')`,
+		ownerID, saveID, submitted); err != nil {
+		t.Fatalf("seeding the owner's job: %v", err)
+	}
 
 	_, page, err := c.Detail(ctx, collection.ID, collaborator, firstPage)
 	if err != nil {
@@ -695,6 +650,9 @@ func TestACollaboratorReadsTheFullReel(t *testing.T) {
 	reel := page.Items[0].Reel
 	if reel.ID != saveID || reel.UserID != ownerID {
 		t.Errorf("reel %s of %s, want the owner's save %s", reel.ID, reel.UserID, saveID)
+	}
+	if reel.URL != submitted {
+		t.Errorf("url = %q, want the owner's submitted link", reel.URL)
 	}
 	if reel.Transcript != "spoken words" || reel.Category != "food_and_drink" || reel.Subcategory != "cafes" {
 		t.Errorf("transcript %q, category %q/%q", reel.Transcript, reel.Category, reel.Subcategory)
@@ -724,23 +682,35 @@ func TestACollaboratorReadsTheFullReel(t *testing.T) {
 	}
 }
 
-// seedFullSave is seedSave with the long-form extraction filled in on the
-// legacy row the reel reader resolves, a located place with an address
-// among it.
+// seedFullSave is seedSave with the long-form extraction filled in on a new
+// current version, a located place with an address among it.
 func seedFullSave(t *testing.T, c *Collections, userID, sourceID string) string {
 	t.Helper()
+	ctx := context.Background()
 	saveID := seedSave(t, c, userID, sourceID)
-	if _, err := c.pool.Exec(context.Background(), `
-		UPDATE public.reels SET
-			title = 'Best cafes in Goa', summary = 'Three cafes.', transcript = 'spoken words',
-			category = 'food_and_drink', subcategory = 'cafes',
-			secondary_categories = '["goa"]', key_facts = '["Opens at 8am"]',
-			locations = '[{"name": "Artjuna Cafe", "address": "Anjuna Beach Road", "city": "Anjuna",
-			               "latitude": 15.58, "longitude": 73.74}]',
-			people_mentioned = '["Rhea"]', actionable_items = '["Go early"]',
-			events = '[{"name": "Market", "date": "2026-09-05", "time": ""}]'
-		WHERE id = $1`, saveID); err != nil {
-		t.Fatalf("filling the legacy reel: %v", err)
+	var contentID, versionID string
+	if err := c.pool.QueryRow(ctx,
+		`SELECT content_id::text FROM reelpin.user_saves WHERE id = $1`, saveID).Scan(&contentID); err != nil {
+		t.Fatalf("finding the content: %v", err)
+	}
+	if err := c.pool.QueryRow(ctx, `
+		INSERT INTO reelpin.content_versions
+			(content_id, processor_version, prompt_version, schema_version, model_version,
+			 title, summary, transcript, tags, key_facts, raw_extraction, media)
+		VALUES ($1, 'v2', 'p1', 's1', 'm1', 'Best cafes in Goa', 'Three cafes.', 'spoken words',
+		        '{goa}', '{"Opens at 8am"}',
+		        '{"category": "food_and_drink", "subcategory": "cafes", "extraction": {
+		            "locations": [{"name": "Artjuna Cafe", "address": "Anjuna Beach Road", "city": "Anjuna",
+		                           "latitude": 15.58, "longitude": 73.74}],
+		            "people_mentioned": ["Rhea"], "actionable_items": ["Go early"],
+		            "events": [{"name": "Market", "date": "2026-09-05", "time": ""}]}}'::jsonb,
+		        '{"thumbnail_url":"https://cdn/x.jpg"}'::jsonb)
+		RETURNING id::text`, contentID).Scan(&versionID); err != nil {
+		t.Fatalf("filling the extraction: %v", err)
+	}
+	if _, err := c.pool.Exec(ctx,
+		`UPDATE reelpin.contents SET current_version_id = $2 WHERE id = $1`, contentID, versionID); err != nil {
+		t.Fatalf("pointing at the full version: %v", err)
 	}
 	return saveID
 }
