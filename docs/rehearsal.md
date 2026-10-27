@@ -1,7 +1,8 @@
 # Rehearsal runbook
 
-**Nothing in this file has been executed against Supabase, Neon or
-production.** It is Task 28: prove the migration on a copy of production before
+**Only section 1 and the start of section 2 have been run for real**: on
+2026-10-27, from a production Supabase dump into the Neon development database.
+Everything from the snapshot's `--execute` on has not. It is Task 28: prove the migration on a copy of production before
 any of it touches production. Written while the code was fresh so whoever runs
 it is not reconstructing the order from memory.
 
@@ -32,7 +33,27 @@ database. They get there as a dump of Supabase's `public` schema, restored under
 the schema name `legacy`. `pg_restore` cannot rename a schema on the way in, so
 the rename happens first in a throwaway local Postgres, the stage.
 
-Before the first run, read two things off Supabase:
+### Connecting to Supabase
+
+The Supabase CLI hands out a temporary login, so no database password is
+needed. From a directory linked to the project:
+
+```sh
+supabase link --project-ref <project-ref>
+supabase db dump --linked --dry-run
+```
+
+The dry run dumps nothing. It prints the script it would run, and that script
+carries a temporary connection for the role `cli_login_postgres`. Build
+`SUPABASE_DB_URL` from it. That role is not the table owner, so every command
+below assumes it: `pg_dump` takes `--role postgres`, and the `auth.users`
+export runs `SET ROLE postgres` first. This is the recommended way in; a direct
+connection string with the `postgres` password also works, without the role
+switches.
+
+### Before the first run
+
+Read two things off Supabase:
 
 - `SHOW server_version`. Use a `pg_dump` at least that new, and the stage image
   of the same major version.
@@ -57,19 +78,21 @@ Then, for the snapshot and again before every delta:
 DUMPED_AT=$(psql "$SUPABASE_DB_URL" -Atc "SELECT to_json(now())#>>'{}'")
 
 # Dump the Python tables.
-pg_dump "$SUPABASE_DB_URL" --schema=public --no-owner --no-privileges \
+pg_dump "$SUPABASE_DB_URL" --role postgres --schema=public --no-owner --no-privileges \
   --format=custom --file=public.dump
 
 # Export the users straight after the dump: id, email and created_at only.
-psql "$SUPABASE_DB_URL" \
+psql "$SUPABASE_DB_URL" -c 'SET ROLE postgres' \
   -c "\copy (SELECT id, email, created_at FROM auth.users) TO 'users.csv' WITH (FORMAT csv, HEADER)"
 
 # Restore into the stage and rename public to legacy there.
 psql "$STAGE" -c 'DROP SCHEMA IF EXISTS legacy CASCADE' \
-  -c 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA public'
+  -c 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA public' \
+  -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public'
 pg_restore --dbname="$STAGE" --no-owner --no-privileges public.dump
 psql "$STAGE" -c 'ALTER SCHEMA public RENAME TO legacy' -c 'CREATE SCHEMA public' \
-  -c 'ALTER EXTENSION vector SET SCHEMA public'
+  -c 'ALTER EXTENSION vector SET SCHEMA public' \
+  -c 'ALTER EXTENSION pg_trgm SET SCHEMA public'
 
 # Dump legacy from the stage and replace it in the Go database.
 pg_dump "$STAGE" --schema=legacy --no-owner --no-privileges \
@@ -92,20 +115,27 @@ every user the dumped rows name is in the file. Delete `users.csv` once it is
 loaded. A run, dry or not, and `backfill-verify` both stop if `legacy.users` is
 missing.
 
-The stage `pg_restore` reports `schema "public" already exists`. That one is
-expected. Read any other error there: one on a function or policy that names
-Supabase's `auth` schema only leaves that object out of `legacy`, which the
-backfill never reads, but an error on a table is a real problem.
+The stage `pg_restore` reports errors that are expected, because the stage has
+no Supabase `auth` schema:
+
+- `schema "public" already exists`;
+- every RLS policy that calls `auth.uid()`;
+- the view `user_display_names`;
+- the foreign keys from `device_push_tokens` and `profiles` to `auth.users`.
+
+Each of those only leaves that object out of `legacy`, which the backfill never
+reads. None of them is a table. Read any other error: an error on a table is a
+real problem.
 
 `ALTER EXTENSION vector SET SCHEMA public` is the step embeddings depend on.
 Renaming `public` takes the `vector` type with it into `legacy`; moving the
 extension back makes `legacy.dump` refer to `public.vector`, which is where the
-Go database has it.
+Go database has it. `pg_trgm` needs the same treatment, created before the
+restore and moved back after the rename: Supabase's `reels` has a
+`gin_trgm_ops` index, which does not restore without it.
 
-This sequence has been run twice in a row against throwaway local databases (a
-`reels` table with a `vector` column, a bigserial table and a function), and the
-restored column resolved to `public.vector`. It has not been run against
-Supabase or Neon.
+This sequence ran against Supabase production and Neon development on
+2026-10-27, with the `--role postgres` and `SET ROLE postgres` switches above.
 
 `DUMPED_AT` is what the next delta's mark comes from, so read it on Supabase
 and nowhere else. The dump, the rename and the restore of a table of 768-wide
@@ -120,12 +150,20 @@ Run these as the schema owner: `reelpin_maintenance` has no INSERT.
 ```sh
 maintenance migrate                       # apply every migration
 maintenance migrate-status                # confirm the list, no gaps
-maintenance backfill-legacy               # dry run: writes auth.users only
+maintenance backfill-legacy --dumped-at "$DUMPED_AT"   # dry run: writes auth.users only
 maintenance backfill-legacy --execute --dumped-at "$DUMPED_AT"
 ```
 
 The dry run first is not ceremony. It reports what it would carry, and a count
-that surprises you is worth understanding before rows move.
+that surprises you is worth understanding before rows move. It reads every
+legacy reel and job and makes the real run's decisions about each: an unusable
+URL, unreadable JSON, an owner that is not a UUID (`invalid_owners`), an owner
+missing from `auth.users` (`unknown_owners`), a user Go has served, and a
+content already counted. The mapped tables run their real statements and roll
+them back, so a constraint rejects the same rows it will on `--execute`. What
+it cannot see is anything that depends on rows the reel pass writes: save
+conflicts, jobs with no content to point at (`jobs_created` can be higher than
+the real run's), and hidden pins, reminders and price tracks that join a save.
 
 The dry run does write one thing: the users step commits `legacy.users` into
 `auth.users` on every run, dry or not, and logs `users_written`. It is an
@@ -192,7 +230,8 @@ onto one the Go pipeline built. Each version takes both from one carried reel,
 the one it was built from, so a place's `ordinal` is its index in that reel's
 `locations` array. That is what a hidden pin's `location_index` and a
 `reel:{id}:{ordinal}` pin id name. The embedding keeps the reel's
-`embedding_model`, `gemini-embedding-001` when the row has none.
+`embedding_model`, `gemini-embedding-001` when the row has none, normalized as
+the next section describes.
 
 Places and embeddings belong to content, not to a user, so the users Go has
 served do not narrow this pass. It only ever writes versions this backfill
@@ -200,16 +239,28 @@ built, which nothing in Go rewrites.
 
 ### Embedding model at cutover
 
-The carried vectors are `gemini-embedding-001` at 768 dimensions. The Go
-embedder defaults to `gemini-embedding-2`, and search only compares a query
-with vectors stored under the configured model, so on the default every carried
-reel is invisible to semantic search.
+The carried vectors are `gemini-embedding-001` at 768 dimensions. Python tags
+every one `gemini-embedding-001@768` in `embedding_model` (all 2314 embedded
+production reels). Go stores the bare model name: search compares a query only
+with vectors stored under `EMBEDDING_MODEL`, and the embedder sends
+`EMBEDDING_MODEL` to Gemini as the model name, so neither can carry a width
+suffix.
 
-At cutover, every Go host sets `EMBEDDING_MODEL=gemini-embedding-001`. The
-carried vectors are then searchable, and new saves are embedded with the same
-model. `backfill-verify` logs `embedding_models`, the carried vectors counted
-per model; anything there other than the model the hosts are configured with is
-a search hole.
+The backfill drops a trailing `@<dimensions>` when it names 768, the width of
+`content_embeddings.embedding`, so the carried vectors land under
+`gemini-embedding-001`. A tag naming any other width leaves its vector behind:
+the reel still carries, its vector does not, and the audit records it under
+source table `reel_embeddings` as `skipped_embedding_width`. The run logs those
+as `embeddings_skipped`, and `backfill-verify` reports them as `embeddings`
+`skipped`, outside the `legacy` count.
+
+The Go embedder defaults to `gemini-embedding-2`, so on the default every
+carried reel is invisible to semantic search. At cutover, every Go host sets
+`EMBEDDING_MODEL=gemini-embedding-001`. The carried vectors are then
+searchable, and new saves are embedded with the same model. `backfill-verify`
+logs `embedding_models`, the carried vectors counted per stored model name;
+anything there other than the model the hosts are configured with is a search
+hole.
 
 The dense search gate has to be measured again on that model.
 `internal/search` gates the vector arm at `MaxDenseDistance`, 0.40, which was
@@ -252,6 +303,19 @@ Either way the legacy reel is audited `skipped_conflict`, and its reminders and
 price tracks point at the save that was kept. Its hidden pins do not carry: their
 index names a place on the legacy reel, not on the kept save's version.
 
+### Owners
+
+Python's `user_id` is text, and production holds test rows owned by names
+rather than users: `default-user`, `test-user`, `reddit-e2e-test` and
+`reddit-s-test` own nine reels. No canonical row can belong to one. A reel,
+job or mapped row whose owner is not a UUID is audited
+`skipped_invalid_owner`, and one whose owner is a UUID that `auth.users` does
+not have is audited `skipped_unknown_reference`. Both are deliberate skips, so
+`backfill-verify` counts them as explained. The run logs them as
+`invalid_owners` and `unknown_owners` for reels and `jobs_invalid_owners` and
+`jobs_unknown_owners` for jobs; the mapped tables report them in
+`skipped_by_action`.
+
 ## 3. Verify, and read the numbers properly
 
 ```sh
@@ -273,7 +337,8 @@ Every mapped table also reports `expected` against `present`, legacy rows in
 scope that were not skipped against those with a canonical row owned by the same
 user, and `user_diffs` for the users whose two counts differ. Search and the map
 report `embeddings` (carried reels with an embedding against those whose version
-has one, and `embedding_models` splitting the second count by model) and
+has one, `embedding_models` splitting the second count by model, and `skipped`
+for vectors left behind for their width) and
 `map_points` (located places on carried reels against `content_locations`, and
 manual pins on each side). Any of those short fails the run.
 
