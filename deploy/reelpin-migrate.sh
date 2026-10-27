@@ -85,6 +85,6 @@ print("drained")
   idle=("--require-idle=$broker_state")
 fi
 
-docker run --rm --network host --memory 128m --memory-swap 128m --cpus 0.25 \
+docker run --rm --no-healthcheck --network host --memory 128m --memory-swap 128m --cpus 0.25 \
   --env-file "$env_file" --entrypoint /usr/local/bin/reelpin-maintenance \
   "$image" migrate "${idle[@]}"

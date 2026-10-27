@@ -165,7 +165,7 @@ func TestIdleMigrationIsBoundedAndPropagatesFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, required := range []string{"--memory 128m --memory-swap 128m --cpus 0.25", "migrate --require-idle=drained", "--vhost reelpin-production"} {
+			for _, required := range []string{"--no-healthcheck", "--memory 128m --memory-swap 128m --cpus 0.25", "migrate --require-idle=drained", "--vhost reelpin-production"} {
 				if !strings.Contains(string(commands), required) {
 					t.Errorf("migration omitted %q: %s", required, commands)
 				}
