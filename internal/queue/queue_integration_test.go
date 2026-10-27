@@ -169,7 +169,7 @@ func TestARetryParksAndComesBack(t *testing.T) {
 	defer channel.Close()
 	// A test-only parking queue with the same dead-letter wiring and a 1s TTL.
 	name := QueueLight + ".retry.test"
-	if _, err := channel.QueueDeclare(name, false, true, false, false, amqp.Table{
+	if _, err := channel.QueueDeclare(name, true, true, false, false, amqp.Table{
 		"x-message-ttl":             int32(1000),
 		"x-dead-letter-exchange":    Exchange,
 		"x-dead-letter-routing-key": QueueLight,
