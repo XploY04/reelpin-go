@@ -85,6 +85,66 @@ one response carries the same `checked_at`.
 flight requests finish, then the JWKS cache stops and the pool closes, in that
 order. A supervisor that kills faster than 10s will cut requests off.
 
+## Metrics collector preparation
+
+[`deploy/metrics.alloy`](../deploy/metrics.alloy) and
+[`deploy/reelpin-alloy@.service`](../deploy/reelpin-alloy@.service) are local
+templates for [ADR 0014](decisions/0014-use-managed-free-observability-first.md),
+not an installed collector. They scrape only loopback API 8080 and worker 9101
+with `X-Admin-Key` once a minute. The built-in host exporter reads memory,
+memory pressure and swap counters only. An allowlist drops other metrics and
+labels; exported instances are `api`, `worker` and `host`, with a separate
+`environment` label. No logs, traces, exemplars or user identifiers are
+forwarded; host instance names are replaced. The existing application route
+label is a mux pattern, not a request URL. Alloy's UI stays on
+`127.0.0.1:12345`; usage reporting is disabled.
+
+The installation candidate is the official Alloy v1.21.3 standalone Linux
+release for the host architecture, checksum-verified and placed at
+`/usr/bin/alloy`, matching the unit. No binary has been installed on a host.
+
+After owner approval, choose one unit instance per host (`development` or
+`production`). The config path is `/etc/reelpin/alloy/metrics.alloy`. Its
+`/etc/reelpin/alloy/<environment>.env` contains only the Grafana-provided HTTPS
+Prometheus remote-write endpoint:
+
+```text
+GRAFANA_METRICS_URL=https://REPLACE_WITH_STACK_ENDPOINT.invalid/api/prom/push
+```
+
+Three root-only files under `/etc/reelpin/alloy/<environment>/` are loaded by
+systemd `LoadCredential`: `metrics-admin-key` (the matching Go `ADMIN_KEY`),
+`metrics-username` (Grafana's metrics tenant ID), and `metrics-token` (a token
+scoped to writing metrics to that stack). No credential values belong in the
+unit, environment file, command line or repository. Restart the unit after
+rotating these source files so systemd reloads its credential copies. The
+admin-key file must contain the exact header bytes, with no trailing newline;
+it stays typed as a secret through the scrape header.
+
+The initial hard limits are 64 MiB memory, no swap and 0.05 CPU; a 40 MiB Go
+runtime target is not a memory guarantee. The queue has one shard and 1,000
+samples; each app scrape fails above 2,000 samples or 1 MiB. WAL samples expire
+after 15 minutes, with cleanup every five minutes. This is time retention,
+not a filesystem byte quota. Interrupted delivery can lose expired samples.
+
+Before installation, validate with `alloy fmt --test deploy/metrics.alloy` and
+`alloy validate deploy/metrics.alloy`, supplying the two non-secret environment
+variables `REELPIN_ENVIRONMENT` and `GRAFANA_METRICS_URL`, plus
+`CREDENTIALS_DIRECTORY` for the credential paths. Neither command starts
+scraping or remote writes. Format and configuration validation passed with
+the checksum-verified Alloy v1.21.3 Darwin ARM64 release. A network-isolated
+Linux ARM64 baseline ran for 90 seconds and returned readiness 200 at the
+requested limits: 46.3 MiB cgroup peak, no swap, OOM events or restarts. It used
+synthetic host files and unreachable scrape/write endpoints, not a source-load
+test. The harness killed it after ten seconds of shutdown wait; clean shutdown is not
+proven. Linux unit validation and a host trial have not run. Approval still
+needs a stack/region and token scope, series/ingestion measurements and the
+80-percent free-tier alert from ADR 0014, disk headroom or a WAL quota, and a
+bounded host memory/CPU trial under these limits. Collector syntax validation
+does not prove this budget fits. `deploy/alerts.yml` remains unevaluated until
+rules scoped to the intended environment and a contact point are installed
+and tested in Grafana Cloud; its `autorollback` labels do not execute a rollback.
+
 ## Authentication in practice
 
 Tokens are verified locally against the Supabase JWKS. It is fetched once at
