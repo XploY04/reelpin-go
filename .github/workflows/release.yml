@@ -131,16 +131,12 @@ jobs:
           $SSH "sudo /tmp/reelpin-migrate.sh ${{ inputs.environment }} \
             ${{ env.IMAGE }}@${DIGEST} /etc/reelpin/${{ inputs.environment }}.env"
 
-      - name: deploy the api
-        run: |
-          $SSH "sudo /tmp/reelpin-deploy.sh api ${{ inputs.environment }} ${{ env.IMAGE }}@${DIGEST}"
-
       - name: deploy the worker
         # The worker is deployed separately: an API rollback must be able to
         # leave workers draining RabbitMQ, because nothing else can consume it.
         run: |
           $SSH "sudo /tmp/reelpin-deploy.sh worker ${{ inputs.environment }} ${{ env.IMAGE }}@${DIGEST}"
 
-      - name: smoke test
+      - name: deploy the api
         run: |
-          $SSH "sudo /tmp/reelpin-smoke.sh http://127.0.0.1:8080 ${{ env.IMAGE }}@${DIGEST}"
+          $SSH "sudo /tmp/reelpin-deploy.sh api ${{ inputs.environment }} ${{ env.IMAGE }}@${DIGEST}"

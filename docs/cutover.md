@@ -252,7 +252,12 @@ commit, immutable image digest, initial measurements and recovery points.
     `environment=production` and the reserved tested digest. Its migration
     must run under the 128 MiB, no-extra-swap, 0.25 CPU limits before the
     deployment restarts the worker. Confirm the smoke targets 8080 and the
-    actual build.
+    actual build. The worker deploys first, then API deployment runs the final
+    smoke and restores the previous API digest on failure, verifying its
+    identity and readiness. This order requires the new worker to remain
+    compatible with the previous API and the expand-only schema. API rollback
+    leaves the worker draining; a same-digest redeploy offers no distinct
+    fallback image.
 12. Back up the nginx site, add `location ^~ /api/v2/` proxying to
     `http://127.0.0.1:8080` while preserving the URI and forwarding its normal
     host/client headers. Keep `/api/v1/` and the existing fallback on Python

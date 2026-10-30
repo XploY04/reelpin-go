@@ -10,6 +10,8 @@ import (
 
 const testRevision = "1111111111111111111111111111111111111111"
 const testImage = "ghcr.io/xploy04/reelpin-go@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const previousImage = "ghcr.io/xploy04/reelpin-go@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+const previousRevision = "2222222222222222222222222222222222222222"
 const idleQueues = `[{"name":"reelpin.processing.media","messages_ready":0,"messages_unacknowledged":0,"consumers":0},{"name":"reelpin.processing.light","messages_ready":0,"messages_unacknowledged":0,"consumers":0},{"name":"reelpin.notifications","messages_ready":0,"messages_unacknowledged":0,"consumers":0},{"name":"reelpin.scheduled","messages_ready":0,"messages_unacknowledged":0,"consumers":0}]`
 
 func scriptHarness(t *testing.T) (string, string) {
@@ -19,7 +21,13 @@ func scriptHarness(t *testing.T) (string, string) {
 	commands := map[string]string{
 		"docker": `printf '%s\n' "$*" >> "$TEST_CALLS"
 case "$1" in
-  image) printf '%s\n' "$TEST_REVISION" ;;
+  image)
+    if [ "$3" = "${TEST_PREVIOUS_IMAGE:-}" ]; then
+      printf '%s\n' "$TEST_PREVIOUS_REVISION"
+    else
+      printf '%s\n' "$TEST_REVISION"
+    fi ;;
+  pull) exit 0 ;;
   ps) printf '%s' "${TEST_CONTAINER:-}" ;;
   exec) printf '%s\n' "$TEST_QUEUES" ;;
   run) exit "${TEST_MIGRATE_EXIT:-0}" ;;
@@ -27,6 +35,18 @@ case "$1" in
 esac`,
 		"systemctl": `printf '%s\n' "$*" >> "$TEST_CALLS"
 case "$1" in
+  restart)
+    count=0
+    if [ -r "$TEST_RESTARTS" ]; then count=$(cat "$TEST_RESTARTS"); fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$TEST_RESTARTS"
+    if [ "$count" = 1 ] && [ "$TEST_RESTART_FAIL" = 1 ]; then exit 1; fi
+    if [ "$count" != 1 ] && [ "$TEST_ROLLBACK_RESTART_FAIL" = 1 ]; then exit 1; fi
+    sed -n 's/^REELPIN_IMAGE=//p' "$TEST_DEPLOY_STATE" > "$TEST_RUNNING_IMAGE" ;;
+  is-active)
+    count=$(cat "$TEST_RESTARTS")
+    if [ "$count" = 1 ]; then exit "$TEST_DEPLOY_ACTIVE_EXIT"; fi
+    exit "$TEST_ROLLBACK_ACTIVE_EXIT" ;;
   show)
     if [ "$2" = reelpin-production.slice ]; then
       case "$3" in
@@ -48,12 +68,21 @@ case "$1" in
     exit "${TEST_UNIT_FILES_EXIT:-1}" ;;
   *) exit 98 ;;
 esac`,
-		"curl": `case "$*" in
+		"curl": `if [ -n "${TEST_RUNNING_IMAGE:-}" ]; then
+  printf 'curl %s\n' "$*" >> "$TEST_CALLS"
+  if [ "$(cat "$TEST_RUNNING_IMAGE")" = "$TEST_PREVIOUS_IMAGE" ]; then
+    printf '%s\n' "$TEST_RESTORED_HEALTH"
+    exit 0
+  fi
+  if [ "$TEST_CURL_EXIT" != 0 ]; then exit "$TEST_CURL_EXIT"; fi
+fi
+case "$*" in
   *:8000/*) printf '%s\n' '{"service":"Python API","version":"old","status":"ok","ready":true}' ;;
   */health/ready) printf '%s\n' "${TEST_READY:-$TEST_HEALTH}" ;;
   *) printf '%s\n' "$TEST_HEALTH" ;;
 esac`,
-		"sleep": "exit 0",
+		"sleep":      "exit 0",
+		"journalctl": "printf '%s\\n' 'test service journal'",
 	}
 	for name, body := range commands {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/usr/bin/env bash\nset -eu\n"+body+"\n"), 0o700); err != nil {
@@ -82,6 +111,182 @@ esac`,
 		t.Fatal(err)
 	}
 	return calls, envFile
+}
+
+func deploymentHarness(t *testing.T, service string) (string, string, string, string) {
+	t.Helper()
+	calls, envFile := scriptHarness(t)
+	dir := filepath.Dir(envFile)
+	state := filepath.Join(dir, "reelpin-"+service+"-production.image")
+	if err := os.WriteFile(state, []byte("REELPIN_IMAGE="+previousImage+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"reelpin-deploy.sh", "reelpin-smoke.sh"} {
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = []byte(strings.ReplaceAll(string(body), "/etc/reelpin/", dir+"/"))
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TEST_PREVIOUS_IMAGE", previousImage)
+	t.Setenv("TEST_PREVIOUS_REVISION", previousRevision)
+	t.Setenv("TEST_RESTORED_HEALTH", `{"service":"ReelPin API","version":"`+previousRevision+`","status":"ok","ready":true}`)
+	t.Setenv("TEST_DEPLOY_STATE", state)
+	t.Setenv("TEST_RUNNING_IMAGE", filepath.Join(dir, "running-image"))
+	t.Setenv("TEST_RESTARTS", filepath.Join(dir, "restarts"))
+	t.Setenv("TEST_RESTART_FAIL", "0")
+	t.Setenv("TEST_DEPLOY_ACTIVE_EXIT", "0")
+	t.Setenv("TEST_ROLLBACK_RESTART_FAIL", "0")
+	t.Setenv("TEST_ROLLBACK_ACTIVE_EXIT", "0")
+	t.Setenv("TEST_CURL_EXIT", "0")
+	return filepath.Join(dir, "reelpin-deploy.sh"), calls, state, filepath.Join(dir, "restarts")
+}
+
+func TestDeployRestoresAndVerifiesPreviousAPIOnFailure(t *testing.T) {
+	for _, failure := range []string{"restart", "inactive", "unreachable", "stale build", "not ready"} {
+		t.Run(failure, func(t *testing.T) {
+			script, calls, state, restarts := deploymentHarness(t, "api")
+			switch failure {
+			case "restart":
+				t.Setenv("TEST_RESTART_FAIL", "1")
+			case "inactive":
+				t.Setenv("TEST_DEPLOY_ACTIVE_EXIT", "1")
+			case "unreachable":
+				t.Setenv("TEST_CURL_EXIT", "7")
+			case "stale build":
+				t.Setenv("TEST_HEALTH", `{"service":"ReelPin API","version":"old","status":"ok","ready":true}`)
+			case "not ready":
+				t.Setenv("TEST_READY", `{"service":"ReelPin API","version":"`+testRevision+`","status":"degraded","ready":false}`)
+			}
+			out, err := exec.Command("bash", script, "api", "production", testImage).CombinedOutput()
+			if err == nil {
+				t.Fatalf("failed API deployment succeeded: %s", out)
+			}
+			for path, want := range map[string]string{state: "REELPIN_IMAGE=" + previousImage + "\n", restarts: "2\n"} {
+				body, err := os.ReadFile(path)
+				if err != nil || string(body) != want {
+					t.Fatalf("rollback state at %s = %q, %v, want %q: %s", path, body, err, want, out)
+				}
+			}
+			commands, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(commands), "image inspect "+previousImage) || !strings.Contains(string(out), "rollback verified") {
+				t.Fatalf("previous API revision/readiness was not verified: %s\n%s", commands, out)
+			}
+			if strings.Contains(string(commands), "worker") || strings.Contains(string(commands), "nginx") || strings.Contains(string(commands), "run --rm") {
+				t.Fatalf("API rollback touched another service or migration: %s", commands)
+			}
+		})
+	}
+}
+
+func TestDeployReportsFailedRollback(t *testing.T) {
+	for _, failure := range []string{"restart", "inactive", "wrong revision"} {
+		t.Run(failure, func(t *testing.T) {
+			script, _, _, _ := deploymentHarness(t, "api")
+			t.Setenv("TEST_CURL_EXIT", "7")
+			switch failure {
+			case "restart":
+				t.Setenv("TEST_ROLLBACK_RESTART_FAIL", "1")
+			case "inactive":
+				t.Setenv("TEST_ROLLBACK_ACTIVE_EXIT", "1")
+			case "wrong revision":
+				t.Setenv("TEST_RESTORED_HEALTH", `{"service":"ReelPin API","version":"wrong","status":"ok","ready":true}`)
+			}
+			out, err := exec.Command("bash", script, "api", "production", testImage).CombinedOutput()
+			if err == nil || !strings.Contains(string(out), "rollback failed") || strings.Contains(string(out), "rollback verified") {
+				t.Fatalf("unhealthy previous API was reported as restored: %v: %s", err, out)
+			}
+		})
+	}
+}
+
+func TestDeployReportsMissingRollbackImage(t *testing.T) {
+	script, _, state, restarts := deploymentHarness(t, "api")
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_CURL_EXIT", "7")
+	out, err := exec.Command("bash", script, "api", "production", testImage).CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "no previous image") {
+		t.Fatalf("first-deploy smoke failure was not reported: %v: %s", err, out)
+	}
+	count, err := os.ReadFile(restarts)
+	if err != nil || string(count) != "1\n" {
+		t.Fatalf("first deploy attempted an unavailable rollback: %q, %v", count, err)
+	}
+}
+
+func TestDeployAcceptsHealthyAPIAndDoesNotSmokeWorker(t *testing.T) {
+	for _, service := range []string{"api", "worker"} {
+		t.Run(service, func(t *testing.T) {
+			script, calls, state, restarts := deploymentHarness(t, service)
+			out, err := exec.Command("bash", script, service, "production", testImage).CombinedOutput()
+			if err != nil {
+				t.Fatalf("healthy deployment failed: %v: %s", err, out)
+			}
+			for path, want := range map[string]string{state: "REELPIN_IMAGE=" + testImage + "\n", restarts: "1\n"} {
+				body, err := os.ReadFile(path)
+				if err != nil || string(body) != want {
+					t.Fatalf("deployment state = %q, %v, want %q", body, err, want)
+				}
+			}
+			commands, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(commands), "curl ") != (service == "api") {
+				t.Fatalf("unexpected API smoke for %s: %s", service, commands)
+			}
+		})
+	}
+}
+
+func TestDeployRejectsMalformedInputsBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name, environment, image string
+	}{
+		{name: "environment path", environment: "./production", image: testImage},
+		{name: "mutable tag", environment: "production", image: "ghcr.io/xploy04/reelpin-go:dev"},
+		{name: "short digest", environment: "production", image: "ghcr.io/xploy04/reelpin-go@sha256:abc"},
+		{name: "other repository", environment: "production", image: "example.com/api@sha256:" + strings.Repeat("a", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script, calls, state, _ := deploymentHarness(t, "api")
+			out, err := exec.Command("bash", script, "api", tc.environment, tc.image).CombinedOutput()
+			if err == nil {
+				t.Fatalf("malformed deployment was accepted: %s", out)
+			}
+			commands, err := os.ReadFile(calls)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if len(commands) != 0 {
+				t.Fatalf("malformed input reached host commands: %s", commands)
+			}
+			body, err := os.ReadFile(state)
+			if err != nil || string(body) != "REELPIN_IMAGE="+previousImage+"\n" {
+				t.Fatalf("malformed input changed the previous image: %q, %v", body, err)
+			}
+		})
+	}
+}
+
+func TestDeployAllowsTheAlreadySelectedDigest(t *testing.T) {
+	script, _, _, restarts := deploymentHarness(t, "api")
+	out, err := exec.Command("bash", script, "api", "production", previousImage).CombinedOutput()
+	if err != nil {
+		t.Fatalf("same-digest deployment failed: %v: %s", err, out)
+	}
+	count, err := os.ReadFile(restarts)
+	if err != nil || string(count) != "1\n" || strings.Contains(string(out), "rolling back") {
+		t.Fatalf("same-digest deployment attempted rollback: %q, %v: %s", count, err, out)
+	}
 }
 
 func TestSmokeRequiresTheExpectedGoBuild(t *testing.T) {
@@ -289,8 +494,20 @@ func TestReleaseSmokesGoOn8080(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(workflow), "/tmp/reelpin-smoke.sh http://127.0.0.1:8080") {
-		t.Fatal("release smoke must reach Go on 8080, not Python on 8000")
+	deployment, err := os.ReadFile("reelpin-deploy.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(deployment), `reelpin-smoke.sh" http://127.0.0.1:8080`) {
+		t.Fatal("deployment smoke must reach Go on 8080, not Python on 8000")
+	}
+	if strings.Contains(string(workflow), "- name: smoke test") {
+		t.Fatal("API smoke must stay inside the deployment rollback boundary")
+	}
+	worker := strings.Index(string(workflow), "/tmp/reelpin-deploy.sh worker ")
+	api := strings.Index(string(workflow), "/tmp/reelpin-deploy.sh api ")
+	if worker < 0 || api < 0 || worker > api {
+		t.Fatal("release must deploy the worker before the API's final smoke/rollback gate")
 	}
 	if !strings.Contains(string(workflow), "/tmp/reelpin-migrate.sh") {
 		t.Fatal("release must use the gated, bounded migration wrapper")
