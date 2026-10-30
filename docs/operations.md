@@ -99,9 +99,9 @@ forwarded; host instance names are replaced. The existing application route
 label is a mux pattern, not a request URL. Alloy's UI stays on
 `127.0.0.1:12345`; usage reporting is disabled.
 
-The installation candidate is the official Alloy v1.21.3 standalone Linux
-release for the host architecture, checksum-verified and placed at
-`/usr/bin/alloy`, matching the unit. No binary has been installed on a host.
+Development installed the checksum-verified official Alloy v1.21.3 standalone
+Linux AMD64 release on 2026-10-30 at `/usr/bin/alloy`, matching the unit.
+Production installation remains gated.
 
 After owner approval, choose one unit instance per host (`development` or
 `production`). The config path is `/etc/reelpin/alloy/metrics.alloy`. Its
@@ -121,8 +121,7 @@ unit, environment file, command line or repository. The sandboxed service reads
 the config through `%d/metrics-config`, so `/etc/reelpin` can stay root-only.
 Restart the unit after changing the source config or credential files so
 systemd reloads them. The admin-key file must contain the exact header bytes,
-with no trailing newline;
-it stays typed as a secret through the scrape header.
+with no trailing newline; it stays typed as a secret through the scrape header.
 
 The Ubuntu 24.04 manual regression ran a bounded `DynamicUser` service against
 the same config under a mode-0700 `/etc/reelpin`: direct readability failed
@@ -146,14 +145,24 @@ the checksum-verified Alloy v1.21.3 Darwin ARM64 release. A network-isolated
 Linux ARM64 baseline ran for 90 seconds and returned readiness 200 at the
 requested limits: 46.3 MiB cgroup peak, no swap, OOM events or restarts. It used
 synthetic host files and unreachable scrape/write endpoints, not a source-load
-test. The harness killed it after ten seconds of shutdown wait; clean shutdown is not
-proven. Linux unit validation and a host trial have not run. Approval still
-needs a stack/region and token scope, series/ingestion measurements and the
-80-percent free-tier alert from ADR 0014, disk headroom or a WAL quota, and a
-bounded host memory/CPU trial under these limits. Collector syntax validation
-does not prove this budget fits. `deploy/alerts.yml` remains unevaluated until
-rules scoped to the intended environment and a contact point are installed
-and tested in Grafana Cloud; its `autorollback` labels do not execute a rollback.
+test. That harness forced termination after ten seconds of shutdown wait.
+
+Native unit validation and the approved Ubuntu 24.04 dev trial then passed.
+At the same limits, 900.27 seconds of actual API, worker and host scrapes sent
+2,235 samples across 155 active series without failed/retried samples, OOM,
+swap or restarts. Memory reached its 64 MiB cap with reclaim events, so this
+does not establish production headroom. State used 70,101 bytes before a clean
+0.699-second stop. The collector restarted successfully and is enabled for dev
+boot. Cloud queries confirmed all three dev sources up and 155 active series.
+The approved dev token writes metrics only, restricted to one stack and dev's
+public IP, and expires on 2026-11-29.
+
+Production still needs separate host-capacity and recovery acceptance, approved
+collector installation, the 80-percent Free-budget alert from ADR 0014, and
+live environment-scoped rules with a tested contact point. The short dev trial
+does not prove outage retention or a WAL byte quota. Scope every metric
+expression in `deploy/alerts.yml` to its intended Cloud environment before
+installation; its `autorollback` labels do not execute a rollback.
 
 ## Authentication in practice
 
