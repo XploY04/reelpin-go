@@ -12,16 +12,17 @@ Environment=REELPIN_ENVIRONMENT=%i
 Environment=GOMEMLIMIT=40MiB
 Environment=GOMAXPROCS=1
 EnvironmentFile=/etc/reelpin/alloy/%i.env
+LoadCredential=metrics-config:/etc/reelpin/alloy/metrics.alloy
 LoadCredential=metrics-admin-key:/etc/reelpin/alloy/%i/metrics-admin-key
 LoadCredential=metrics-username:/etc/reelpin/alloy/%i/metrics-username
 LoadCredential=metrics-token:/etc/reelpin/alloy/%i/metrics-token
 StateDirectory=reelpin-alloy-%i
 StateDirectoryMode=0700
-ExecStartPre=/usr/bin/alloy validate /etc/reelpin/alloy/metrics.alloy
+ExecStartPre=/usr/bin/alloy validate %d/metrics-config
 ExecStart=/usr/bin/alloy run --disable-reporting \
   --server.http.listen-addr=127.0.0.1:12345 \
   --server.http.enable-pprof=false --server.http.disable-support-bundle \
-  --storage.path=/var/lib/reelpin-alloy-%i /etc/reelpin/alloy/metrics.alloy
+  --storage.path=/var/lib/reelpin-alloy-%i %d/metrics-config
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=30
