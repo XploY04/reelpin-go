@@ -112,14 +112,24 @@ Prometheus remote-write endpoint:
 GRAFANA_METRICS_URL=https://REPLACE_WITH_STACK_ENDPOINT.invalid/api/prom/push
 ```
 
-Three root-only files under `/etc/reelpin/alloy/<environment>/` are loaded by
-systemd `LoadCredential`: `metrics-admin-key` (the matching Go `ADMIN_KEY`),
+The root-only config and three root-only files under
+`/etc/reelpin/alloy/<environment>/` are loaded by systemd `LoadCredential`:
+`metrics-config` (the config above), `metrics-admin-key` (the matching Go `ADMIN_KEY`),
 `metrics-username` (Grafana's metrics tenant ID), and `metrics-token` (a token
 scoped to writing metrics to that stack). No credential values belong in the
-unit, environment file, command line or repository. Restart the unit after
-rotating these source files so systemd reloads its credential copies. The
-admin-key file must contain the exact header bytes, with no trailing newline;
+unit, environment file, command line or repository. The sandboxed service reads
+the config through `%d/metrics-config`, so `/etc/reelpin` can stay root-only.
+Restart the unit after changing the source config or credential files so
+systemd reloads them. The admin-key file must contain the exact header bytes,
+with no trailing newline;
 it stays typed as a secret through the scrape header.
+
+The Ubuntu 24.04 manual regression ran a bounded `DynamicUser` service against
+the same config under a mode-0700 `/etc/reelpin`: direct readability failed
+with exit 1, while the `LoadCredential` copy was readable with exit 0. The
+parent directory permissions stayed unchanged. `systemd-run` escapes literal
+`%d` command arguments, so that transient check used `CREDENTIALS_DIRECTORY`;
+the installed unit uses systemd's `%d` specifier.
 
 The initial hard limits are 64 MiB memory, no swap and 0.05 CPU; a 40 MiB Go
 runtime target is not a memory guarantee. The queue has one shard and 1,000
