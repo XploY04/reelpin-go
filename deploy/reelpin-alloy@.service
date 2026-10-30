@@ -1,0 +1,44 @@
+[Unit]
+Description=ReelPin metrics collector (%i)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+DynamicUser=yes
+Environment=REELPIN_ENVIRONMENT=%i
+Environment=GOMEMLIMIT=40MiB
+Environment=GOMAXPROCS=1
+EnvironmentFile=/etc/reelpin/alloy/%i.env
+LoadCredential=metrics-admin-key:/etc/reelpin/alloy/%i/metrics-admin-key
+LoadCredential=metrics-username:/etc/reelpin/alloy/%i/metrics-username
+LoadCredential=metrics-token:/etc/reelpin/alloy/%i/metrics-token
+StateDirectory=reelpin-alloy-%i
+StateDirectoryMode=0700
+ExecStartPre=/usr/bin/alloy validate /etc/reelpin/alloy/metrics.alloy
+ExecStart=/usr/bin/alloy run --disable-reporting \
+  --server.http.listen-addr=127.0.0.1:12345 \
+  --server.http.enable-pprof=false --server.http.disable-support-bundle \
+  --storage.path=/var/lib/reelpin-alloy-%i /etc/reelpin/alloy/metrics.alloy
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+MemoryMax=64M
+MemorySwapMax=0
+CPUQuota=5%
+TasksMax=64
+OOMPolicy=stop
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
