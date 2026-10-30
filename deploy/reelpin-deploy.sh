@@ -18,9 +18,13 @@ case "$service" in
   *) echo "unknown service $service" >&2; exit 1 ;;
 esac
 
-# A digest, not a tag. A tag can move between the dev deploy and this one.
-if [[ "$image" != *"@sha256:"* ]]; then
-  echo "refusing to deploy $image: pass an image digest, not a tag" >&2
+case "$environment" in
+  dev|production) ;;
+  *) echo "unknown environment $environment" >&2; exit 1 ;;
+esac
+
+if [[ ! "$image" =~ ^ghcr\.io/xploy04/reelpin-go@sha256:[a-f0-9]{64}$ ]]; then
+  echo "refusing to deploy $image: pass an immutable ReelPin image digest" >&2
   exit 1
 fi
 
@@ -38,6 +42,38 @@ if [[ -r "$state" ]]; then
   previous=$(sed -n 's/^REELPIN_IMAGE=//p' "$state")
 fi
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+verify_service() {
+  sleep 5
+  if ! systemctl is-active --quiet "$unit"; then
+    echo "$unit is not active after restart" >&2
+    journalctl -u "$unit" -n 50 --no-pager >&2
+    return 1
+  fi
+  if [[ "$service" == api ]]; then
+    bash "$script_dir/reelpin-smoke.sh" http://127.0.0.1:8080 "$1"
+  fi
+}
+
+rollback() {
+  if [[ -z "$previous" ]]; then
+    echo "no previous image available for rollback" >&2
+    return 1
+  fi
+  echo "rolling back to $previous" >&2
+  if ! printf 'REELPIN_IMAGE=%s\n' "$previous" > "$state"; then
+    return 1
+  fi
+  if ! systemctl restart "$unit"; then
+    return 1
+  fi
+  if ! verify_service "$previous"; then
+    return 1
+  fi
+  echo "rollback verified: $unit is running $previous" >&2
+}
+
 echo "pulling $image"
 docker pull "$image"
 
@@ -45,24 +81,15 @@ printf 'REELPIN_IMAGE=%s\n' "$image" > "$state"
 echo "restarting $unit"
 if ! systemctl restart "$unit"; then
   echo "restart failed" >&2
-  if [[ -n "$previous" ]]; then
-    echo "rolling back to $previous" >&2
-    printf 'REELPIN_IMAGE=%s\n' "$previous" > "$state"
-    systemctl restart "$unit" || true
+  if ! rollback; then
+    echo "rollback failed" >&2
   fi
   exit 1
 fi
 
-# systemd reports the restart as done before the process is serving, so the
-# unit is checked again after it has had a moment to fail.
-sleep 5
-if ! systemctl is-active --quiet "$unit"; then
-  echo "$unit is not active after restart" >&2
-  journalctl -u "$unit" -n 50 --no-pager >&2
-  if [[ -n "$previous" ]]; then
-    echo "rolling back to $previous" >&2
-    printf 'REELPIN_IMAGE=%s\n' "$previous" > "$state"
-    systemctl restart "$unit" || true
+if ! verify_service "$image"; then
+  if ! rollback; then
+    echo "rollback failed" >&2
   fi
   exit 1
 fi

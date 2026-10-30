@@ -153,6 +153,21 @@ commit, immutable image digest, initial measurements and recovery points.
    and required keys. Keep the Python service definitions, nginx configuration,
    current images and queue state recoverable. Record recovery limits before
    any production data copy.
+    Before creating a persistent source backup login, obtain specific owner
+    approval to apply [the source RPC access script](../deploy/supabase-source-rpc-access.sql)
+    to Supabase with `psql -X --set ON_ERROR_STOP=1 --file` using the temporary
+    CLI login described in [rehearsal.md](rehearsal.md#connecting-to-supabase).
+    This is an exception to Supabase read-only access, never a Neon migration
+    or a release-workflow step. It restricts the account-deletion and two
+    notification claim RPCs to their backend callers; Python binds deletion to
+    the authenticated user and calls these RPCs with its service-role client.
+    The transaction guards the source signatures, owners and definer status,
+    then checks effective caller access before commit. Other explicit roles
+    and the new-user trigger remain unchanged. This creates no backup login
+    or backup service; those require separate approval.
+    Local approval proof uses synthetic PostgreSQL 16: client and standalone
+    SELECT-role RPC writes fail after the change, service-role calls and other
+    grants survive, and contract/postcondition failures leave ACLs unchanged.
 3. Install Docker only after confirming its network/firewall changes preserve
    Python's existing access. Pin a locally tested RabbitMQ image by digest,
    without the management plugin. Create `reelpin-rabbitmq-production`, a durable
@@ -252,7 +267,12 @@ commit, immutable image digest, initial measurements and recovery points.
     `environment=production` and the reserved tested digest. Its migration
     must run under the 128 MiB, no-extra-swap, 0.25 CPU limits before the
     deployment restarts the worker. Confirm the smoke targets 8080 and the
-    actual build.
+    actual build. The worker deploys first, then API deployment runs the final
+    smoke and restores the previous API digest on failure, verifying its
+    identity and readiness. This order requires the new worker to remain
+    compatible with the previous API and the expand-only schema. API rollback
+    leaves the worker draining; a same-digest redeploy offers no distinct
+    fallback image.
 12. Back up the nginx site, add `location ^~ /api/v2/` proxying to
     `http://127.0.0.1:8080` while preserving the URI and forwarding its normal
     host/client headers. Keep `/api/v1/` and the existing fallback on Python

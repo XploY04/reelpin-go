@@ -1,0 +1,105 @@
+logging {
+	level = "warn"
+}
+
+local.file "admin_key" {
+	filename  = sys.env("CREDENTIALS_DIRECTORY") + "/metrics-admin-key"
+	is_secret = true
+}
+
+local.file "username" {
+	filename = sys.env("CREDENTIALS_DIRECTORY") + "/metrics-username"
+}
+
+prometheus.scrape "reelpin" {
+	targets = [
+		{"__address__" = "127.0.0.1:8080", "instance" = "api"},
+		{"__address__" = "127.0.0.1:9101", "instance" = "worker"},
+	]
+	job_name         = "reelpin"
+	scrape_interval  = "60s"
+	scrape_timeout   = "5s"
+	body_size_limit  = "1MiB"
+	sample_limit     = 2000
+	follow_redirects = false
+	http_headers     = {
+		"X-Admin-Key" = [local.file.admin_key.content],
+	}
+	forward_to = [prometheus.relabel.export.receiver]
+}
+
+prometheus.exporter.unix "host" {
+	set_collectors = ["meminfo", "pressure", "vmstat"]
+}
+
+prometheus.scrape "host" {
+	targets         = prometheus.exporter.unix.host.targets
+	job_name        = "reelpin-host"
+	scrape_interval = "60s"
+	scrape_timeout  = "5s"
+	body_size_limit = "1MiB"
+	sample_limit    = 512
+	forward_to      = [prometheus.relabel.host.receiver]
+}
+
+prometheus.relabel "host" {
+	forward_to = [prometheus.relabel.export.receiver]
+
+	rule {
+		target_label = "instance"
+		replacement  = "host"
+	}
+
+	rule {
+		target_label = "job"
+		replacement  = "reelpin-host"
+	}
+}
+
+prometheus.relabel "export" {
+	forward_to = [prometheus.remote_write.grafana.receiver]
+
+	rule {
+		source_labels = ["__name__"]
+		regex         = "reelpin_.+|go_memstats_heap_alloc_bytes|process_(resident_memory_bytes|cpu_seconds_total)|up|scrape_(duration_seconds|samples_scraped|samples_post_metric_relabeling)|node_memory_(MemAvailable|MemTotal|SwapFree|SwapTotal)_bytes|node_vmstat_pswp(in|out)|node_pressure_memory_(waiting|stalled)_seconds_total"
+		action        = "keep"
+	}
+
+	rule {
+		regex  = "__name__|job|instance|route|method|status|state|routing_key|outcome|queue|stage|platform|class|mode|provider|model|operation|accounting|direction|group|le"
+		action = "labelkeep"
+	}
+}
+
+prometheus.remote_write "grafana" {
+	external_labels = {"environment" = sys.env("REELPIN_ENVIRONMENT")}
+
+	endpoint {
+		url              = sys.env("GRAFANA_METRICS_URL")
+		remote_timeout   = "10s"
+		follow_redirects = false
+		send_exemplars   = false
+
+		basic_auth {
+			username      = string.trim_space(local.file.username.content)
+			password_file = sys.env("CREDENTIALS_DIRECTORY") + "/metrics-token"
+		}
+
+		queue_config {
+			capacity             = 1000
+			min_shards           = 1
+			max_shards           = 1
+			max_samples_per_send = 250
+			batch_send_deadline  = "5s"
+			min_backoff          = "1s"
+			max_backoff          = "30s"
+			sample_age_limit     = "15m"
+		}
+	}
+
+	wal {
+		truncate_frequency = "5m"
+		min_keepalive_time = "5m"
+		max_keepalive_time = "15m"
+	}
+}
