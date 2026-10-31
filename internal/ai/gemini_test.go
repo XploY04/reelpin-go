@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,8 +28,11 @@ func fakeGemini(t *testing.T, status int, answer string, check func(*http.Reques
 		if strings.Contains(r.URL.RawQuery, "key=") {
 			t.Error("the api key is in the URL, where logs would keep it")
 		}
-		body := make([]byte, r.ContentLength)
-		r.Body.Read(body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
 		if check != nil {
 			check(r, body)
 		}
@@ -49,7 +53,7 @@ func client(server *httptest.Server) *Gemini {
 }
 
 func TestExtractParsesAndNormalizes(t *testing.T) {
-	answer := `{"title":"  Artjuna cafe  ","summary":"A quiet garden cafe.","topical_tags":["cafe","cafe","goa"],"locations":[{"name":"Artjuna","city":"Anjuna","country":"India"}],"events":[{"name":"Live music","date":"2026-02-31","time":"19:00"}]}`
+	answer := `{"title":"  Artjuna cafe  ","summary":"A quiet garden cafe.","content_domain":"Food","content_format":"Cafe recommendations","topical_tags":["cafe","cafe","goa"],"key_facts":["Serves breakfast"],"people_mentioned":["Artjuna"],"actionable_items":["Visit Artjuna"],"locations":[{"name":"Artjuna","neighborhood":"","city":"Anjuna","state":"Goa","country":"India"}],"events":[{"name":"Live music","date":"2026-02-31","time":"19:00"}]}`
 	server := fakeGemini(t, http.StatusOK, answer, func(_ *http.Request, body []byte) {
 		if !strings.Contains(string(body), "responseSchema") {
 			t.Error("extraction did not ask for a structured response")
@@ -67,6 +71,9 @@ func TestExtractParsesAndNormalizes(t *testing.T) {
 	if len(extraction.TopicalTags) != 2 {
 		t.Errorf("tags = %v, want deduplicated", extraction.TopicalTags)
 	}
+	if len(extraction.KeyFacts) != 1 || len(extraction.PeopleMentioned) != 1 || len(extraction.ActionableItems) != 1 || len(extraction.Locations) != 1 {
+		t.Errorf("structured detail was lost: %+v", extraction)
+	}
 	// 2026-02-31 is not a date the model meant; the event stays, its date goes.
 	if len(extraction.Events) != 1 || extraction.Events[0].Date != "" {
 		t.Errorf("events = %+v", extraction.Events)
@@ -80,6 +87,130 @@ func TestExtractRejectsUnparseableOutput(t *testing.T) {
 	_, err := client(server).Extract(context.Background(), "t", "c")
 	if !errors.Is(err, ErrInvalidExtraction) {
 		t.Fatalf("err = %v, want ErrInvalidExtraction", err)
+	}
+}
+
+func TestExtractionRequestsAllStructuredFields(t *testing.T) {
+	server := fakeGemini(t, http.StatusOK, completeExtractionAnswer, func(_ *http.Request, body []byte) {
+		var request struct {
+			GenerationConfig struct {
+				Schema struct {
+					Required   []string `json:"required"`
+					Properties map[string]struct {
+						Items struct {
+							Required []string `json:"required"`
+						} `json:"items"`
+					} `json:"properties"`
+				} `json:"responseSchema"`
+			} `json:"generationConfig"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Error(err)
+			return
+		}
+		schema := request.GenerationConfig.Schema
+		for _, name := range []string{"title", "summary", "content_domain", "content_format", "topical_tags", "key_facts", "locations", "people_mentioned", "actionable_items", "events"} {
+			if !containsField(schema.Required, name) {
+				t.Errorf("extraction schema does not require %s", name)
+			}
+		}
+		for _, name := range []string{"name", "neighborhood", "city", "state", "country"} {
+			if !containsField(schema.Properties["locations"].Items.Required, name) {
+				t.Errorf("location schema does not require %s", name)
+			}
+		}
+		for _, name := range []string{"name", "date", "time"} {
+			if !containsField(schema.Properties["events"].Items.Required, name) {
+				t.Errorf("event schema does not require %s", name)
+			}
+		}
+	})
+	defer server.Close()
+	if _, err := client(server).Extract(context.Background(), "transcript", "caption"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const completeExtractionAnswer = `{"title":"t","summary":"s","content_domain":"","content_format":"","topical_tags":[],"key_facts":[],"locations":[],"people_mentioned":[],"actionable_items":[],"events":[]}`
+
+func containsField(fields []string, name string) bool {
+	for _, field := range fields {
+		if field == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestExtractRejectsMissingOrNullStructuredFields(t *testing.T) {
+	for _, field := range []string{"title", "summary", "content_domain", "content_format", "topical_tags", "key_facts", "locations", "people_mentioned", "actionable_items", "events"} {
+		for _, missing := range []bool{true, false} {
+			name := field + "/null"
+			if missing {
+				name = field + "/missing"
+			}
+			t.Run(name, func(t *testing.T) {
+				var answer map[string]any
+				if err := json.Unmarshal([]byte(completeExtractionAnswer), &answer); err != nil {
+					t.Fatal(err)
+				}
+				if missing {
+					delete(answer, field)
+				} else {
+					answer[field] = nil
+				}
+				body, err := json.Marshal(answer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := fakeGemini(t, http.StatusOK, string(body), nil)
+				defer server.Close()
+				_, err = client(server).Extract(context.Background(), "Visit Gali Six in HSR Bengaluru", "")
+				if !errors.Is(err, ErrInvalidExtraction) {
+					t.Fatalf("err = %v, want missing %s rejected before it becomes empty data", err, field)
+				}
+			})
+		}
+	}
+}
+
+func TestCategorizeRejectsSentenceSubcategory(t *testing.T) {
+	for _, subcategory := range []string{
+		"Winter Outfit Style Inspiration Reviews",
+		"Men's fashion style guide: outfit ideas and aesthetic inspiration for men's clothing and accessories across various seasons and trends.",
+	} {
+		t.Run(subcategory, func(t *testing.T) {
+			answer, err := json.Marshal(Category{Category: "Fashion", Subcategory: subcategory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := fakeGemini(t, http.StatusOK, string(answer), nil)
+			defer server.Close()
+			_, err = client(server).Categorize(context.Background(), Extraction{Title: "Brown jacket outfit"}, []TaxonomyOption{{Name: "Fashion"}})
+			if err == nil {
+				t.Fatal("an oversized subcategory was accepted")
+			}
+		})
+	}
+}
+
+func TestCategorizeKeepsShortReusableSubcategories(t *testing.T) {
+	for _, subcategory := range []string{"", "Reviews", "Winter Outfit Style Inspiration", "  Outfit\n inspiration  "} {
+		t.Run(subcategory, func(t *testing.T) {
+			answer, err := json.Marshal(Category{Category: "Fashion", Subcategory: subcategory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := fakeGemini(t, http.StatusOK, string(answer), nil)
+			defer server.Close()
+			category, err := client(server).Categorize(context.Background(), Extraction{Title: "Brown jacket"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := strings.Join(strings.Fields(subcategory), " "); category.Subcategory != want {
+				t.Errorf("subcategory = %q, want %q", category.Subcategory, want)
+			}
+		})
 	}
 }
 
@@ -177,7 +308,7 @@ func TestUsageComesFromTheProvidersOwnCount(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []any{map[string]any{
-				"content": map[string]any{"parts": []any{map[string]any{"text": `{"title":"t","summary":"s"}`}}},
+				"content": map[string]any{"parts": []any{map[string]any{"text": completeExtractionAnswer}}},
 			}},
 			"usageMetadata": map[string]any{
 				"promptTokenCount": 4321, "candidatesTokenCount": 210,
@@ -205,7 +336,7 @@ func TestUsageComesFromTheProvidersOwnCount(t *testing.T) {
 }
 
 func TestAnAnswerWithNoUsageBlockIsCountedNotEstimated(t *testing.T) {
-	server := fakeGemini(t, http.StatusOK, `{"title":"t","summary":"s"}`, nil)
+	server := fakeGemini(t, http.StatusOK, completeExtractionAnswer, nil)
 	defer server.Close()
 
 	usage := &recordedUsage{}

@@ -577,3 +577,61 @@ func FuzzExtractURLCandidates(f *testing.F) {
 		}
 	})
 }
+
+func TestPinterestShortLinkUsesTheCanonicalPinIdentity(t *testing.T) {
+	resolver := &Resolver{Redirects: stubRedirects{destination: "https://in.pinterest.com/pin/1234567890/?utm_source=share"}}
+	short, err := resolver.Resolve(context.Background(), "https://pin.it/Outfit123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := Resolve("https://www.pinterest.com/pin/1234567890/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if short.NormalizedURL != direct.NormalizedURL || short.ContentID != direct.ContentID || !short.Scope.IsPublic() {
+		t.Errorf("short link = %+v, want canonical %s/%s", short, direct.NormalizedURL, direct.ContentID)
+	}
+	if short.OriginalURL != "https://pin.it/Outfit123" {
+		t.Errorf("original URL = %q", short.OriginalURL)
+	}
+}
+
+func TestPinterestShortLinksRejectUnresolvedOrUnrelatedDestinations(t *testing.T) {
+	tests := []struct {
+		name      string
+		redirects RedirectResolver
+	}{
+		{name: "request failed", redirects: stubRedirects{err: errors.New("unavailable")}},
+		{name: "different website", redirects: stubRedirects{destination: "https://example.com/pin/12345/"}},
+		{name: "lookalike domain", redirects: stubRedirects{destination: "https://pinterest.com.example.com/pin/12345/"}},
+		{name: "board", redirects: stubRedirects{destination: "https://www.pinterest.com/someone/outfits/"}},
+		{name: "nested short link", redirects: stubRedirects{destination: "https://pin.it/OtherPin"}},
+		{name: "credentials", redirects: stubRedirects{destination: "https://user:secret@www.pinterest.com/pin/12345/"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &Resolver{Redirects: tt.redirects}
+			if _, err := resolver.Resolve(context.Background(), "https://pin.it/Outfit123"); !errors.Is(err, ErrUnsupportedURL) {
+				t.Fatalf("error = %v, want ErrUnsupportedURL", err)
+			}
+		})
+	}
+}
+
+func TestPinterestOfflineIdentityRetainsItsUserScope(t *testing.T) {
+	identity, err := Resolve("https://pin.it/Outfit123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Scope.IsPublic() || identity.NormalizedURL != "https://pin.it/Outfit123" {
+		t.Fatalf("offline identity = %+v", identity)
+	}
+	one, err := identity.Scope.ForUser("user-1").Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := identity.Scope.ForUser("user-2").Hash()
+	if err != nil || one == two {
+		t.Fatalf("scope hashes = %q / %q, error %v", one, two, err)
+	}
+}

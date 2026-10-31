@@ -18,7 +18,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/metrics"
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // ErrNotFound is a place Google does not know, one without coordinates, or any
@@ -26,8 +28,9 @@ import (
 var ErrNotFound = errors.New("google place not found")
 
 const (
-	DefaultBaseURL = "https://places.googleapis.com/v1"
-	DefaultTimeout = 10 * time.Second
+	DefaultBaseURL        = "https://places.googleapis.com/v1"
+	DefaultGeocodeBaseURL = "https://maps.googleapis.com/maps/api/geocode/json"
+	DefaultTimeout        = 10 * time.Second
 
 	// maxResponseBytes bounds one answer. Autocomplete returns at most a few
 	// suggestions and details a handful of fields; an error page from a proxy
@@ -73,9 +76,11 @@ type Config struct {
 	Timeout time.Duration
 	// BaseURL is the API root. Empty means DefaultBaseURL; tests point it at a
 	// local server.
-	BaseURL string
+	BaseURL        string
+	GeocodeBaseURL string
 	// Metrics counts failed calls. Nil means nothing is counted.
 	Metrics *metrics.Metrics
+	Usage   spend.Recorder
 }
 
 type Client struct {
@@ -90,6 +95,9 @@ func New(config Config) *Client {
 	}
 	if config.BaseURL == "" {
 		config.BaseURL = DefaultBaseURL
+	}
+	if config.GeocodeBaseURL == "" {
+		config.GeocodeBaseURL = DefaultGeocodeBaseURL
 	}
 	return &Client{config: config, client: &http.Client{Timeout: config.Timeout}}
 }
@@ -225,6 +233,103 @@ func (c *Client) Details(ctx context.Context, placeID, sessionToken string) (Pla
 		MapsURL:   strings.TrimSpace(answer.GoogleMapsURI),
 		Types:     cleanList(answer.Types),
 	}, nil
+}
+
+func (c *Client) Geocode(ctx context.Context, address string) (geo.Point, error) {
+	address = strings.TrimSpace(address)
+	if !c.Configured() || address == "" {
+		return geo.Point{}, ErrNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		return geo.Point{}, err
+	}
+	target, err := url.Parse(c.config.GeocodeBaseURL)
+	if err != nil {
+		return geo.Point{}, errors.New("google geocoding: invalid endpoint")
+	}
+	query := target.Query()
+	query.Set("address", address)
+	query.Set("key", c.config.APIKey)
+	target.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return geo.Point{}, errors.New("google geocoding: building the request failed")
+	}
+	if c.config.Usage != nil {
+		defer c.config.Usage.Record(ctx, spend.Usage{
+			Provider: "google_maps", Model: "geocoding", Operation: "geocode", Calls: 1,
+		})
+	}
+	client := *c.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(request)
+	if err != nil {
+		c.recordFailure()
+		// The transport error includes a URL carrying the key and address.
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return geo.Point{}, fmt.Errorf("google geocoding: %w", context.DeadlineExceeded)
+		case errors.Is(err, context.Canceled):
+			return geo.Point{}, fmt.Errorf("google geocoding: %w", context.Canceled)
+		default:
+			return geo.Point{}, errors.New("google geocoding: request failed")
+		}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		c.recordFailure()
+		return geo.Point{}, fmt.Errorf("google geocoding: answered HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		c.recordFailure()
+		return geo.Point{}, errors.New("google geocoding: reading the response failed")
+	}
+	if len(body) > maxResponseBytes {
+		c.recordFailure()
+		return geo.Point{}, errors.New("google geocoding: response exceeds the size limit")
+	}
+	var answer struct {
+		Status  string `json:"status"`
+		Results []struct {
+			Geometry struct {
+				Location struct {
+					Latitude  *float64 `json:"lat"`
+					Longitude *float64 `json:"lng"`
+				} `json:"location"`
+			} `json:"geometry"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		c.recordFailure()
+		return geo.Point{}, errors.New("google geocoding: invalid response JSON")
+	}
+	switch answer.Status {
+	case "ZERO_RESULTS":
+		return geo.Point{}, ErrNotFound
+	case "OK":
+	case "REQUEST_DENIED", "OVER_QUERY_LIMIT", "OVER_DAILY_LIMIT", "UNKNOWN_ERROR", "INVALID_REQUEST":
+		c.recordFailure()
+		return geo.Point{}, fmt.Errorf("google geocoding: provider status %s", answer.Status)
+	default:
+		c.recordFailure()
+		return geo.Point{}, errors.New("google geocoding: missing or unknown provider status")
+	}
+	if len(answer.Results) == 0 {
+		c.recordFailure()
+		return geo.Point{}, errors.New("google geocoding: successful response has no results")
+	}
+	location := answer.Results[0].Geometry.Location
+	if location.Latitude == nil || location.Longitude == nil {
+		c.recordFailure()
+		return geo.Point{}, errors.New("google geocoding: successful response has no coordinates")
+	}
+	point, err := geo.NewPoint(*location.Latitude, *location.Longitude)
+	if err != nil {
+		c.recordFailure()
+		return geo.Point{}, fmt.Errorf("google geocoding: %w", err)
+	}
+	return point, nil
 }
 
 // do sends the request and decodes a 200 into target. Any other status is

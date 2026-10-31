@@ -19,9 +19,9 @@ type RedirectResolver interface {
 	ResolveRedirects(ctx context.Context, rawURL string) (string, error)
 }
 
-// Resolver adds the two network-dependent cases to plain identity resolution.
-// Both are optional: without them, a t.co or Reddit share link is rejected
-// rather than silently mis-identified.
+// Resolver adds network-dependent cases to plain identity resolution.
+// Without them, t.co and Reddit share links are rejected. Offline Pinterest
+// short links retain their user-scoped identity for legacy backfill.
 type Resolver struct {
 	Redirects RedirectResolver
 	Reddit    RedditResolver
@@ -50,8 +50,10 @@ func (r *Resolver) Resolve(ctx context.Context, rawURL string) (SourceIdentity, 
 		return linkedinIdentity(raw, parsed), nil
 	case matchesHost(host, "reddit.com") || host == "redd.it":
 		return r.redditIdentity(ctx, raw, parsed, host)
-	case matchesHost(host, "pinterest.com") || host == "pin.it":
+	case matchesHost(host, "pinterest.com"):
 		return pinterestIdentity(raw, parsed), nil
+	case host == "pin.it":
+		return r.pinterestShortIdentity(ctx, raw, parsed)
 	}
 
 	if platform := placePlatform(host, parsed.Path); platform != "" {

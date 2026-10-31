@@ -2,8 +2,11 @@ package pipeline
 
 import (
 	"testing"
+	"time"
 
+	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/apify"
+	"github.com/XploY04/reelpin-go/internal/googleplaces"
 )
 
 // Prepare calls an Apify actor, and the stage context is the shorter of the
@@ -12,6 +15,21 @@ import (
 func TestPrepareOutlastsApifyTimeout(t *testing.T) {
 	if got := stageTimeouts[stagePrepare]; got <= apify.DefaultTimeout {
 		t.Fatalf("prepare budget %s does not outlast the apify timeout %s", got, apify.DefaultTimeout)
+	}
+}
+
+func TestCategorizeAllowsPlaceLookupsAndModelCall(t *testing.T) {
+	minimum := time.Duration(ai.MaxLocations)*googleplaces.DefaultTimeout + 45*time.Second
+	if stageTimeouts[stageCategorize] < minimum {
+		t.Fatalf("categorize budget %s cannot fit %d place lookups and the model call (%s)",
+			stageTimeouts[stageCategorize], ai.MaxLocations, minimum)
+	}
+	var total time.Duration
+	for _, budget := range stageTimeouts {
+		total += budget
+	}
+	if total >= runLifetime {
+		t.Fatalf("stage budgets %s exceed the run lifetime %s", total, runLifetime)
 	}
 }
 

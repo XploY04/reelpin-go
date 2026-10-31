@@ -196,6 +196,25 @@ func parseDirectXPostURL(rawURL, originalURL string) (SourceIdentity, error) {
 	}, nil
 }
 
+func (r *Resolver) pinterestShortIdentity(ctx context.Context, raw string, parsed *url.URL) (SourceIdentity, error) {
+	if r.Redirects == nil {
+		return pinterestIdentity(raw, parsed), nil
+	}
+	resolved, err := r.Redirects.ResolveRedirects(ctx, parsed.String())
+	if err != nil {
+		return SourceIdentity{}, fmt.Errorf("%w: the shortened pin could not be resolved safely", ErrUnsupportedURL)
+	}
+	destination, host, err := parse(resolved)
+	if err != nil || !matchesHost(host, "pinterest.com") {
+		return SourceIdentity{}, fmt.Errorf("%w: the pin.it link does not resolve to a Pinterest pin", ErrUnsupportedURL)
+	}
+	identity := pinterestIdentity(raw, destination)
+	if !identity.Scope.IsPublic() {
+		return SourceIdentity{}, fmt.Errorf("%w: the pin.it link does not resolve to a numeric pin id", ErrUnsupportedURL)
+	}
+	return identity, nil
+}
+
 func pinterestIdentity(raw string, parsed *url.URL) SourceIdentity {
 	parts := segments(parsed.Path)
 	pinID := ""
