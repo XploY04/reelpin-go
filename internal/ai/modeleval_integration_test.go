@@ -136,7 +136,7 @@ func checkExtractionShape(raw string) []string {
 	if err != nil {
 		return append(problems, err.Error())
 	}
-	for _, required := range []string{"title", "summary"} {
+	for _, required := range []string{"title", "summary", "content_domain", "content_format", "topical_tags", "key_facts", "locations", "people_mentioned", "actionable_items", "events"} {
 		if _, ok := object[required]; !ok {
 			problems = append(problems, "required field "+required+" missing")
 		}
@@ -224,6 +224,10 @@ func checkCategoryShape(raw string) []string {
 	}
 	if _, ok := object["category"]; !ok {
 		problems = append(problems, "required field category missing")
+	}
+	var subcategory string
+	if json.Unmarshal(object["subcategory"], &subcategory) == nil && len(strings.Fields(subcategory)) > 4 {
+		problems = append(problems, "subcategory exceeds four words")
 	}
 	for key, value := range object {
 		kind, declared := categoryFields[key]

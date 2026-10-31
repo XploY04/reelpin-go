@@ -329,3 +329,16 @@ func assertTerminal(t *testing.T, err error, wantCode string) {
 		t.Errorf("%q is retryable; another attempt reads the same page", failure.Code)
 	}
 }
+
+func TestMetadataAttributesCanAppearInAnyOrder(t *testing.T) {
+	metadata := ParseMetadata(`<meta content="Men's jackets &amp; coats" property="og:title"><meta content="https://images.example/outfit.jpg?a=1&amp;b=2" property="og:image"><meta content='A "warm" outfit' name='description'><link href="https://www.pinterest.com/pin/12345/" rel="canonical">`)
+	if metadata.Title != "Men's jackets & coats" || metadata.Description != `A "warm" outfit` {
+		t.Errorf("metadata = %+v", metadata)
+	}
+	if metadata.ImageURL != "https://images.example/outfit.jpg?a=1&b=2" {
+		t.Errorf("image = %q", metadata.ImageURL)
+	}
+	if metadata.Canonical != "https://www.pinterest.com/pin/12345/" {
+		t.Errorf("canonical = %q", metadata.Canonical)
+	}
+}

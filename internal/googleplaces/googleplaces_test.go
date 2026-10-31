@@ -10,8 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/metrics"
+	"github.com/XploY04/reelpin-go/internal/spend"
 )
 
 // testKey is assembled rather than written out: secret scanning flags any
@@ -198,5 +200,201 @@ func TestAProviderFailureIsAnErrorAndIsCounted(t *testing.T) {
 	if !strings.Contains(rec.Body.String(),
 		`reelpin_provider_failures_total{class="transient",platform="google_places"} 2`) {
 		t.Errorf("the failures were not counted:\n%s", rec.Body.String())
+	}
+}
+
+type geocodeUsage struct {
+	entries []spend.Usage
+}
+
+func (u *geocodeUsage) Record(_ context.Context, usage spend.Usage) {
+	u.entries = append(u.entries, usage)
+}
+
+func TestGeocodeSendsTheAddressAndRecordsTheCall(t *testing.T) {
+	var gotMethod, gotPath, gotAddress, gotKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotAddress, gotKey = r.URL.Query().Get("address"), r.URL.Query().Get("key")
+		io.WriteString(w, `{"status":"OK","results":[{"geometry":{"location":{"lat":12.9116,"lng":77.6389}}}]}`)
+	}))
+	t.Cleanup(server.Close)
+	usage := &geocodeUsage{}
+	client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL + "/maps/api/geocode/json", Usage: usage})
+	point, err := client.Geocode(context.Background(), " Gali Six, HSR & Bengaluru, India ")
+	if err != nil {
+		t.Fatalf("Geocode: %v", err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/maps/api/geocode/json" || gotAddress != "Gali Six, HSR & Bengaluru, India" || gotKey != testKey {
+		t.Fatalf("request = %s %s address=%q key=%q", gotMethod, gotPath, gotAddress, gotKey)
+	}
+	if point.Latitude != 12.9116 || point.Longitude != 77.6389 {
+		t.Errorf("point = %+v", point)
+	}
+	if len(usage.entries) != 1 {
+		t.Fatalf("usage entries = %d, want 1", len(usage.entries))
+	}
+	entry := usage.entries[0]
+	if entry.Provider != "google_maps" || entry.Model != "geocoding" || entry.Operation != "geocode" || entry.Calls != 1 || entry.Measured {
+		t.Errorf("usage = %+v", entry)
+	}
+}
+
+func TestGeocodeDoesNotCallWithoutAKeyOrAddress(t *testing.T) {
+	for _, key := range []string{"", "  ", placeholderKey, testKey} {
+		calls := &atomic.Int64{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+		}))
+		address := "Gali Six, Bengaluru"
+		if key == testKey {
+			address = "  "
+		}
+		usage := &geocodeUsage{}
+		client := New(Config{APIKey: key, GeocodeBaseURL: server.URL, Usage: usage})
+		if _, err := client.Geocode(context.Background(), address); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Geocode error = %v, want ErrNotFound", err)
+		}
+		server.Close()
+		if calls.Load() != 0 || len(usage.entries) != 0 {
+			t.Errorf("unconfigured lookup made %d calls and recorded %d entries", calls.Load(), len(usage.entries))
+		}
+	}
+}
+
+func TestGeocodeDistinguishesNoResultFromProviderFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     string
+		notFound bool
+	}{
+		{"no results", 200, `{"status":"ZERO_RESULTS","results":[]}`, true},
+		{"empty results", 200, `{"status":"OK","results":[]}`, false},
+		{"missing coordinates", 200, `{"status":"OK","results":[{"geometry":{"location":{"lat":12}}}]}`, false},
+		{"denied", 200, `{"status":"REQUEST_DENIED","error_message":"` + testKey + `"}`, false},
+		{"quota", 200, `{"status":"OVER_QUERY_LIMIT"}`, false},
+		{"unknown failure", 200, `{"status":"UNKNOWN_ERROR"}`, false},
+		{"missing status", 200, `{"results":[]}`, false},
+		{"unknown status", 200, `{"status":"` + testKey + `"}`, false},
+		{"HTTP failure", 503, `{"error":"` + testKey + `"}`, false},
+		{"invalid JSON", 200, "<html>" + testKey + "</html>", false},
+		{"outside latitude", 200, `{"status":"OK","results":[{"geometry":{"location":{"lat":91,"lng":77}}}]}`, false},
+		{"outside longitude", 200, `{"status":"OK","results":[{"geometry":{"location":{"lat":12,"lng":181}}}]}`, false},
+		{"nonfinite coordinates", 200, `{"status":"OK","results":[{"geometry":{"location":{"lat":1e999,"lng":77}}}]}`, false},
+		{"oversized response", 200, `{"status":"OK","results":[{"geometry":{"location":{"lat":12,"lng":77}}}]}` + strings.Repeat(" ", maxResponseBytes), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(server.Close)
+			usage := &geocodeUsage{}
+			client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL, Usage: usage})
+			_, err := client.Geocode(context.Background(), "Gali Six, Bengaluru")
+			if err == nil || errors.Is(err, ErrNotFound) != tt.notFound {
+				t.Fatalf("error = %v, want not found = %t", err, tt.notFound)
+			}
+			if strings.Contains(err.Error(), testKey) {
+				t.Error("provider response leaked the API key")
+			}
+			if len(usage.entries) != 1 || usage.entries[0].Calls != 1 {
+				t.Errorf("attempt usage = %+v", usage.entries)
+			}
+		})
+	}
+}
+
+func TestGeocodeTimeoutDoesNotExposeTheRequestURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	usage := &geocodeUsage{}
+	client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL, Timeout: 20 * time.Millisecond, Usage: usage})
+	_, err := client.Geocode(context.Background(), "Gali Six, Bengaluru")
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+	if strings.Contains(err.Error(), testKey) || strings.Contains(err.Error(), "Gali") || strings.Contains(err.Error(), server.URL) {
+		t.Errorf("request details leaked in error: %v", err)
+	}
+	if len(usage.entries) != 1 {
+		t.Errorf("timed out attempt usage = %+v", usage.entries)
+	}
+}
+
+func TestGeocodeDoesNotFollowRedirects(t *testing.T) {
+	redirectCalls := &atomic.Int64{}
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCalls.Add(1)
+	}))
+	t.Cleanup(destination.Close)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL})
+	if _, err := client.Geocode(context.Background(), "Gali Six, Bengaluru"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("redirect error = %v", err)
+	}
+	if redirectCalls.Load() != 0 {
+		t.Fatal("geocoding followed a provider redirect")
+	}
+}
+
+func TestGeocodeTransportFailureDoesNotExposeTheRequestURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.Close()
+	usage := &geocodeUsage{}
+	client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL, Usage: usage})
+	_, err := client.Geocode(context.Background(), "Gali Six, Bengaluru")
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("transport error = %v", err)
+	}
+	if strings.Contains(err.Error(), testKey) || strings.Contains(err.Error(), "Gali") || strings.Contains(err.Error(), server.URL) {
+		t.Errorf("request details leaked in error: %v", err)
+	}
+	if len(usage.entries) != 1 {
+		t.Errorf("failed attempt usage = %+v", usage.entries)
+	}
+}
+
+func TestGeocodeCanceledBeforeTheRequestDoesNotCountAnAttempt(t *testing.T) {
+	calls := &atomic.Int64{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	usage := &geocodeUsage{}
+	client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL, Usage: usage})
+	if _, err := client.Geocode(ctx, "Gali Six, Bengaluru"); !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context canceled", err)
+	}
+	if calls.Load() != 0 || len(usage.entries) != 0 {
+		t.Errorf("canceled lookup made %d calls and recorded %d entries", calls.Load(), len(usage.entries))
+	}
+}
+
+func TestGeocodeCountsProviderFailures(t *testing.T) {
+	meters := metrics.New()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"status":"REQUEST_DENIED"}`)
+	}))
+	t.Cleanup(server.Close)
+	client := New(Config{APIKey: testKey, GeocodeBaseURL: server.URL, Metrics: meters})
+	if _, err := client.Geocode(context.Background(), "Gali Six, Bengaluru"); err == nil {
+		t.Fatal("credential failure was hidden")
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("X-Admin-Key", "admin")
+	meters.GuardedHandler("admin").ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `reelpin_provider_failures_total{class="transient",platform="google_places"} 1`) {
+		t.Error("geocoding failure was not counted")
 	}
 }

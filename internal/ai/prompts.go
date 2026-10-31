@@ -7,7 +7,7 @@ import (
 
 // PromptVersion is stored with every content version. Reprocessing under a new
 // prompt is a deliberate new immutable version, never an in-place change.
-const PromptVersion = "prompt-v1"
+const PromptVersion = "prompt-v2"
 
 // The prompts are ported from the Python service so a reel processed by Go
 // produces the same shape of extraction as one processed before the migration.
@@ -91,7 +91,7 @@ Return JSON only:
 
 Rules:
 - You MUST select category from the active taxonomy, copied character for character. Never invent a category in the category field.
-- Select a subcategory only from under the selected category; otherwise return an empty string.
+- Select a subcategory only from under the selected category; otherwise return an empty string. A subcategory must be a short reusable label of 1-4 words, never a description or sentence.
 - When nothing fits well, still select the nearest active category AND fill proposal with what you wish existed. Otherwise omit proposal or return it with an empty name.
 - Never propose vague labels like Other, General, Misc, Entertainment, Lifestyle, Viral, Funny.`
 

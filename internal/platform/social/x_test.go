@@ -2,8 +2,10 @@ package social
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -239,5 +241,53 @@ func TestTweetTextKeepsTheWordsAndDropsTheMarkup(t *testing.T) {
 	}
 	if tweetText("no paragraph here") != "" {
 		t.Error("text was invented from a body with no paragraph")
+	}
+}
+
+type xInputActor struct {
+	fakeActor
+	input any
+}
+
+func (a *xInputActor) Run(ctx context.Context, name string, input any) ([]json.RawMessage, error) {
+	a.input = input
+	return a.fakeActor.Run(ctx, name, input)
+}
+
+func TestXActorRequestsOriginalPostAndReadsItsMediaURL(t *testing.T) {
+	server := site(t, func(_ http.ResponseWriter, r *http.Request) string {
+		if r.URL.Path == "/preview.jpg" {
+			return "image-bytes"
+		}
+		if r.URL.Path == "/other.jpg" {
+			t.Error("the actor's unrelated post was used as the thumbnail")
+		}
+		return fixture(t, "x_oembed.json")
+	})
+	previous := oembedEndpoint
+	oembedEndpoint = server.URL
+	t.Cleanup(func() { oembedEndpoint = previous })
+	actor := &xInputActor{fakeActor: fakeActor{
+		configured: map[string]bool{xActor: true},
+		items: []json.RawMessage{
+			json.RawMessage(`{"id":"another-post","media":[{"mediaUrlHttps":"` + server.URL + `/other.jpg"}]}`),
+			json.RawMessage(`{"id":"` + xPostID + `","media":[{"mediaUrlHttps":"` + server.URL + `/preview.jpg"}]}`),
+		},
+	}}
+	deps := testDeps()
+	deps.Apify = actor
+	uploader := &platformtest.Uploader{}
+	deps.Thumbnails.Storage = uploader
+	id, rawURL := xPost()
+	prepared, err := NewX(deps).Prepare(context.Background(), identity("x", "post", id, rawURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"postUrls": []string{rawURL}, "resultsLimit": MaxReplies + 1, "includeOriginalPost": true}
+	if !reflect.DeepEqual(actor.input, want) {
+		t.Errorf("actor input = %#v, want %#v", actor.input, want)
+	}
+	if uploader.Uploads != 1 || !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Errorf("thumbnail = %q, uploads = %d", prepared.ThumbnailURL, uploader.Uploads)
 	}
 }

@@ -172,3 +172,18 @@ func assertFailure(t *testing.T, err error, wantCode string, retryable bool) {
 		t.Errorf("retryable = %v, want %v", failure.Retryable(), retryable)
 	}
 }
+
+func TestPinThumbnailAcceptsContentBeforeProperty(t *testing.T) {
+	server := platformtest.Site(t, `<meta content="Men's outfit ideas" property="og:title"><meta content="https://i.pinimg.com/outfit.jpg" property="og:image">`, pinterestCDN)
+	uploader := &platformtest.Uploader{}
+	prepared, err := newHandler(uploader).Prepare(context.Background(), identityFor(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Caption != "Men's outfit ideas" {
+		t.Errorf("caption = %q", prepared.Caption)
+	}
+	if uploader.Uploads != 1 || !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+		t.Fatalf("thumbnail = %q, uploads = %d", prepared.ThumbnailURL, uploader.Uploads)
+	}
+}

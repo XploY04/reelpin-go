@@ -141,9 +141,9 @@ func (h *XHandler) enrich(ctx context.Context, identity sourceidentity.SourceIde
 	defer release()
 
 	items, err := h.deps.Apify.Run(ctx, xActor, map[string]any{
-		"startUrls":   []string{identity.NormalizedURL},
-		"maxItems":    MaxReplies + 1,
-		"addUserInfo": false,
+		"postUrls":            []string{identity.NormalizedURL},
+		"resultsLimit":        MaxReplies + 1,
+		"includeOriginalPost": true,
 	})
 	if err != nil {
 		h.deps.log(XPlatform).Info("x actor unavailable",
@@ -177,14 +177,15 @@ type xActorItem struct {
 	Text      string `json:"text"`
 	Thumbnail string `json:"thumbnailUrl"`
 	Media     []struct {
-		ThumbnailURL string `json:"thumbnailUrl"`
-		MediaURL     string `json:"media_url_https"`
+		ThumbnailURL  string `json:"thumbnailUrl"`
+		MediaURL      string `json:"media_url_https"`
+		MediaURLHTTPS string `json:"mediaUrlHttps"`
 	} `json:"media"`
 }
 
 func (i xActorItem) mediaThumbnail() string {
 	for _, item := range i.Media {
-		if url := firstNonEmpty(item.ThumbnailURL, item.MediaURL); url != "" {
+		if url := firstNonEmpty(item.ThumbnailURL, item.MediaURLHTTPS, item.MediaURL); url != "" {
 			return url
 		}
 	}

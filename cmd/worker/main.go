@@ -18,6 +18,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/config"
 	"github.com/XploY04/reelpin-go/internal/db"
 	"github.com/XploY04/reelpin-go/internal/embed"
+	"github.com/XploY04/reelpin-go/internal/googleplaces"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/metrics"
 	"github.com/XploY04/reelpin-go/internal/notify"
@@ -165,6 +166,11 @@ func run(logger *slog.Logger) error {
 	}
 
 	gemini := ai.NewGemini(ai.GeminiConfig{APIKey: cfg.GeminiAPIKey, Usage: ledger})
+	var geocoder pipeline.Geocoder
+	places := googleplaces.New(googleplaces.Config{APIKey: cfg.GoogleMapsAPIKey, Usage: ledger, Metrics: meters})
+	if places.Configured() {
+		geocoder = places
+	}
 	processor := pipeline.New(pipeline.Deps{
 		Pool:         pool,
 		Handlers:     platforms,
@@ -172,6 +178,7 @@ func run(logger *slog.Logger) error {
 		ImageReader:  gemini,
 		Extractor:    gemini,
 		Categorizer:  gemini,
+		Geocoder:     geocoder,
 		ModelVersion: gemini.ModelVersion(),
 		Logger:       logger,
 		WorkerID:     cfg.WorkerID,

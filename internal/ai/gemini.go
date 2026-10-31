@@ -273,14 +273,16 @@ var extractionSchema = json.RawMessage(`{
 		"locations": {"type": "array", "items": {"type": "object", "properties": {
 			"name": {"type": "string"}, "neighborhood": {"type": "string"},
 			"city": {"type": "string"}, "state": {"type": "string"}, "country": {"type": "string"}
-		}}},
+		}, "required": ["name", "neighborhood", "city", "state", "country"]
+		}},
 		"people_mentioned": {"type": "array", "items": {"type": "string"}},
 		"actionable_items": {"type": "array", "items": {"type": "string"}},
 		"events": {"type": "array", "items": {"type": "object", "properties": {
 			"name": {"type": "string"}, "date": {"type": "string"}, "time": {"type": "string"}
-		}}}
+		}, "required": ["name", "date", "time"]
+		}}
 	},
-	"required": ["title", "summary"]
+	"required": ["title", "summary", "content_domain", "content_format", "topical_tags", "key_facts", "locations", "people_mentioned", "actionable_items", "events"]
 }`)
 
 func (g *Gemini) Extract(ctx context.Context, transcript, caption string) (Extraction, error) {
@@ -288,8 +290,19 @@ func (g *Gemini) Extract(ctx context.Context, transcript, caption string) (Extra
 	if err != nil {
 		return Extraction{}, err
 	}
+	raw := []byte(stripFences(text))
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return Extraction{}, fmt.Errorf("%w: %v", ErrInvalidExtraction, err)
+	}
+	for _, name := range []string{"title", "summary", "content_domain", "content_format", "topical_tags", "key_facts", "locations", "people_mentioned", "actionable_items", "events"} {
+		value, exists := fields[name]
+		if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return Extraction{}, fmt.Errorf("%w: missing %s", ErrInvalidExtraction, name)
+		}
+	}
 	var extraction Extraction
-	if err := json.Unmarshal([]byte(stripFences(text)), &extraction); err != nil {
+	if err := json.Unmarshal(raw, &extraction); err != nil {
 		return Extraction{}, fmt.Errorf("%w: %v", ErrInvalidExtraction, err)
 	}
 	return extraction.Normalize(), nil
@@ -315,6 +328,10 @@ func (g *Gemini) Categorize(ctx context.Context, extraction Extraction, taxonomy
 	var category Category
 	if err := json.Unmarshal([]byte(stripFences(text)), &category); err != nil {
 		return Category{}, fmt.Errorf("decoding the category: %w", err)
+	}
+	category.Subcategory = strings.Join(strings.Fields(category.Subcategory), " ")
+	if len(strings.Fields(category.Subcategory)) > 4 {
+		return Category{}, fmt.Errorf("the subcategory must contain at most four words")
 	}
 	if category.Proposal != nil && strings.TrimSpace(category.Proposal.Name) == "" {
 		category.Proposal = nil
