@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/google/uuid"
@@ -126,6 +127,23 @@ func (p *Pipeline) insertVersion(ctx context.Context, tx pgx.Tx, state *run) (st
 	).Scan(&versionID)
 	if err != nil {
 		return "", fmt.Errorf("inserting the content version: %w", err)
+	}
+	for ordinal, location := range state.Extraction.Locations {
+		if location.Latitude == nil || location.Longitude == nil {
+			continue
+		}
+		if _, err := geo.NewPoint(*location.Latitude, *location.Longitude); err != nil {
+			return "", fmt.Errorf("validating extracted location: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO reelpin.content_locations
+				(content_version_id, ordinal, name, address, locality, country, point, source)
+			VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
+			        ST_MakePoint($7, $8)::geography, 'extraction')`,
+			versionID, ordinal, location.Name, location.Address(), location.City, location.Country,
+			*location.Longitude, *location.Latitude); err != nil {
+			return "", fmt.Errorf("storing the extracted location: %w", err)
+		}
 	}
 	return versionID, nil
 }

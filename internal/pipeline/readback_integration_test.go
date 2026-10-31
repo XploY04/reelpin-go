@@ -7,7 +7,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/enqueue"
+	"github.com/XploY04/reelpin-go/internal/geo"
+	"github.com/XploY04/reelpin-go/internal/mapview"
 	"github.com/XploY04/reelpin-go/internal/postgres"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/XploY04/reelpin-go/internal/sourceidentity"
@@ -66,6 +69,13 @@ func saveID(t *testing.T, pool *pgxpool.Pool, jobID string) uuid.UUID {
 func TestASubmittedReelIsReadableWithNoLegacyTables(t *testing.T) {
 	h := newBareHarness(t)
 	ctx := context.Background()
+	latitude, longitude := 15.5834, 73.7407
+	h.extractor.extraction.PeopleMentioned = []string{"Artjuna"}
+	h.extractor.extraction.ActionableItems = []string{"Visit for breakfast"}
+	h.extractor.extraction.Locations = []ai.Location{{
+		Name: "Artjuna", City: "Anjuna", Country: "India",
+		Latitude: &latitude, Longitude: &longitude,
+	}}
 
 	var legacyTables int
 	if err := h.pool.QueryRow(ctx, `
@@ -104,6 +114,29 @@ func TestASubmittedReelIsReadableWithNoLegacyTables(t *testing.T) {
 	}
 	if len(record.KeyFacts) != 1 || record.KeyFacts[0] != "Opens at eight" {
 		t.Errorf("key_facts = %v", record.KeyFacts)
+	}
+	if len(record.PeopleMentioned) != 1 || len(record.ActionableItems) != 1 {
+		t.Errorf("people/actions = %v/%v", record.PeopleMentioned, record.ActionableItems)
+	}
+	if len(record.Locations) != 1 || record.Locations[0].Latitude == nil ||
+		*record.Locations[0].Latitude != latitude {
+		t.Fatalf("locations = %+v", record.Locations)
+	}
+	mapReader := mapview.New(h.pool, nil)
+	bounds, err := geo.NewBounds(15, 73, 16, 74)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins, _, err := mapReader.Pins(ctx, userA, bounds, "")
+	if err != nil || len(pins) != 1 {
+		t.Fatalf("map pins = %+v, error = %v", pins, err)
+	}
+	if pins[0].ReelID == nil || *pins[0].ReelID != id.String() || pins[0].Latitude != latitude {
+		t.Errorf("map pin = %+v", pins[0])
+	}
+	otherPins, _, err := mapReader.Pins(ctx, userB, bounds, "")
+	if err != nil || len(otherPins) != 0 {
+		t.Fatalf("other user's pins = %+v, error = %v", otherPins, err)
 	}
 	if record.ParseStatus == nil || *record.ParseStatus != "parsed" {
 		t.Errorf("parse_status = %v, want parsed", record.ParseStatus)

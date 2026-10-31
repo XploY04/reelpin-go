@@ -28,7 +28,7 @@ func (e Extraction) Validate() error {
 
 // SchemaVersion is the shape of Extraction. It is stored with every content
 // version, so a later change re-processes on purpose rather than by accident.
-const SchemaVersion = "extraction-v1"
+const SchemaVersion = "extraction-v2"
 
 // Limits keep a model that ignores its instructions from filling the database.
 const (

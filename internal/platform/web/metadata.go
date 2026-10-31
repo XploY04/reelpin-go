@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 
+	htmlparser "golang.org/x/net/html"
+
 	"github.com/XploY04/reelpin-go/internal/safehttp"
 )
 
@@ -35,9 +37,6 @@ type Metadata struct {
 }
 
 var (
-	metaProperty  = regexp.MustCompile(`(?is)<meta[^>]+property=["']([^"']+)["'][^>]+content=["']([^"']*)["'][^>]*>`)
-	metaName      = regexp.MustCompile(`(?is)<meta[^>]+name=["']([^"']+)["'][^>]+content=["']([^"']*)["'][^>]*>`)
-	linkCanonical = regexp.MustCompile(`(?is)<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']*)["'][^>]*>`)
 	titleTag      = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	scriptOrStyle = regexp.MustCompile(`(?is)<(script|style|noscript)[^>]*>.*?</(script|style|noscript)>`)
 	tagStripper   = regexp.MustCompile(`(?s)<[^>]*>`)
@@ -49,15 +48,41 @@ var (
 // title. Every source here is what the page publishes for link previews, so a
 // page that renders its content in JavaScript still yields something useful.
 func ParseMetadata(body string) Metadata {
-	values := map[string]string{}
-	for _, match := range metaProperty.FindAllStringSubmatch(body, -1) {
-		values[strings.ToLower(strings.TrimSpace(match[1]))] = html.UnescapeString(match[2])
-	}
-	for _, match := range metaName.FindAllStringSubmatch(body, -1) {
-		key := strings.ToLower(strings.TrimSpace(match[1]))
-		if _, exists := values[key]; !exists {
-			values[key] = html.UnescapeString(match[2])
+	properties := map[string]string{}
+	names := map[string]string{}
+	canonical := ""
+	parser := htmlparser.NewTokenizer(strings.NewReader(body))
+	for {
+		tokenType := parser.Next()
+		if tokenType == htmlparser.ErrorToken {
+			break
 		}
+		if tokenType != htmlparser.StartTagToken && tokenType != htmlparser.SelfClosingTagToken {
+			continue
+		}
+		token := parser.Token()
+		if token.Data != "meta" && token.Data != "link" {
+			continue
+		}
+		attributes := map[string]string{}
+		for _, attribute := range token.Attr {
+			attributes[attribute.Key] = attribute.Val
+		}
+		if token.Data == "meta" {
+			if key := strings.ToLower(strings.TrimSpace(attributes["property"])); key != "" {
+				properties[key] = attributes["content"]
+			}
+			if key := strings.ToLower(strings.TrimSpace(attributes["name"])); key != "" {
+				names[key] = attributes["content"]
+			}
+		}
+		if token.Data == "link" && canonical == "" && strings.EqualFold(strings.TrimSpace(attributes["rel"]), "canonical") {
+			canonical = strings.TrimSpace(attributes["href"])
+		}
+	}
+	values := names
+	for key, value := range properties {
+		values[key] = value
 	}
 
 	metadata := Metadata{
@@ -67,9 +92,7 @@ func ParseMetadata(body string) Metadata {
 		VideoURL:    firstOf(values["og:video:secure_url"], values["og:video"], values["og:video:url"]),
 		SiteName:    values["og:site_name"],
 	}
-	if match := linkCanonical.FindStringSubmatch(body); match != nil {
-		metadata.Canonical = strings.TrimSpace(html.UnescapeString(match[1]))
-	}
+	metadata.Canonical = canonical
 	if metadata.Canonical == "" {
 		metadata.Canonical = strings.TrimSpace(values["og:url"])
 	}

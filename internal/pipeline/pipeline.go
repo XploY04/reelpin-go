@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/ai"
+	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/jobs"
 	"github.com/XploY04/reelpin-go/internal/lease"
 	"github.com/XploY04/reelpin-go/internal/metrics"
@@ -50,7 +51,7 @@ var stageTimeouts = map[string]time.Duration{
 	stageDownload:   180 * time.Second,
 	stageTranscribe: 300 * time.Second,
 	stageExtract:    90 * time.Second,
-	stageCategorize: 45 * time.Second,
+	stageCategorize: 300 * time.Second,
 	stagePersist:    30 * time.Second,
 }
 
@@ -86,6 +87,10 @@ type CacheInvalidator interface {
 	InvalidateUser(ctx context.Context, userID string) error
 }
 
+type Geocoder interface {
+	Geocode(ctx context.Context, address string) (geo.Point, error)
+}
+
 // Deps are the seams. Everything that costs money or touches a file is behind
 // one.
 type Deps struct {
@@ -95,6 +100,7 @@ type Deps struct {
 	ImageReader ai.ImageReader
 	Extractor   ai.Extractor
 	Categorizer ai.Categorizer
+	Geocoder    Geocoder
 	// Cooldowns may be nil: no Redis means no shared push-back, and the
 	// per-run backoff still applies.
 	Cooldowns Cooldowns
@@ -486,10 +492,14 @@ func (p *Pipeline) extract(ctx context.Context, state *run) error {
 		return err
 	}
 	state.Extraction = extraction
-	return p.commitStage(ctx, state, stageExtract, hash, extraction, 80)
+	return p.commitStage(ctx, state, stageExtract, hash, state.Extraction, 80)
 }
 
 func (p *Pipeline) categorize(ctx context.Context, state *run) error {
+	// Keep the extraction checkpoint reusable when a place lookup retries.
+	if err := p.geocode(ctx, state); err != nil {
+		return err
+	}
 	taxonomy, err := p.loadTaxonomy(ctx)
 	if err != nil {
 		return err
