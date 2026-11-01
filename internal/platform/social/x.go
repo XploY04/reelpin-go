@@ -158,11 +158,14 @@ func (h *XHandler) enrich(ctx context.Context, identity sourceidentity.SourceIde
 			continue
 		}
 		// The post itself carries the preview; everything else is a reply.
-		if row.ID == identity.ContentID {
+		if row.PostID != identity.ContentID {
+			continue
+		}
+		if row.ReplyID == identity.ContentID {
 			thumbnail = firstNonEmpty(row.Thumbnail, row.mediaThumbnail())
 			continue
 		}
-		if cleaned := strings.TrimSpace(row.Text); cleaned != "" && len(collected) < MaxReplies {
+		if cleaned := strings.TrimSpace(row.ReplyText); cleaned != "" && len(collected) < MaxReplies {
 			collected = append(collected, cleaned)
 		}
 	}
@@ -173,8 +176,9 @@ func (h *XHandler) enrich(ctx context.Context, identity sourceidentity.SourceIde
 // Other handlers call different actors with different shapes; one shared
 // struct would make every one of them wrong.
 type xActorItem struct {
-	ID        string `json:"id"`
-	Text      string `json:"text"`
+	PostID    string `json:"postId"`
+	ReplyID   string `json:"replyId"`
+	ReplyText string `json:"replyText"`
 	Thumbnail string `json:"thumbnailUrl"`
 	Media     []struct {
 		ThumbnailURL  string `json:"thumbnailUrl"`

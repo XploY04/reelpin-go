@@ -50,7 +50,9 @@ type Deps struct {
 	// Resolver previews shared text without processing it.
 	Resolver ShareResolver
 	// Collections owns a user's arrangement of their own saves.
-	Collections collections.Store
+	Collections         collections.Store
+	CollectionBridge    collections.BridgeStore
+	CollectionBridgeKey string
 	// Notifications owns device tokens and open receipts. Campaigns are an
 	// operator command, not part of this surface.
 	Notifications Notifications
@@ -136,6 +138,11 @@ func New(deps Deps) (*Server, error) {
 	}
 	if err := checkDependencies(deps, server.routeTable()); err != nil {
 		return nil, err
+	}
+	if deps.CollectionBridgeKey != "" {
+		if len(deps.CollectionBridgeKey) < 32 || deps.CollectionBridge == nil {
+			return nil, fmt.Errorf("collection bridge requires a 32-byte key and store")
+		}
 	}
 	if deps.PublicAPIBaseURL != "" {
 		if deps.OAuthIssuer == "" {
@@ -262,6 +269,10 @@ func (s *Server) Routes() http.Handler {
 		mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", s.methodNotAllowed([]string{http.MethodGet, http.MethodHead}))
 	}
 
+	if s.deps.CollectionBridgeKey != "" {
+		mux.HandleFunc("POST /api/v2/internal/collections", s.handleCollectionBridge)
+		mux.HandleFunc("/api/v2/internal/collections", s.methodNotAllowed([]string{http.MethodPost}))
+	}
 	mux.HandleFunc("/", notFound)
 
 	return s.requestID(s.observe(s.logRequest(s.recoverPanic(jsonContentType(mux)))))

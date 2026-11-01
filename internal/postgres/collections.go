@@ -37,6 +37,9 @@ func NewCollections(pool *pgxpool.Pool, shareBaseURL string, now func() time.Tim
 // ErrNotFound rather than a 403: a stranger must not learn that a collection
 // exists.
 func (c *Collections) Role(ctx context.Context, collectionID, userID string) (string, error) {
+	if err := bridgeUserActive(ctx, c.pool, userID); err != nil {
+		return "", err
+	}
 	var ownerID string
 	var memberRole *string
 	err := c.pool.QueryRow(ctx, `
@@ -98,6 +101,9 @@ func (c *Collections) Create(ctx context.Context, userID, name, description stri
 		return collections.Collection{}, 0, fmt.Errorf("starting the create: %w", err)
 	}
 	defer transaction.Rollback(ctx)
+	if err = bridgeActor(ctx, transaction, userID); err != nil {
+		return collections.Collection{}, 0, err
+	}
 
 	var collectionID string
 	if err := transaction.QueryRow(ctx, `
@@ -228,6 +234,9 @@ func (c *Collections) FileSave(ctx context.Context, tx pgx.Tx, userID, collectio
 // fileSaves is FileSave without a receiver, so the submission transaction in
 // enqueue.go files by the same rule without owning a *Collections.
 func fileSaves(ctx context.Context, tx pgx.Tx, userID, collectionID string, saveIDs []string) (int, error) {
+	if err := bridgeActor(ctx, tx, userID); err != nil {
+		return 0, err
+	}
 	cleaned := make([]string, 0, len(saveIDs))
 	seen := map[string]bool{}
 	for _, raw := range saveIDs {
@@ -358,7 +367,7 @@ func (c *Collections) items(ctx context.Context, collectionID string, query coll
 		args = append(args, query.After.SavedAt, query.After.ID)
 		where += fmt.Sprintf(" AND (i.added_at, i.save_id) < ($%d, $%d)", len(args)-1, len(args))
 	}
-	args = append(args, query.Limit+1)
+	args = append(args, query.Limit+1, query.Offset)
 
 	// The transcript is the one column a concise page never shows, and the
 	// largest, so it is not read for one.
@@ -376,7 +385,7 @@ func (c *Collections) items(ctx context.Context, collectionID string, query coll
 		      FROM reelpin.collection_items) i ON i.save_id = reels.id
 		WHERE %s
 		ORDER BY i.added_at DESC, i.save_id DESC
-		LIMIT $%d`, columns, savedReels, where, len(args)), args...)
+		LIMIT $%d OFFSET $%d`, columns, savedReels, where, len(args)-1, len(args)), args...)
 	if err != nil {
 		return collections.ItemPage{}, fmt.Errorf("reading collection items: %w", err)
 	}
@@ -563,11 +572,23 @@ func (c *Collections) CreateInvite(ctx context.Context, collectionID, userID, ro
 // AcceptInvite turns a capability into membership. Accepting twice leaves one
 // membership and spends one use.
 func (c *Collections) AcceptInvite(ctx context.Context, token, userID string) (collections.Collection, error) {
+	collection, _, err := c.acceptInvite(ctx, token, userID)
+	return collection, err
+}
+
+func (c *Collections) AcceptBridgeInvite(ctx context.Context, token, userID string) (collections.Collection, bool, error) {
+	return c.acceptInvite(ctx, token, userID)
+}
+
+func (c *Collections) acceptInvite(ctx context.Context, token, userID string) (collections.Collection, bool, error) {
 	transaction, err := c.pool.Begin(ctx)
 	if err != nil {
-		return collections.Collection{}, fmt.Errorf("starting the accept: %w", err)
+		return collections.Collection{}, false, fmt.Errorf("starting the accept: %w", err)
 	}
 	defer transaction.Rollback(ctx)
+	if err = bridgeActor(ctx, transaction, userID); err != nil {
+		return collections.Collection{}, false, err
+	}
 
 	var (
 		inviteID     string
@@ -587,22 +608,23 @@ func (c *Collections) AcceptInvite(ctx context.Context, token, userID string) (c
 		FOR UPDATE OF i`, collections.HashToken(token),
 	).Scan(&inviteID, &collectionID, &role, &expiresAt, &maxUses, &uses, &revoked, &ownerID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return collections.Collection{}, collections.ErrInviteInvalid
+		return collections.Collection{}, false, collections.ErrInviteInvalid
 	}
 	if err != nil {
-		return collections.Collection{}, fmt.Errorf("reading the invite: %w", err)
+		return collections.Collection{}, false, fmt.Errorf("reading the invite: %w", err)
 	}
 
 	now := c.now().UTC()
 	switch {
 	case revoked:
-		return collections.Collection{}, collections.ErrInviteInvalid
+		return collections.Collection{}, false, collections.ErrInviteInvalid
 	case expiresAt != nil && now.After(*expiresAt):
-		return collections.Collection{}, collections.ErrInviteInvalid
+		return collections.Collection{}, false, collections.ErrInviteInvalid
 	case maxUses != nil && uses >= *maxUses:
-		return collections.Collection{}, collections.ErrInviteInvalid
+		return collections.Collection{}, false, collections.ErrInviteInvalid
 	}
 
+	joined := false
 	// The owner accepting their own invite is a no-op, not a membership.
 	if ownerID != userID {
 		tag, err := transaction.Exec(ctx, `
@@ -611,21 +633,23 @@ func (c *Collections) AcceptInvite(ctx context.Context, token, userID string) (c
 			ON CONFLICT (collection_id, user_id) DO NOTHING`,
 			collectionID, userID, role, ownerID)
 		if err != nil {
-			return collections.Collection{}, fmt.Errorf("adding the member: %w", err)
+			return collections.Collection{}, false, fmt.Errorf("adding the member: %w", err)
 		}
 		if tag.RowsAffected() > 0 {
+			joined = true
 			if _, err := transaction.Exec(ctx,
 				`UPDATE reelpin.collection_invites SET uses = uses + 1 WHERE id = $1`, inviteID,
 			); err != nil {
-				return collections.Collection{}, fmt.Errorf("recording the invite use: %w", err)
+				return collections.Collection{}, false, fmt.Errorf("recording the invite use: %w", err)
 			}
 		}
 	}
 
 	if err := transaction.Commit(ctx); err != nil {
-		return collections.Collection{}, fmt.Errorf("committing the accept: %w", err)
+		return collections.Collection{}, false, fmt.Errorf("committing the accept: %w", err)
 	}
-	return c.Get(ctx, collectionID, userID)
+	collection, err := c.Get(ctx, collectionID, userID)
+	return collection, joined, err
 }
 
 func scanCollection(rows pgx.Rows) (collections.Collection, error) {

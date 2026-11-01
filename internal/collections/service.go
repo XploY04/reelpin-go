@@ -48,13 +48,14 @@ func NewService(store Store, webBaseURL string, now func() time.Time) *Service {
 // ItemParams page a collection's items and choose how much of each reel to
 // send. After nil starts at the newest filing.
 type ItemParams struct {
-	After *reels.Cursor
-	Limit int
-	View  reels.View
+	After  *reels.Cursor
+	Limit  int
+	View   reels.View
+	Offset int
 }
 
 func (p ItemParams) query() ItemQuery {
-	return ItemQuery{After: p.After, Limit: p.Limit, Transcripts: p.View != reels.ViewConcise}
+	return ItemQuery{After: p.After, Limit: p.Limit, Transcripts: p.View != reels.ViewConcise, Offset: p.Offset}
 }
 
 // WebURL is a collection's public page.

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -160,7 +161,18 @@ func Fetch(ctx context.Context, client *safehttp.Client, rawURL string) (Metadat
 		return Metadata{}, "", &StatusError{Status: response.Status}
 	}
 	body := string(response.Body)
-	return ParseMetadata(body), body, nil
+	metadata := ParseMetadata(body)
+	if metadata.ImageURL != "" {
+		base, err := url.Parse(response.FinalURL)
+		if err != nil {
+			return Metadata{}, "", fmt.Errorf("parsing the final page URL: %w", err)
+		}
+		image, err := url.Parse(metadata.ImageURL)
+		if err == nil {
+			metadata.ImageURL = base.ResolveReference(image).String()
+		}
+	}
+	return metadata, body, nil
 }
 
 // StatusError is a page that answered, but not with a page. The status is

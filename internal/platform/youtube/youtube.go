@@ -212,6 +212,7 @@ func (h *Handler) prepareFromOEmbed(ctx context.Context, identity sourceidentity
 	endpoint.RawQuery = query.Encode()
 
 	response, err := h.deps.HTTP.Get(ctx, endpoint.String())
+	release()
 	if err != nil || response.Status < 200 || response.Status >= 300 {
 		return platform.Prepared{}, false
 	}

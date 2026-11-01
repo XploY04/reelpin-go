@@ -24,6 +24,42 @@ migrations are applied. The root-only environment is `/etc/reelpin/dev.env`;
 RabbitMQ credentials are `/etc/reelpin/rabbitmq-dev.env`. Never print or copy
 either into the repository.
 
+## Collection authority rollout
+
+Go can serve collections for both v2 clients and the Python v1 adapter. The
+adapter calls `POST /api/v2/internal/collections` with a dedicated
+`COLLECTION_BRIDGE_KEY` of at least 32 bytes. The endpoint is unavailable when
+the key is empty. It accepts collection operations only; normal API bearer
+authentication is unchanged.
+
+Use one Go instance as the authority. Configure each participating Python API
+and worker with its HTTPS origin in `COLLECTION_AUTHORITY_URL` and the same
+dedicated key. The origin comes from protected configuration, never an invite
+URL. Cross-environment sharing is possible when Python production explicitly
+uses the Go development authority. A second Go database is a separate authority
+until its collections are deliberately migrated.
+
+Before switching Python, pause collection writes and collection-targeted
+shares, take fresh recovery snapshots, and reconcile collections, items,
+memberships and invite hashes into the chosen authority. Review conflicts and
+served-account protections; do not overwrite protected aggregates or combine
+membership grants automatically. Require the backfill verification to pass.
+Then apply migration `00025`, deploy the Go endpoint, configure the Python
+adapter and restart its API and workers. Test invitations in both directions,
+viewer/editor access, item detail, native filing, revocation and deletion.
+
+After authoritative writes, unsetting the Python URL would expose stale
+Supabase collections. Reconcile before changing authority or rolling back to
+local collection storage. The adapter does not migrate chat history or unify
+device push-token stores. Parked collection chat reports an explicit
+unavailable error after the switch. Account cleanup removes central collection
+state and Python-derived saves; unrelated native Go personal saves keep their
+existing lifecycle.
+
+Thumbnail fixes apply to newly prepared content. Existing completed versions
+remain immutable; repairing their previews requires a separately scoped
+reprocessing operation, without deleting users' saves to force a retry.
+
 ## Capacity boundary
 
 The current arrangement is a development compromise. It passed one complete

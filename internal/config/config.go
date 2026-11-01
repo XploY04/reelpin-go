@@ -50,7 +50,8 @@ type Config struct {
 	// AdminKey guards the Prometheus endpoints. Empty means neither process
 	// exposes one: queue depths and failure rates are operational detail, and
 	// an unauthenticated scrape target is worse than none.
-	AdminKey string
+	AdminKey            string
+	CollectionBridgeKey string
 
 	// IPBucketSecret is shared with the Next.js boundary, which is the only hop
 	// that sees a browser's real address. Empty means no forwarded bucket is
@@ -165,13 +166,14 @@ var validEnvironments = map[string]bool{
 
 func Load() (Config, error) {
 	cfg := Config{
-		Environment:    envOr("ENVIRONMENT", "development"),
-		Port:           8000,
-		MetricsPort:    9100,
-		DatabaseURL:    os.Getenv("DATABASE_URL"),
-		Version:        envOr("APP_VERSION", "dev"),
-		AdminKey:       strings.TrimSpace(os.Getenv("ADMIN_KEY")),
-		IPBucketSecret: strings.TrimSpace(os.Getenv("REELPIN_IP_BUCKET_SECRET")),
+		Environment:         envOr("ENVIRONMENT", "development"),
+		Port:                8000,
+		MetricsPort:         9100,
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		Version:             envOr("APP_VERSION", "dev"),
+		AdminKey:            strings.TrimSpace(os.Getenv("ADMIN_KEY")),
+		CollectionBridgeKey: strings.TrimSpace(os.Getenv("COLLECTION_BRIDGE_KEY")),
+		IPBucketSecret:      strings.TrimSpace(os.Getenv("REELPIN_IP_BUCKET_SECRET")),
 
 		SupabaseURL:            strings.TrimSpace(os.Getenv("SUPABASE_URL")),
 		SupabaseServiceRoleKey: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
@@ -288,6 +290,9 @@ func Load() (Config, error) {
 		cfg.RateLimitSalt = hex.EncodeToString(generated)
 	}
 
+	if cfg.CollectionBridgeKey != "" && len(cfg.CollectionBridgeKey) < 32 {
+		return Config{}, fmt.Errorf("COLLECTION_BRIDGE_KEY must contain at least 32 bytes")
+	}
 	return cfg, nil
 }
 

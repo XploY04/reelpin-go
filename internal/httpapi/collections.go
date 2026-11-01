@@ -65,6 +65,8 @@ type collectionInviteInput struct {
 // such collection are the same 404, so the API cannot be used to probe.
 func (s *Server) writeCollectionError(w http.ResponseWriter, r *http.Request, err error, code, message string) {
 	switch {
+	case errors.Is(err, collections.ErrBridgeDeleted):
+		s.deletionPending(w)
 	case errors.Is(err, collections.ErrNotFound):
 		notFoundError(w, "collection_not_found")
 	case errors.Is(err, reels.ErrNotFound):

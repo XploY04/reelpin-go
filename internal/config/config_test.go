@@ -75,7 +75,7 @@ var configKeys = []string{
 	"REDIS_URL", "REDIS_KEY_PREFIX", "RATE_LIMIT_SALT",
 	"REEL_THUMBNAIL_BUCKET", "YT_DLP_PATH", "FFMPEG_PATH",
 	"GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_TIMEOUT_SECONDS", "PUBLIC_WEB_BASE_URL",
-	"PUBLIC_API_BASE_URL",
+	"PUBLIC_API_BASE_URL", "COLLECTION_BRIDGE_KEY",
 	"SEARCH_DENSE_MAX_DISTANCE",
 	"INSTAGRAM_ACTIVE_COOKIE_DATA_BASE64",
 	"INSTAGRAM_BACKUP_COOKIE_DATA_BASE64",
@@ -367,4 +367,20 @@ func loadWith(t *testing.T, values map[string]string) (Config, error) {
 	}
 	t.Setenv("SUPABASE_URL", "https://project.supabase.co")
 	return Load()
+}
+
+func TestCollectionBridgeKeyMustBeLongEnough(t *testing.T) {
+	t.Setenv("ENVIRONMENT", "test")
+	t.Setenv("COLLECTION_BRIDGE_KEY", "short")
+	if _, err := Load(); err == nil {
+		t.Fatal("short bridge key was accepted")
+	}
+	t.Setenv("COLLECTION_BRIDGE_KEY", "12345678901234567890123456789012")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CollectionBridgeKey) != 32 {
+		t.Fatal("bridge key was not loaded")
+	}
 }

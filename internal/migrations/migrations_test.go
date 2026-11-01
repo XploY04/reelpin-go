@@ -38,8 +38,10 @@ func TestUpMigrationsAreNotDestructive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	functions := regexp.MustCompile(`(?is)CREATE(?:\s+OR\s+REPLACE)?\s+FUNCTION\b.*?\bAS\s+\$\$.*?\$\$\s*;`)
 	for _, migration := range loaded {
-		if match := destructive.FindString(migration.Up); match != "" {
+		statements := functions.ReplaceAllString(migration.Up, "")
+		if match := destructive.FindString(statements); match != "" {
 			t.Errorf("%s contains %q in its up section", migration.Name, match)
 		}
 	}

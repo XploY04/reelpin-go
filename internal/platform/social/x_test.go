@@ -131,7 +131,11 @@ func TestABlankReplyIsNotAReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	replies := strings.SplitN(prepared.PageText, "Replies:\n", 2)[1]
+	parts := strings.SplitN(prepared.PageText, "Replies:\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("page text has no replies: %q", prepared.PageText)
+	}
+	replies := parts[1]
 	if lines := strings.Split(strings.TrimSpace(replies), "\n"); len(lines) != 2 {
 		t.Fatalf("replies = %q, want the two with words in them", lines)
 	}
@@ -270,8 +274,9 @@ func TestXActorRequestsOriginalPostAndReadsItsMediaURL(t *testing.T) {
 	actor := &xInputActor{fakeActor: fakeActor{
 		configured: map[string]bool{xActor: true},
 		items: []json.RawMessage{
-			json.RawMessage(`{"id":"another-post","media":[{"mediaUrlHttps":"` + server.URL + `/other.jpg"}]}`),
-			json.RawMessage(`{"id":"` + xPostID + `","media":[{"mediaUrlHttps":"` + server.URL + `/preview.jpg"}]}`),
+			json.RawMessage(`{"postId":"another-post","replyId":"another-post","replyText":"Unrelated content","media":[{"mediaUrlHttps":"` + server.URL + `/other.jpg"}]}`),
+			json.RawMessage(`{"postId":"` + xPostID + `","replyId":"` + xPostID + `","media":[{"mediaUrlHttps":"` + server.URL + `/preview.jpg"}]}`),
+			json.RawMessage(`{"postId":"` + xPostID + `","replyId":"a-reply","replyText":"Reply text","media":[{"mediaUrlHttps":"` + server.URL + `/other.jpg"}]}`),
 		},
 	}}
 	deps := testDeps()
@@ -289,5 +294,11 @@ func TestXActorRequestsOriginalPostAndReadsItsMediaURL(t *testing.T) {
 	}
 	if uploader.Uploads != 1 || !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
 		t.Errorf("thumbnail = %q, uploads = %d", prepared.ThumbnailURL, uploader.Uploads)
+	}
+	if strings.Contains(prepared.PageText, "Unrelated content") {
+		t.Error("an unrelated post was included as a reply")
+	}
+	if !strings.Contains(prepared.PageText, "Reply text") {
+		t.Error("the actor reply text was discarded")
 	}
 }

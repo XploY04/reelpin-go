@@ -33,7 +33,16 @@ type Thumbnails struct {
 // It never fails a run: a missing preview is cosmetic and the content is worth
 // saving without one, so every failure along the way returns an empty string.
 func (t Thumbnails) Store(ctx context.Context, identity sourceidentity.SourceIdentity, thumbnailURL string) string {
-	if strings.TrimSpace(thumbnailURL) == "" || t.HTTP == nil || t.Storage == nil {
+	if strings.TrimSpace(thumbnailURL) == "" {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "source_missing")
+		return ""
+	}
+	if t.HTTP == nil {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "http_unconfigured")
+		return ""
+	}
+	if t.Storage == nil {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "storage_unconfigured")
 		return ""
 	}
 
@@ -43,11 +52,21 @@ func (t Thumbnails) Store(ctx context.Context, identity sourceidentity.SourceIde
 	}
 	release, err := limits.AcquireLightHTTP(ctx)
 	if err != nil {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "provider_slot")
 		return ""
 	}
 	response, err := t.HTTP.Get(ctx, thumbnailURL)
 	release()
-	if err != nil || response.Status < 200 || response.Status >= 300 || len(response.Body) == 0 {
+	if err != nil {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "fetch_failed")
+		return ""
+	}
+	if response.Status < 200 || response.Status >= 300 {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "http_status", "status", response.Status)
+		return ""
+	}
+	if len(response.Body) == 0 {
+		t.log().Info("thumbnail unavailable", "platform", identity.Platform, "reason", "empty_body")
 		return ""
 	}
 
@@ -56,7 +75,7 @@ func (t Thumbnails) Store(ctx context.Context, identity sourceidentity.SourceIde
 	stored, err := t.Storage.Upload(ctx, key, bytes.NewReader(response.Body), "image/jpeg")
 	if err != nil {
 		t.log().Info("thumbnail upload failed",
-			"platform", identity.Platform, "content_id", identity.ContentID, "error", redactURLs(err))
+			"platform", identity.Platform, "reason", "upload_failed", "error", redactURLs(err))
 		return ""
 	}
 	return stored
