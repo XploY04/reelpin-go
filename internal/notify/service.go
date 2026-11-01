@@ -2,6 +2,8 @@ package notify
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -144,66 +146,118 @@ func (s *Service) MarkOpened(ctx context.Context, userID, notificationID string)
 	return nil
 }
 
-// SendToUser claims the event key, then delivers. The claim is the
-// deduplication: a second delivery of the same event finds the row taken and
-// sends nothing, so a redelivered outbox message cannot buzz twice.
+// SendToUser serializes attempts for one event and retains accepted device receipts.
 func (s *Service) SendToUser(ctx context.Context, notification Notification) (string, error) {
 	data, err := json.Marshal(notification.Data)
 	if err != nil {
 		return "", fmt.Errorf("encoding notification data: %w", err)
 	}
-
-	var notificationID string
-	err = s.pool.QueryRow(ctx, `
+	if _, err = s.pool.Exec(ctx, `
 		INSERT INTO reelpin.notifications (user_id, event_key, kind, title, body, data)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (event_key) DO NOTHING
-		RETURNING id::text`,
-		notification.UserID, notification.EventKey, notification.Type,
-		notification.Title, notification.Body, data,
-	).Scan(&notificationID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Someone already claimed this event. Report its id and send nothing.
-		var existing string
-		if err := s.pool.QueryRow(ctx,
-			`SELECT id::text FROM reelpin.notifications WHERE event_key = $1`,
-			notification.EventKey).Scan(&existing); err != nil {
-			return "", fmt.Errorf("reading the existing notification: %w", err)
-		}
-		return existing, nil
+		ON CONFLICT (event_key) DO NOTHING`, notification.UserID, notification.EventKey,
+		notification.Type, notification.Title, notification.Body, data); err != nil {
+		return "", fmt.Errorf("recording the notification: %w", err)
 	}
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return "", fmt.Errorf("claiming the notification: %w", err)
+		return "", err
 	}
-
-	tokens, err := s.tokensFor(ctx, notification.UserID)
+	defer tx.Rollback(ctx)
+	var notificationID, owner, status string
+	var attempts int
+	err = tx.QueryRow(ctx, `SELECT id::text,user_id::text,status,delivery_attempts
+		FROM reelpin.notifications WHERE event_key=$1 FOR UPDATE`, notification.EventKey).
+		Scan(&notificationID, &owner, &status, &attempts)
+	if err != nil {
+		return "", fmt.Errorf("claiming notification delivery: %w", err)
+	}
+	if owner != notification.UserID {
+		return "", ErrNotFound
+	}
+	if status == "sent" {
+		return notificationID, nil
+	}
+	if attempts >= MaxDeliveryAttempts {
+		return notificationID, ErrDeliveryExhausted
+	}
+	finish := func(state, messageID, reason string, result error) (string, error) {
+		if _, err := tx.Exec(ctx, `UPDATE reelpin.notifications
+			SET status=$2,provider_message_id=NULLIF($3,''),failure_reason=NULLIF($4,''),updated_at=now()
+			WHERE id=$1`, notificationID, state, messageID, reason); err != nil {
+			return notificationID, fmt.Errorf("recording push delivery: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return notificationID, fmt.Errorf("committing push delivery: %w", err)
+		}
+		return notificationID, result
+	}
+	tokens, err := tokensFor(ctx, tx, notification.UserID)
 	if err != nil {
 		return notificationID, err
 	}
 	if len(tokens) == 0 {
-		// Not a failure: the app often registers its token seconds after a
-		// first share. The row records that there was nowhere to send.
-		s.mark(ctx, notificationID, "no_devices", "", "the user has no registered device")
-		return notificationID, ErrNoDeviceTokens
+		return finish("no_devices", "", "the user has no registered device", ErrNoDeviceTokens)
 	}
-
+	rows, err := tx.Query(ctx, `SELECT token_hash,provider_message_id
+		FROM reelpin.notification_delivery_receipts WHERE notification_id=$1`, notificationID)
+	if err != nil {
+		return notificationID, err
+	}
+	accepted := map[string]string{}
+	for rows.Next() {
+		var hash, id string
+		if err := rows.Scan(&hash, &id); err != nil {
+			rows.Close()
+			return notificationID, err
+		}
+		accepted[hash] = id
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return notificationID, err
+	}
+	pending := make([]string, 0, len(tokens))
+	messageID := ""
+	for _, token := range tokens {
+		if id, found := accepted[tokenHash(token)]; found {
+			messageID = id
+		} else {
+			pending = append(pending, token)
+		}
+	}
+	if len(pending) == 0 {
+		return finish("sent", messageID, "", nil)
+	}
+	attempts++
+	if _, err := tx.Exec(ctx, `UPDATE reelpin.notifications
+		SET delivery_attempts=$2,kind=$3,title=$4,body=$5,data=$6,updated_at=now() WHERE id=$1`,
+		notificationID, attempts, notification.Type, notification.Title, notification.Body, data); err != nil {
+		return notificationID, err
+	}
 	payload := map[string]string{"notification_id": notificationID}
 	for key, value := range notification.Data {
 		payload[key] = value
 	}
-
-	deliveries, err := s.sender.Send(ctx, tokens, Message{
-		Title: notification.Title, Body: notification.Body, Data: payload,
-	})
+	deliveries, err := s.sender.Send(ctx, pending, Message{Title: notification.Title, Body: notification.Body, Data: payload})
 	if err != nil {
 		s.count("provider_unavailable")
-		s.mark(ctx, notificationID, "failed", "", "the push provider was unavailable")
-		return notificationID, fmt.Errorf("sending: %w", err)
+		if attempts >= MaxDeliveryAttempts {
+			return finish("failed", messageID, "push delivery retry budget exhausted", ErrDeliveryExhausted)
+		}
+		return finish("failed", messageID, "the push provider was unavailable", &RetryError{Attempt: attempts})
 	}
-
-	messageID, retryable := "", false
+	remaining := map[string]bool{}
+	for _, token := range pending {
+		remaining[token] = true
+	}
+	retryable := false
 	invalid := []string{}
 	for _, delivery := range deliveries {
+		if !remaining[delivery.Token] {
+			continue
+		}
+		delete(remaining, delivery.Token)
 		switch {
 		case delivery.Invalid:
 			invalid = append(invalid, delivery.Token)
@@ -211,62 +265,52 @@ func (s *Service) SendToUser(ctx context.Context, notification Notification) (st
 			retryable = true
 		case delivery.MessageID != "":
 			messageID = delivery.MessageID
+			if _, err := tx.Exec(ctx, `INSERT INTO reelpin.notification_delivery_receipts
+				(notification_id,token_hash,provider_message_id) VALUES($1,$2,$3)
+				ON CONFLICT DO NOTHING`, notificationID, tokenHash(delivery.Token), delivery.MessageID); err != nil {
+				return notificationID, err
+			}
 		}
 	}
-
-	// A token the provider rejected permanently will never work again.
 	if len(invalid) > 0 {
-		if _, err := s.pool.Exec(ctx,
-			`DELETE FROM reelpin.device_push_tokens WHERE fcm_token = ANY($1)`, invalid); err != nil {
-			s.logger.Warn("removing rejected device tokens failed", "count", len(invalid), "error", err)
+		if _, err := tx.Exec(ctx, `DELETE FROM reelpin.device_push_tokens WHERE user_id=$1 AND fcm_token=ANY($2)`, notification.UserID, invalid); err != nil {
+			return notificationID, err
 		}
 	}
-
-	switch {
-	case messageID != "":
-		s.count("sent")
-		s.mark(ctx, notificationID, "sent", messageID, "")
-		return notificationID, nil
-	case retryable:
+	if retryable || len(remaining) > 0 {
 		s.count("retryable")
-		s.mark(ctx, notificationID, "failed", "", "the push provider was unavailable")
-		return notificationID, ErrRetryable
-	default:
-		s.count("rejected")
-		s.mark(ctx, notificationID, "failed", "", "no device accepted the notification")
-		return notificationID, ErrNoDeviceTokens
+		if attempts >= MaxDeliveryAttempts {
+			return finish("failed", messageID, "push delivery retry budget exhausted", ErrDeliveryExhausted)
+		}
+		return finish("failed", messageID, "the push provider was unavailable", &RetryError{Attempt: attempts})
 	}
+	if messageID != "" {
+		s.count("sent")
+		return finish("sent", messageID, "", nil)
+	}
+	s.count("rejected")
+	return finish("failed", "", "no device accepted the notification", ErrNoDeviceTokens)
 }
 
-func (s *Service) tokensFor(ctx context.Context, userID string) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT fcm_token FROM reelpin.device_push_tokens
-		WHERE user_id = $1
-		ORDER BY last_seen_at DESC
-		LIMIT $2`, userID, MaxTokensPerBatch)
+func tokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func tokensFor(ctx context.Context, tx pgx.Tx, userID string) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT fcm_token FROM reelpin.device_push_tokens
+		WHERE user_id=$1 ORDER BY last_seen_at DESC LIMIT $2`, userID, MaxTokensPerBatch)
 	if err != nil {
 		return nil, fmt.Errorf("reading device tokens: %w", err)
 	}
 	defer rows.Close()
-
 	tokens := []string{}
 	for rows.Next() {
 		var token string
 		if err := rows.Scan(&token); err != nil {
-			return nil, fmt.Errorf("reading a device token: %w", err)
+			return nil, err
 		}
 		tokens = append(tokens, token)
 	}
 	return tokens, rows.Err()
-}
-
-func (s *Service) mark(ctx context.Context, notificationID, status, messageID, reason string) {
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE reelpin.notifications
-		SET status = $2, provider_message_id = NULLIF($3, ''), failure_reason = NULLIF($4, ''),
-		    updated_at = now()
-		WHERE id = $1`,
-		notificationID, status, messageID, reason); err != nil {
-		s.logger.Error("recording notification delivery failed", "status", status, "error", err)
-	}
 }

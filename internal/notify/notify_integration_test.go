@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/migrations"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,12 +26,13 @@ const (
 
 // recordingSender counts sends and can fail on demand.
 type recordingSender struct {
-	mu        sync.Mutex
-	sends     int
-	tokens    []string
-	invalid   map[string]bool
-	retryable bool
-	fail      bool
+	mu          sync.Mutex
+	sends       int
+	tokens      []string
+	invalid     map[string]bool
+	retryable   bool
+	retryTokens map[string]bool
+	fail        bool
 }
 
 func (r *recordingSender) Send(_ context.Context, tokens []string, _ Message) ([]Delivery, error) {
@@ -47,7 +49,7 @@ func (r *recordingSender) Send(_ context.Context, tokens []string, _ Message) ([
 		switch {
 		case r.invalid[token]:
 			deliveries = append(deliveries, Delivery{Token: token, Invalid: true})
-		case r.retryable:
+		case r.retryable || r.retryTokens[token]:
 			deliveries = append(deliveries, Delivery{Token: token, Retryable: true})
 		default:
 			deliveries = append(deliveries, Delivery{Token: token, MessageID: "provider-" + token})
@@ -409,5 +411,106 @@ func TestARegistrationRecordsItsBuild(t *testing.T) {
 	}
 	if counts[1].Platform != "ios" || counts[1].AppBuild != nil || counts[1].Tokens != 1 {
 		t.Errorf("second = %+v, want one ios token with no build, and the stale one left out", counts[1])
+	}
+}
+
+func TestFailedPushIsRetriedAndThenDeduplicated(t *testing.T) {
+	service, sender, pool := testService(t)
+	ctx := context.Background()
+	if err := service.RegisterToken(ctx, userA, Device{Token: "phone", Platform: "android"}); err != nil {
+		t.Fatal(err)
+	}
+	notification := ReelReady(userA, "save", "job", "Saved item", "x", "post")
+	sender.fail = true
+	first, err := service.SendToUser(ctx, notification)
+	if err == nil {
+		t.Fatal("provider failure was reported as success")
+	}
+	sender.fail = false
+	second, err := service.SendToUser(ctx, notification)
+	if err != nil || first != second || sender.count() != 2 {
+		t.Fatalf("retry: first=%q second=%q sends=%d err=%v", first, second, sender.count(), err)
+	}
+	if _, err := service.SendToUser(ctx, notification); err != nil || sender.count() != 2 {
+		t.Fatalf("successful push repeated: sends=%d err=%v", sender.count(), err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM reelpin.notifications WHERE id=$1`, first).Scan(&status); err != nil || status != "sent" {
+		t.Fatalf("status=%q err=%v", status, err)
+	}
+}
+
+func TestPartialDeliveryRetriesOnlyTheUnsentDevice(t *testing.T) {
+	service, sender, _ := testService(t)
+	ctx := context.Background()
+	for _, token := range []string{"first-phone", "second-phone"} {
+		if err := service.RegisterToken(ctx, userA, Device{Token: token, Platform: "android"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sender.retryTokens = map[string]bool{"second-phone": true}
+	notification := ReelReady(userA, "save", "job", "Saved item", "x", "post")
+	if _, err := service.SendToUser(ctx, notification); !errors.Is(err, ErrRetryable) {
+		t.Fatalf("partial delivery was lost: %v", err)
+	}
+	sender.retryTokens = nil
+	if _, err := service.SendToUser(ctx, notification); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, token := range sender.tokens {
+		counts[token]++
+	}
+	if counts["first-phone"] != 1 || counts["second-phone"] != 2 {
+		t.Fatalf("delivery attempts=%v; the accepted device must not be sent twice", counts)
+	}
+}
+
+func TestPushRetriesHaveADurableBudget(t *testing.T) {
+	service, sender, _ := testService(t)
+	ctx := context.Background()
+	if err := service.RegisterToken(ctx, userA, Device{Token: "phone", Platform: "android"}); err != nil {
+		t.Fatal(err)
+	}
+	sender.retryable = true
+	notification := ReelReady(userA, "save", "job", "Saved item", "x", "post")
+	for range 8 {
+		_, _ = service.SendToUser(ctx, notification)
+	}
+	if sender.count() != 5 {
+		t.Fatalf("provider sends=%d, want the bounded five-attempt budget", sender.count())
+	}
+}
+
+func TestPushReceiptsWorkWithOneApplicationRoleConnection(t *testing.T) {
+	_, sender, owner := testService(t)
+	cfg, err := pgxpool.ParseConfig(owner.Config().ConnString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, `SET ROLE reelpin_app`)
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	service := NewService(pool, sender, slog.New(slog.NewJSONHandler(io.Discard, nil)), time.Now)
+	if err := service.RegisterToken(ctx, userA, Device{Token: "phone", Platform: "android"}); err != nil {
+		t.Fatal(err)
+	}
+	notification := ReelReady(userA, "save", "job", "Saved item", "x", "post")
+	for range 2 {
+		if _, err := service.SendToUser(ctx, notification); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sender.count() != 1 {
+		t.Fatalf("provider sends=%d, want one", sender.count())
 	}
 }

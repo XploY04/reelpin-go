@@ -60,6 +60,29 @@ Thumbnail fixes apply to newly prepared content. Existing completed versions
 remain immutable; repairing their previews requires a separately scoped
 reprocessing operation, without deleting users' saves to force a retry.
 
+## Push notification checks
+
+`FIREBASE_PROJECT_ID` must identify the Firebase project used by the client app.
+On 2026-11-01 dev targeted `reelpin`, while read-only Firebase metadata confirmed
+the ReelPin Android package in `reelpin-6a18c`. That service account received 403
+for the configured target. Ten recent completed-job notifications were failed
+despite a registered Android device. Correct the protected dev environment and
+restart the API/worker when the configuration change is authorized.
+
+The phone APK build requires `GOOGLE_SERVICES_JSON_BASE64`; it must not silently
+produce a build without Firebase. Notification setup waits for the bootstrap
+Firebase task, and an earlier unavailable permission state can be retried.
+Explicit permission denial is preserved. Check the installed build and OS
+permission on the actual device before claiming delivery acceptance.
+
+Migration 00026 records accepted-device receipts by token hash and bounds each
+notification to five delivery attempts. Retries skip accepted devices and reuse
+the notification ID. A provider-acceptance/database-commit crash still has an
+at-least-once delivery boundary. Existing acknowledged failures are not replayed
+automatically. Completed-job messages use the app's `reel_ready` routing fields.
+Unit/integration tests use fake senders; a live canary requires approval for the
+actual device notification.
+
 ## Capacity boundary
 
 The current arrangement is a development compromise. It passed one complete

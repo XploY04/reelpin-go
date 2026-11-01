@@ -57,24 +57,20 @@ func notificationHandler(pool *pgxpool.Pool, service *notify.Service, logger *sl
 		}
 
 		var firstErr error
+		nextAttempt := 1
 		for _, s := range subscribers {
 			notification := notify.Notification{
 				UserID:   s.userID,
 				EventKey: "job:" + s.jobID,
 				Type:     "processing_" + s.status,
-				Data:     map[string]string{"job_id": s.jobID},
+				Data:     map[string]string{"job_id": s.jobID, "schema_version": "1", "type": "processing_" + s.status, "target": "home"},
 			}
 			if s.status == "completed" {
-				notification.Title = "Your reel is ready"
-				notification.Body = s.title
-				if notification.Body == "" {
-					notification.Body = "Tap to open it."
+				if s.saveID == nil {
+					continue
 				}
-				if s.saveID != nil {
-					notification.Target = "reel"
-					notification.TargetID = *s.saveID
-					notification.Data["reel_id"] = *s.saveID
-				}
+				notification = notify.ReelReady(s.userID, *s.saveID, s.jobID, s.title, "", "")
+				notification.EventKey = "job:" + s.jobID
 			} else {
 				notification.Title = "That link could not be saved"
 				notification.Body = "Open the app to see what happened."
@@ -93,16 +89,18 @@ func notificationHandler(pool *pgxpool.Pool, service *notify.Service, logger *sl
 				if firstErr == nil {
 					firstErr = err
 				}
+				nextAttempt = max(nextAttempt, notify.RetryAttempt(err))
+			case errors.Is(err, notify.ErrDeliveryExhausted), errors.Is(err, notify.ErrNotFound):
+				logger.Warn("notification delivery stopped", "job_id", s.jobID, "error", err)
 			default:
-				// A provider refusal must never change job state, so it is
-				// logged and the delivery is left recorded as failed.
-				logger.Error("notifying a subscriber failed",
-					"job_id", s.jobID, "error", err)
+				if firstErr == nil {
+					firstErr = err
+				}
 			}
 		}
 
 		if firstErr != nil {
-			return queue.Outcome{Kind: queue.Retry, Attempt: 1}, firstErr
+			return queue.Outcome{Kind: queue.Retry, Attempt: nextAttempt}, firstErr
 		}
 		return queue.Outcome{Kind: queue.Done}, nil
 	}
