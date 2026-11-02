@@ -320,6 +320,9 @@ func TestCompletionFilesTheCollectionsTheSubmissionNamed(t *testing.T) {
 		t.Fatalf("seeding a collection: %v", err)
 	}
 	gone := "88888888-8888-4888-8888-888888888888"
+	if _, err := h.pool.Exec(ctx, `INSERT INTO reelpin.collection_members(collection_id,user_id,role) VALUES($1,$2,'viewer')`, collectionID, userB); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.pool.Exec(ctx, `
 		UPDATE reelpin.processing_jobs SET collection_ids = ARRAY[$2, $3]::uuid[]
 		WHERE run_id = $1`, h.runID, collectionID, gone); err != nil {
@@ -361,6 +364,12 @@ func TestCompletionFilesTheCollectionsTheSubmissionNamed(t *testing.T) {
 	}
 	if items != 1 {
 		t.Fatalf("collection items = %d after redelivery, want 1", items)
+	}
+	var updates int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.notifications n
+		JOIN reelpin.outbox_events o ON o.event_id=n.id
+		WHERE n.user_id=$1 AND n.data->>'collection_id'=$2 AND n.data->>'change'='items_added'`, userB, collectionID).Scan(&updates); err != nil || updates != 1 {
+		t.Fatalf("collection updates=%d after worker redelivery, want 1; err=%v", updates, err)
 	}
 }
 

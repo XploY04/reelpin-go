@@ -11,15 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// notificationHandler turns a committed run into user notifications.
-//
-// The envelope carries identifiers only, so the handler reads the run's
-// terminal jobs from PostgreSQL and tells each subscriber once. Every send is
-// keyed by its job, and the notifications table's unique event key is what
-// makes that exactly-once: a redelivered message, or one message per
-// subscriber, converges on one buzz per person either way.
+// notificationHandler loads job or collection events and retries unaccepted deliveries.
 func notificationHandler(pool *pgxpool.Pool, service *notify.Service, logger *slog.Logger) queue.Handler {
 	return func(ctx context.Context, message queue.Message) (queue.Outcome, error) {
+		if message.RunID == "" {
+			_, err := service.SendCollectionUpdate(ctx, message.EventID)
+			switch {
+			case err == nil, errors.Is(err, notify.ErrNoDeviceTokens), errors.Is(err, notify.ErrNotFound), errors.Is(err, notify.ErrDeliveryExhausted):
+				return queue.Outcome{Kind: queue.Done}, nil
+			default:
+				return queue.Outcome{Kind: queue.Retry, Attempt: notify.RetryAttempt(err)}, err
+			}
+		}
 		rows, err := pool.Query(ctx, `
 			SELECT j.id::text, j.user_id::text, j.status, j.failure_code,
 			       j.user_save_id::text, coalesce(v.title, '')

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/migrations"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -23,6 +24,54 @@ const (
 	userA = "11111111-1111-4111-8111-111111111111"
 	userB = "22222222-2222-4222-8222-222222222222"
 )
+
+func TestQueuedCollectionUpdateSkipsRevokedOrDeletedCollection(t *testing.T) {
+	for _, revoke := range []string{"membership", "collection"} {
+		t.Run(revoke, func(t *testing.T) {
+			service, sender, pool := testService(t)
+			ctx := context.Background()
+			if err := service.RegisterToken(ctx, userB, Device{Token: "recipient", Platform: "ios"}); err != nil {
+				t.Fatal(err)
+			}
+			collectionID := uuid.NewString()
+			if _, err := pool.Exec(ctx, `INSERT INTO reelpin.collections(id,owner_id,name) VALUES($1,$2,'Shared')`, collectionID, userA); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO reelpin.collection_members(collection_id,user_id,role) VALUES($1,$2,'viewer')`, collectionID, userB); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if err := EnqueueCollectionUpdate(ctx, tx, collectionID, userA, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var id string
+			if err := pool.QueryRow(ctx, `SELECT id::text FROM reelpin.notifications WHERE user_id=$1`, userB).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			query := `DELETE FROM reelpin.collection_members WHERE collection_id=$1`
+			if revoke == "collection" {
+				query = `DELETE FROM reelpin.collections WHERE id=$1`
+			}
+			if _, err := pool.Exec(ctx, query, collectionID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.SendCollectionUpdate(ctx, id); !errors.Is(err, ErrNotFound) || sender.count() != 0 {
+				t.Fatalf("revoked update sends=%d err=%v", sender.count(), err)
+			}
+			var status string
+			if err := pool.QueryRow(ctx, `SELECT status FROM reelpin.notifications WHERE id=$1`, id).Scan(&status); err != nil || status != "failed" {
+				t.Fatalf("status=%s err=%v", status, err)
+			}
+		})
+	}
+}
 
 // recordingSender counts sends and can fail on demand.
 type recordingSender struct {

@@ -31,6 +31,98 @@ const (
 // included, as the detailed view asks.
 var firstPage = collections.ItemQuery{Limit: 25, Transcripts: true}
 
+func TestCollectionJoinQueuesOneOwnerNotification(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+	collection, _, err := c.Create(ctx, ownerID, "Shared", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleEditor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []string{ownerID, collaborator, collaborator} {
+		if _, err := c.AcceptInvite(ctx, token, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var queued int
+	err = c.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.notifications n
+		JOIN reelpin.outbox_events o ON o.event_id=n.id
+		WHERE n.user_id=$1 AND n.data->>'change'='member_joined'
+		AND o.event_type='notification.send' AND o.routing_key='reelpin.notifications'`, ownerID).Scan(&queued)
+	if err != nil || queued != 1 {
+		t.Fatalf("owner join notifications=%d, want 1; err=%v", queued, err)
+	}
+}
+
+func TestCollectionItemsQueueOnlyNewChangesForOtherMembers(t *testing.T) {
+	c := collectionPool(t)
+	ctx := context.Background()
+	collection, _, err := c.Create(ctx, ownerID, "Shared", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []string{collaborator, strangerID} {
+		_, token, _, _, err := c.CreateInvite(ctx, collection.ID, ownerID, collections.RoleEditor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.AcceptInvite(ctx, token, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save := seedSave(t, c, collaborator, "new-item")
+	for range 2 {
+		if _, err := c.AddItems(ctx, collection.ID, collaborator, []string{save, save}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var recipients []string
+	rows, err := c.pool.Query(ctx, `SELECT n.user_id::text FROM reelpin.notifications n
+		JOIN reelpin.outbox_events o ON o.event_id=n.id
+		WHERE n.data->>'change'='items_added' AND n.data->>'collection_id'=$1
+		AND n.data->>'type'='collection_update' AND n.data->>'target'='collection'
+		ORDER BY n.user_id`, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var user string
+		if err := rows.Scan(&user); err != nil {
+			t.Fatal(err)
+		}
+		recipients = append(recipients, user)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(recipients, []string{ownerID, strangerID}) {
+		t.Fatalf("recipients=%v, want owner and other member once", recipients)
+	}
+	rolledBackSave := seedSave(t, c, collaborator, "rolled-back-item")
+	tx, err := c.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL ROLE reelpin_app`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.FileSave(ctx, tx, collaborator, collection.ID, []string{rolledBackSave}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	if err := c.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.notifications WHERE data->>'change'='items_added'`).Scan(&total); err != nil || total != 2 {
+		t.Fatalf("rollback leaked a notification: count=%d err=%v", total, err)
+	}
+}
+
 // collectionPool builds one migrated throwaway database per test and seeds
 // the three users. Cleanup drops WITH (FORCE), so a connection left open by a
 // failure cannot hang the package.

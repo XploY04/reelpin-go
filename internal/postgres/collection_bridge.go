@@ -124,6 +124,7 @@ func (c *Collections) CreateImported(ctx context.Context, userID, name, descript
 	if err = tx.Commit(ctx); err != nil {
 		return collections.Collection{}, 0, err
 	}
+	c.Outbox.Notify(ctx)
 	collection, err := c.Get(ctx, id, userID)
 	return collection, added, err
 }
@@ -154,6 +155,7 @@ func (c *Collections) AddImported(ctx context.Context, id, userID string, ids []
 	if err = tx.Commit(ctx); err != nil {
 		return collections.Collection{}, 0, err
 	}
+	c.Outbox.Notify(ctx)
 	collection, err := c.Get(ctx, id, userID)
 	return collection, added, err
 }
@@ -213,6 +215,7 @@ func (c *Collections) FileImported(ctx context.Context, userID string, targetIDs
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	c.Outbox.Notify(ctx)
 	return targets, nil
 }
 

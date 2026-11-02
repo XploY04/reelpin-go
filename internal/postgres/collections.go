@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/XploY04/reelpin-go/internal/collections"
+	"github.com/XploY04/reelpin-go/internal/notify"
+	"github.com/XploY04/reelpin-go/internal/outbox"
 	"github.com/XploY04/reelpin-go/internal/reels"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,6 +26,7 @@ type Collections struct {
 	pool      *pgxpool.Pool
 	shareBase string
 	now       func() time.Time
+	Outbox    *outbox.Signal
 }
 
 func NewCollections(pool *pgxpool.Pool, shareBaseURL string, now func() time.Time) *Collections {
@@ -121,6 +124,7 @@ func (c *Collections) Create(ctx context.Context, userID, name, description stri
 	if err := transaction.Commit(ctx); err != nil {
 		return collections.Collection{}, 0, fmt.Errorf("committing the create: %w", err)
 	}
+	c.Outbox.Notify(ctx)
 
 	collection, err := c.Get(ctx, collectionID, userID)
 	return collection, added, err
@@ -217,6 +221,7 @@ func (c *Collections) AddItems(ctx context.Context, collectionID, userID string,
 	if err := transaction.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("committing the add: %w", err)
 	}
+	c.Outbox.Notify(ctx)
 	return added, nil
 }
 
@@ -281,6 +286,9 @@ func fileSaves(ctx context.Context, tx pgx.Tx, userID, collectionID string, save
 	}
 
 	if tag.RowsAffected() > 0 {
+		if err := notify.EnqueueCollectionUpdate(ctx, tx, collectionID, userID, int(tag.RowsAffected())); err != nil {
+			return 0, err
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE reelpin.collections SET updated_at = now() WHERE id = $1`, collectionID); err != nil {
 			return 0, fmt.Errorf("touching the collection: %w", err)
@@ -637,6 +645,9 @@ func (c *Collections) acceptInvite(ctx context.Context, token, userID string) (c
 		}
 		if tag.RowsAffected() > 0 {
 			joined = true
+			if err := notify.EnqueueCollectionJoin(ctx, transaction, collectionID, ownerID); err != nil {
+				return collections.Collection{}, false, err
+			}
 			if _, err := transaction.Exec(ctx,
 				`UPDATE reelpin.collection_invites SET uses = uses + 1 WHERE id = $1`, inviteID,
 			); err != nil {
@@ -648,6 +659,7 @@ func (c *Collections) acceptInvite(ctx context.Context, token, userID string) (c
 	if err := transaction.Commit(ctx); err != nil {
 		return collections.Collection{}, false, fmt.Errorf("committing the accept: %w", err)
 	}
+	c.Outbox.Notify(ctx)
 	collection, err := c.Get(ctx, collectionID, userID)
 	return collection, joined, err
 }

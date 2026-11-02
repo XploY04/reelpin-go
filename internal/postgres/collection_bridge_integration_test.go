@@ -325,6 +325,10 @@ func TestCollectionBridgeInviteReportsOnlyNewCommittedMembership(t *testing.T) {
 	if joins != 1 {
 		t.Fatalf("concurrent accepts reported %d new joins", joins)
 	}
+	var notifications int
+	if err := c.pool.QueryRow(ctx, `SELECT count(*) FROM reelpin.notifications WHERE user_id=$1 AND data->>'change'='member_joined'`, ownerID).Scan(&notifications); err != nil || notifications != 1 {
+		t.Fatalf("concurrent join notifications=%d err=%v", notifications, err)
+	}
 	if _, joined, err := c.AcceptBridgeInvite(ctx, token, collaborator); err != nil || joined {
 		t.Fatalf("duplicate joined=%v err=%v", joined, err)
 	}

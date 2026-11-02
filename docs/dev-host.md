@@ -80,6 +80,15 @@ notification to five delivery attempts. Retries skip accepted devices and reuse
 the notification ID. A provider-acceptance/database-commit crash still has an
 at-least-once delivery boundary. Existing acknowledged failures are not replayed
 automatically. Completed-job messages use the app's `reel_ready` routing fields.
+Collection additions notify other current members and the owner; newly accepted
+invites notify the owner. The collection transaction writes notification and
+outbox rows together. The notification event carries the stored notification ID
+as its event ID, with no run ID. Direct API and bridge commits wake the existing
+dispatcher; worker filing uses its existing wake. Duplicate additions and joins
+produce no extra events, and the worker rechecks recipient access before sending.
+Creating an invite link has no recipient and does not itself send a push.
+Delivery uses only devices registered with this Go instance, including Android
+and iOS; Python-only registrations are not copied by this change.
 Unit/integration tests use fake senders; a live canary requires approval for the
 actual device notification.
 

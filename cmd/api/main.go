@@ -204,6 +204,8 @@ func run(logger *slog.Logger) error {
 
 	submissions := postgres.NewEnqueue(pool)
 	submissions.Outbox = outboxSignal
+	collectionStore := postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now)
+	collectionStore.Outbox = outboxSignal
 
 	places := googleplaces.New(googleplaces.Config{
 		APIKey:  cfg.GoogleMapsAPIKey,
@@ -224,8 +226,8 @@ func run(logger *slog.Logger) error {
 		Enqueue:             enqueue.New(submissions, resolver, optionalGate(gate)),
 		ShareTokens:         shareTokens,
 		Resolver:            resolver,
-		Collections:         postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
-		CollectionBridge:    postgres.NewCollections(pool, cfg.ShareBaseURL, time.Now),
+		Collections:         collectionStore,
+		CollectionBridge:    collectionStore,
 		CollectionBridgeKey: cfg.CollectionBridgeKey,
 		Lifecycle:           lifecycle.New(pool, auth.NewAdmin(cfg.SupabaseURL, cfg.SupabaseServiceRoleKey), invalidator, logger),
 		Map:                 mapService,
