@@ -70,6 +70,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 	defer release()
 
 	metadata, body, err := web.Fetch(ctx, h.deps.HTTP, identity.NormalizedURL)
+	release()
 	if err != nil {
 		return platform.Prepared{}, web.Classify(err)
 	}

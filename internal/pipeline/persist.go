@@ -8,6 +8,7 @@ import (
 	"github.com/XploY04/reelpin-go/internal/ai"
 	"github.com/XploY04/reelpin-go/internal/geo"
 	"github.com/XploY04/reelpin-go/internal/lease"
+	"github.com/XploY04/reelpin-go/internal/notify"
 	"github.com/XploY04/reelpin-go/internal/queue"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -228,7 +229,7 @@ func fileIntoCollections(ctx context.Context, tx pgx.Tx, userID, saveID string, 
 	if len(collectionIDs) == 0 {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `
+	rows, err := tx.Query(ctx, `
 		WITH filed AS (
 			INSERT INTO reelpin.collection_items (collection_id, save_id, added_by)
 			SELECT c.id, $2::uuid, $3::uuid
@@ -241,10 +242,28 @@ func fileIntoCollections(ctx context.Context, tx pgx.Tx, userID, saveID string, 
 			RETURNING collection_id
 		)
 		UPDATE reelpin.collections SET updated_at = now()
-		WHERE id IN (SELECT collection_id FROM filed)`,
+		WHERE id IN (SELECT collection_id FROM filed) RETURNING id::text`,
 		collectionIDs, saveID, userID)
 	if err != nil {
 		return fmt.Errorf("filing the save into its collections: %w", err)
+	}
+	var filed []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		filed = append(filed, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range filed {
+		if err := notify.EnqueueCollectionUpdate(ctx, tx, id, userID, 1); err != nil {
+			return err
+		}
 	}
 	return nil
 }

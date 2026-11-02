@@ -104,6 +104,7 @@ type ItemQuery struct {
 	After       *reels.Cursor
 	Limit       int
 	Transcripts bool
+	Offset      int
 }
 
 // ItemPage is one keyset page of filed saves as storage reads them.

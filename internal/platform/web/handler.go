@@ -46,6 +46,7 @@ func (h *Handler) Prepare(ctx context.Context, identity sourceidentity.SourceIde
 	defer release()
 
 	metadata, body, err := Fetch(ctx, h.deps.HTTP, identity.NormalizedURL)
+	release()
 	if err != nil {
 		return platform.Prepared{}, Classify(err)
 	}

@@ -3,12 +3,15 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/XploY04/reelpin-go/internal/media"
 	"github.com/XploY04/reelpin-go/internal/pipeline"
@@ -340,5 +343,76 @@ func TestMetadataAttributesCanAppearInAnyOrder(t *testing.T) {
 	}
 	if metadata.Canonical != "https://www.pinterest.com/pin/12345/" {
 		t.Errorf("canonical = %q", metadata.Canonical)
+	}
+}
+
+func TestRelativePreviewURLsUseTheFinalPageURL(t *testing.T) {
+	for _, image := range []string{"../images/preview.jpg", "/images/preview.jpg"} {
+		t.Run(image, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/redirect":
+					http.Redirect(w, r, "/pages/article", http.StatusFound)
+				case "/pages/article":
+					w.Write([]byte(`<meta property="og:title" content="An article"><meta property="og:image" content="` + image + `">`))
+				case "/images/preview.jpg":
+					w.Write([]byte("image-bytes"))
+				default:
+					t.Errorf("unexpected request path %q", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			uploader := &platformtest.Uploader{}
+			prepared, err := newHandler(uploader).Prepare(context.Background(), identityFor(server.URL+"/redirect"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if uploader.Uploads != 1 || !strings.HasPrefix(prepared.ThumbnailURL, platformtest.StoredPrefix) {
+				t.Fatalf("relative preview was lost: uploads=%d thumbnail=%q", uploader.Uploads, prepared.ThumbnailURL)
+			}
+		})
+	}
+}
+
+func TestConcurrentPagesReleaseTheirHTTPBudgetBeforeFetchingPreviews(t *testing.T) {
+	var requests atomic.Int32
+	pagesReady := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/image.jpg" {
+			w.Write([]byte("image"))
+			return
+		}
+		if requests.Add(1) == providers.LightHTTPConcurrency {
+			close(pagesReady)
+		}
+		select {
+		case <-pagesReady:
+			w.Write([]byte(`<meta property="og:title" content="An article"><meta property="og:image" content="` + "http://" + r.Host + `/image.jpg">`))
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	limits := providers.NewLimits()
+	results := make(chan error, providers.LightHTTPConcurrency)
+	for range providers.LightHTTPConcurrency {
+		go func() {
+			uploader := &platformtest.Uploader{}
+			handler := newHandler(uploader)
+			handler.deps.Limit = limits
+			handler.deps.Thumbnails.Limits = limits
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			prepared, err := handler.Prepare(ctx, identityFor(server.URL))
+			if err == nil && prepared.ThumbnailURL == "" {
+				err = fmt.Errorf("page consumed the HTTP slot needed for its own preview")
+			}
+			results <- err
+		}()
+	}
+	for range providers.LightHTTPConcurrency {
+		if err := <-results; err != nil {
+			t.Error(err)
+		}
 	}
 }

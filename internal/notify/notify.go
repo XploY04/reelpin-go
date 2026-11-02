@@ -2,13 +2,13 @@
 //
 // Two rules shape everything here. A device token is a credential, so it is
 // never logged, never returned, and never put in an error. And every send is
-// keyed by an event, so a redelivered message or a retried request cannot make
-// a phone buzz twice for the same thing.
+// keyed by an event, and retries skip devices already recorded as accepted.
 package notify
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -19,9 +19,29 @@ var ErrNotFound = errors.New("not found")
 // failure: the app often registers its token seconds after the first share.
 var ErrNoDeviceTokens = errors.New("the user has no device tokens")
 
-// ErrRetryable means every delivery failed for a reason that may pass. The
-// caller retries through the queue rather than in a loop.
+// ErrRetryable means one or more deliveries need another attempt.
 var ErrRetryable = errors.New("delivery failed transiently")
+
+var ErrDeliveryExhausted = errors.New("push delivery retry budget exhausted")
+
+const MaxDeliveryAttempts = 5
+
+type RetryError struct {
+	Attempt int
+}
+
+func (e *RetryError) Error() string {
+	return fmt.Sprintf("push delivery attempt %d failed transiently", e.Attempt)
+}
+func (e *RetryError) Unwrap() error { return ErrRetryable }
+
+func RetryAttempt(err error) int {
+	var retry *RetryError
+	if errors.As(err, &retry) {
+		return retry.Attempt
+	}
+	return 1
+}
 
 // MaxTokensPerBatch is the provider's multicast limit.
 const MaxTokensPerBatch = 500
@@ -137,13 +157,13 @@ func CollectionUpdated(userID, collectionID, actorName string, added int) Notifi
 		UserID:   userID,
 		Title:    "Collection updated",
 		Body:     body,
-		Type:     "collection_updated",
-		Target:   "collection_detail",
+		Type:     "collection_update",
+		Target:   "collection",
 		TargetID: collectionID,
 		Data: map[string]string{
 			"schema_version": "1",
-			"type":           "collection_updated",
-			"target":         "collection_detail",
+			"type":           "collection_update",
+			"target":         "collection",
 			"collection_id":  collectionID,
 		},
 	}
